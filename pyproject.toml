@@ -1,6 +1,6 @@
 [project]
 name = "superdialog"
-version = "0.1.0a1"
+version = "0.2.0a0"
 description = "Standalone dialog state machine framework — text in, text out."
 readme = "README.md"
 requires-python = ">=3.10"
