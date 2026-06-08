@@ -1,9 +1,9 @@
 """SuperDialog -- standalone dialog state machine framework."""
 
-__version__ = "0.2.3"
+__version__ = "0.2.4"
 
 from .agent import Agent, TurnResult
-from .agents import LLMAgent
+from .agents import LangChainAgent, LLMAgent
 from .chat_context import ChatContext, ChatMessage
 from .dialog_machine import DialogMachine
 from .flow import Flow, FlowSet, create_dialog_flow
@@ -35,6 +35,7 @@ __all__ = [
     "HttpTool",
     "InMemorySessionStore",
     "LLMAgent",
+    "LangChainAgent",
     "LockBackend",
     "MCPTool",
     "NullSessionStore",
