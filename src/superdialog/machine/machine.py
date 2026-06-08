@@ -1277,6 +1277,7 @@ class DialogStateMachine:
                         skipped=not result.all_required_met,
                         from_node=from_node,
                         user_message=user_input,
+                        auto_chain=True,
                     )
                     # Auto-chain: router nodes must not block on user input
                     return await self._follow_router_chain(user_input, turn_result)
@@ -1668,6 +1669,23 @@ class DialogStateMachine:
             skipped=False,
             from_node=from_node,
             user_message=None,
+            auto_chain=True,
+        )
+
+    def _is_smart_skippable(self, node: FlowNode) -> bool:
+        """True if ``node`` is a completed, deterministic instruction node that
+        :meth:`_follow_router_chain` will smart-skip — re-firing its last edge
+        and discarding any freshly generated reply. Shared with the chain so the
+        two predicates never diverge.
+        """
+        if _classify_node_type(node) != "instruction" or not node.edges:
+            return False
+        had_slots = bool(self.context.node_slots.get(node.id))
+        single_edge = len(node.edges) == 1
+        return (
+            node.id in self.context.completed_nodes
+            and node.id in self.context.last_fired_edge
+            and (single_edge or had_slots)
         )
 
     def _all_required_slots_present(self, node: FlowNode) -> bool:
@@ -1751,13 +1769,7 @@ class DialogStateMachine:
                 is_single_edge,
                 is_prefilled,
             )
-            is_smart_skip = (
-                is_instruction
-                and not is_prefilled
-                and node.id in self.context.completed_nodes
-                and node.id in self.context.last_fired_edge
-                and (is_single_edge or node_had_slots)
-            )
+            is_smart_skip = self._is_smart_skippable(node) and not is_prefilled
             if is_smart_skip:
                 # Discard entry speech so repeated question is never heard
                 last_result = last_result.model_copy(update={"response": ""})
@@ -1775,6 +1787,7 @@ class DialogStateMachine:
                         criteria_met={},
                         skipped=True,
                         from_node=node.id,
+                        auto_chain=True,
                     )
                     last_result = chained
                     continue
@@ -1814,6 +1827,32 @@ class DialogStateMachine:
                 break
             last_result = chained
 
+        # Boundary backstop: the chain can stop at the top (self-loop ceiling or
+        # max_hops) while sitting on an instruction node whose reply was
+        # suppressed for the auto-chain. Suppression assumes the chain routes
+        # onward and discards that reply; at a forced stop it does not, so the
+        # node would be left silent. Regenerate the skipped reply here — only
+        # when the *last* transition actually suppressed (not a genuinely silent
+        # node), so we never double-call generate_reply.
+        if (
+            getattr(self, "_reply_was_suppressed", False)
+            and not self.is_complete
+            and not (last_result.response or "")
+            and _classify_node_type(self.current_node) == "instruction"
+            and (self.current_node.instruction or self.current_node.static_text)
+        ):
+            recovered = await self._generate_node_response(self.current_node)
+            if recovered:
+                if self._should_persist_response_to_history():
+                    self.context.add_assistant_message(recovered)
+                last_result = last_result.model_copy(update={"response": recovered})
+                # Keep the audit log truthful: the suppressed _do_transition
+                # stamped this record's bot_message="" — restore the reply the
+                # caller actually heard so build_traversal doesn't report silence.
+                log = self.context.transition_log
+                if log and log[-1].to_node == self.state:
+                    log[-1].bot_message = recovered
+
         # Prepend any accumulated auto_proceed speech to the final response
         if accumulated_speech:
             final = (accumulated_speech + " " + (last_result.response or "")).strip()
@@ -1833,8 +1872,14 @@ class DialogStateMachine:
         skipped: bool,
         from_node: str,
         user_message: str | None = None,
+        auto_chain: bool = False,
     ) -> TurnResult:
-        """Execute a full transition: actions → trigger → record → response."""
+        """Execute a full transition: actions → trigger → record → response.
+
+        ``auto_chain`` is True when the caller will run
+        :meth:`_follow_router_chain` next (the process_turn path); it lets the
+        entered-node reply be suppressed when the chain would discard it.
+        """
         logger.info(
             "[FLOW] _do_transition START %s -[%s]-> ? skipped=%s",
             from_node,
@@ -1980,9 +2025,34 @@ class DialogStateMachine:
             self.mark_node_spoken(self.state)
             logger.debug("[FLOW] router node=%s auto-marked as spoken", self.state)
 
-        # 7. Generate response for new node
-        logger.info("[FLOW] generating response for new node=%s", self.state)
-        response = await self._generate_node_response(new_node)
+        # 7. Generate response for new node.
+        # Spike A: skip the entered-node reply LLM call when the auto-chain will
+        # provably discard it — the node is prefilled or smart-skippable on
+        # re-entry, so _follow_router_chain blanks/re-routes its reply anyway.
+        # Scoped to auto_chain callers (process_turn path); the voice/tool path
+        # (apply_transition, auto_chain=False) and final nodes always speak.
+        discard_in_chain = (
+            auto_chain
+            and not new_node.is_final
+            and _classify_node_type(new_node) == "instruction"
+            and (
+                self._is_smart_skippable(new_node)
+                or self._all_required_slots_present(new_node)
+            )
+        )
+        # Remembered so _follow_router_chain can restore the reply if the chain
+        # stops at a boundary (ceiling / max_hops) on this suppressed node,
+        # rather than routing onward as suppression assumes.
+        self._reply_was_suppressed = discard_in_chain
+        if discard_in_chain:
+            logger.info(
+                "[FLOW] entered-node reply suppressed (auto-chain discards) node=%s",
+                self.state,
+            )
+            response = ""
+        else:
+            logger.info("[FLOW] generating response for new node=%s", self.state)
+            response = await self._generate_node_response(new_node)
         if response:
             logger.info(
                 "[FLOW] generated response for node=%s, length=%d",
