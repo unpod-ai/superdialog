@@ -1249,21 +1249,37 @@ class DialogStateMachine:
 
             if can_proceed and edge_valid:
                 edge = self._get_edge(edge_id)
-
-                # Push intent stack if this is a global edge
-                if self.is_global_edge(edge_id):
-                    self._push_intent_stack()
-
-                turn_result = await self._do_transition(
-                    edge_id=edge_id,
-                    edge=edge,
-                    criteria_met=result.criteria_met,
-                    skipped=not result.all_required_met,
-                    from_node=from_node,
-                    user_message=user_input,
+                target = edge.target_node_id if edge else None
+                at_ceiling = (
+                    target == self.state
+                    and self.context.consecutive_self_loops
+                    >= self.context.MAX_SELF_LOOPS
                 )
-                # Auto-chain: router nodes must not block on user input
-                return await self._follow_router_chain(user_input, turn_result)
+                if at_ceiling:
+                    logger.warning(
+                        "[traverse] self-loop ceiling hit node=%s (%d/%d) "
+                        "— forcing STAY",
+                        self.state,
+                        self.context.consecutive_self_loops,
+                        self.context.MAX_SELF_LOOPS,
+                    )
+                    # Intentional: no transition, no return — fall through to
+                    # the STAY path below so the turn still returns a reply.
+                else:
+                    # Push intent stack if this is a global edge
+                    if self.is_global_edge(edge_id):
+                        self._push_intent_stack()
+
+                    turn_result = await self._do_transition(
+                        edge_id=edge_id,
+                        edge=edge,
+                        criteria_met=result.criteria_met,
+                        skipped=not result.all_required_met,
+                        from_node=from_node,
+                        user_message=user_input,
+                    )
+                    # Auto-chain: router nodes must not block on user input
+                    return await self._follow_router_chain(user_input, turn_result)
 
             if not edge_valid:
                 logger.warning(
