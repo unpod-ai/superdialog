@@ -82,6 +82,14 @@ def _make_flow(node_ids):
     return flow
 
 
+def _wrap(engine):
+    """Wrap a raw DialogStateMachine so build_traversal can read it."""
+    facade = MagicMock()
+    facade._machine = engine
+    facade.is_complete = engine.is_complete
+    return facade
+
+
 def test_build_traversal_schema():
     from superdialog.machine.models import TransitionRecord
     from superdialog.traversal import build_traversal
@@ -387,3 +395,36 @@ def test_build_traversal_met_true_when_no_criteria():
 
     result = build_traversal(machine, chat_turns, flow, "f.json", "m", started_at)
     assert result["traversal"][1]["criteria"]["met"] is True
+
+
+@pytest.mark.anyio
+async def test_linear_flow_traversal_messages_align() -> None:
+    from superdialog.flow.models import ConversationFlow, Edge, FlowNode
+    from superdialog.machine.machine import DialogStateMachine
+    from superdialog.machine.testing.mock_adapter import MockAdapter
+    from superdialog.traversal import build_traversal
+
+    flow = ConversationFlow(
+        system_prompt="t", initial_node="g",
+        nodes=[
+            FlowNode(id="g", name="g", instruction="Greet.",
+                     edges=[Edge(id="g_to_c", condition="ok", target_node_id="c")]),
+            FlowNode(id="c", name="c", instruction="Confirm.", is_final=True),
+        ],
+    )
+    machine = await DialogStateMachine.from_flow(
+        flow=flow, adapter=MockAdapter(["g_to_c"]),
+    )
+    await machine.process_turn("yes please")
+
+    # Minimal chat_turns (just the greeting step, as DialogMachine records it).
+    chat_turns = [{"step": 1, "bot": "Hi", "user": None, "node": "g", "ts": ""}]
+    tr = build_traversal(
+        _wrap(machine), chat_turns, flow, "lin.json", "mock",
+        datetime(2026, 6, 8, tzinfo=timezone.utc),
+    )
+    step2 = tr["traversal"][1]
+    assert step2["from_node"] == "g" and step2["to_node"] == "c"
+    assert step2["user_message"] == "yes please"
+    assert step2["bot_message"] == "mock reply for c"
+    assert tr["is_complete"] is True
