@@ -118,7 +118,7 @@ class TestEvalFallbackEdge:
 
     @pytest.mark.anyio
     @patch(
-        "super.core.voice.dialog_machine.eval.evaluator.run_flow_from_node",
+        "superdialog.machine.eval.evaluator.run_flow_from_node",
         new_callable=AsyncMock,
     )
     async def test_fallback_triggers_on_max_turns_exceeded(
@@ -159,7 +159,7 @@ class TestEvalFallbackEdge:
 
     @pytest.mark.anyio
     @patch(
-        "super.core.voice.dialog_machine.eval.evaluator.run_flow_from_node",
+        "superdialog.machine.eval.evaluator.run_flow_from_node",
         new_callable=AsyncMock,
     )
     async def test_fallback_sends_correct_number_of_messages(
@@ -199,7 +199,7 @@ class TestEvalNegativeEdge:
 
     @pytest.mark.anyio
     @patch(
-        "super.core.voice.dialog_machine.eval.evaluator.run_flow_from_node",
+        "superdialog.machine.eval.evaluator.run_flow_from_node",
         new_callable=AsyncMock,
     )
     async def test_negative_passes_when_edge_not_triggered(
@@ -226,7 +226,7 @@ class TestEvalNegativeEdge:
 
     @pytest.mark.anyio
     @patch(
-        "super.core.voice.dialog_machine.eval.evaluator.run_flow_from_node",
+        "superdialog.machine.eval.evaluator.run_flow_from_node",
         new_callable=AsyncMock,
     )
     async def test_negative_fails_when_edge_triggered(
@@ -278,7 +278,7 @@ class TestEvalCorpusPersonaWiring:
 
     @pytest.mark.anyio
     @patch(
-        "super.core.voice.dialog_machine.eval.evaluator.run_flow_from_node",
+        "superdialog.machine.eval.evaluator.run_flow_from_node",
         new_callable=AsyncMock,
     )
     async def test_persona_tests_are_simulated(self, mock_run: AsyncMock) -> None:
@@ -313,7 +313,7 @@ class TestEvalCorpusPersonaWiring:
         )
 
         with patch(
-            "super.core.voice.dialog_machine.eval.user_simulator.UserSimulator",
+            "superdialog.machine.eval.user_simulator.UserSimulator",
             return_value=mock_simulator_instance,
         ):
             evaluator = FlowEvaluator(flow, _dummy_llm_factory)
@@ -327,7 +327,7 @@ class TestEvalCorpusPersonaWiring:
 
     @pytest.mark.anyio
     @patch(
-        "super.core.voice.dialog_machine.eval.evaluator.run_flow_from_node",
+        "superdialog.machine.eval.evaluator.run_flow_from_node",
         new_callable=AsyncMock,
     )
     async def test_persona_completion_calculated(self, mock_run: AsyncMock) -> None:
@@ -380,7 +380,7 @@ class TestEvalCorpusPersonaWiring:
         )
 
         with patch(
-            "super.core.voice.dialog_machine.eval.user_simulator.UserSimulator",
+            "superdialog.machine.eval.user_simulator.UserSimulator",
             return_value=mock_simulator_instance,
         ):
             evaluator = FlowEvaluator(flow, _dummy_llm_factory)
