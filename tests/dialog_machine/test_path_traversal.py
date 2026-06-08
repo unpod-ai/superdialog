@@ -23,13 +23,29 @@ for _mod in [
 import pytest  # noqa: E402
 
 from superdialog.flow.models import ConversationFlow, Edge, FlowNode  # noqa: E402
-from superdialog.machine.eval.evaluator import FlowEvaluator  # noqa: E402
-from superdialog.machine.eval.models import (  # noqa: E402
-    EdgeTest,
-    EvalReport,
-    PathStep,
-    PathTest,
-    TestCorpus,
+from superdialog.machine.machine import DialogStateMachine  # noqa: E402
+from superdialog.machine.testing.mock_adapter import MockAdapter  # noqa: E402
+
+# The eval surface (FlowEvaluator, corpus models) was intentionally left
+# behind in the slim superdialog port. Guard the import so this module still
+# collects — the eval-dependent classes below are skipped when it is absent.
+try:
+    from superdialog.machine.eval.evaluator import FlowEvaluator  # noqa: E402
+    from superdialog.machine.eval.models import (  # noqa: E402
+        EdgeTest,
+        EvalReport,
+        PathStep,
+        PathTest,
+        TestCorpus,
+    )
+
+    _EVAL_AVAILABLE = True
+except ModuleNotFoundError:
+    _EVAL_AVAILABLE = False
+
+_requires_eval = pytest.mark.skipif(
+    not _EVAL_AVAILABLE,
+    reason="superdialog.machine.eval not ported into this tree",
 )
 
 
@@ -94,6 +110,7 @@ def _make_sequenced_llm(edge_sequence: list[str]):
     return llm
 
 
+@_requires_eval
 class TestPathTraversal:
     @pytest.mark.anyio
     async def test_complete_path_passes(self) -> None:
@@ -158,6 +175,7 @@ class TestPathTraversal:
         assert result.steps[1].passed is False
 
 
+@_requires_eval
 class TestEvalCorpus:
     @pytest.mark.anyio
     async def test_corpus_produces_report(self) -> None:
@@ -260,3 +278,56 @@ class TestEvalCorpus:
         assert "test.json" in summary
         assert "mock" in summary
         assert "neg=" in summary
+
+
+def _chain_flow() -> ConversationFlow:
+    """A (instruction) -> R (router) -> C (final). One user turn, two hops."""
+    return ConversationFlow(
+        system_prompt="t",
+        initial_node="A",
+        nodes=[
+            FlowNode(
+                id="A",
+                name="A",
+                instruction="Ask the caller something.",
+                edges=[
+                    Edge(
+                        id="edge_a_to_r", condition="caller replies", target_node_id="R"
+                    )
+                ],
+            ),
+            FlowNode(
+                id="R",
+                name="R",
+                node_type="router",
+                edges=[
+                    Edge(id="edge_r_to_c", condition="route onward", target_node_id="C")
+                ],
+            ),
+            FlowNode(id="C", name="C", instruction="Say goodbye.", is_final=True),
+        ],
+    )
+
+
+@pytest.mark.anyio
+async def test_router_chain_stamps_messages_on_each_record() -> None:
+    machine = await DialogStateMachine.from_flow(
+        flow=_chain_flow(),
+        adapter=MockAdapter(["edge_a_to_r", "edge_r_to_c"]),
+    )
+
+    await machine.process_turn("hello there")
+
+    log = machine.context.transition_log
+    assert len(log) == 2, "one user turn should fire two transitions"
+
+    # First hop: triggered by the real user utterance; enters a router (no speech).
+    assert (log[0].from_node, log[0].to_node) == ("A", "R")
+    assert log[0].user_message == "hello there"
+    assert log[0].bot_message == ""
+
+    # Chained hop: auto-routed, so NO new user input; carries its own reply.
+    assert (log[1].from_node, log[1].to_node) == ("R", "C")
+    assert log[1].user_message is None
+    assert log[1].bot_message == "mock reply for C"
+    assert machine.is_complete
