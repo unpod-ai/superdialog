@@ -874,6 +874,12 @@ class ToolCallAdapter:
         valid_edge_ids = {e.id for e in (node.edges or [])}
         prompt_tokens = 0
         completion_tokens = 0
+        # Track the index of the FIRST tool call only. gpt-4.1-mini sometimes emits
+        # parallel tool calls (e.g. a real edge AND __stay_on_node__); concatenating
+        # their streamed name deltas yields a garbage edge id like
+        # "create_to_hold__stay_on_node__" → invalid → chain stops. tool_choice is a
+        # single decision, so we keep the first call and ignore any others.
+        _first_tc_index: int | None = None
 
         try:
             async for chunk in stream:
@@ -890,10 +896,15 @@ class ToolCallAdapter:
 
                 if delta.tool_calls:
                     tc = delta.tool_calls[0]
-                    fn = getattr(tc, "function", None)
-                    if fn:
-                        function_name += getattr(fn, "name", None) or ""
-                        function_args += getattr(fn, "arguments", None) or ""
+                    tc_index = getattr(tc, "index", 0) or 0
+                    if _first_tc_index is None:
+                        _first_tc_index = tc_index
+                    # Ignore deltas belonging to any parallel tool call after the first.
+                    if tc_index == _first_tc_index:
+                        fn = getattr(tc, "function", None)
+                        if fn:
+                            function_name += getattr(fn, "name", None) or ""
+                            function_args += getattr(fn, "arguments", None) or ""
 
                 # Fire early-response callback as soon as a valid edge_id is complete.
                 # Verified against node.edges so partial/hallucinated names are skipped.
