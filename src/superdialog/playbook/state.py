@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -20,10 +21,12 @@ from .events import (
     ToolResultEvent,
     UtteranceEvent,
 )
-from .models import Playbook
+from .models import Playbook, SlotSpec
 
 
 class SlotValue(BaseModel):
+    """A slot's current value plus its provenance and confirmation status."""
+
     value: Any
     status: Literal["provisional", "confirmed"]
     by: str
@@ -31,6 +34,8 @@ class SlotValue(BaseModel):
 
 
 class ToolResult(BaseModel):
+    """Stored outcome of a tool call, keyed by its `store_as` name."""
+
     tool: str
     ok: bool
     status: int | None = None
@@ -40,15 +45,20 @@ class ToolResult(BaseModel):
 
 
 class TranscriptEntry(BaseModel):
+    """One utterance in the conversation transcript."""
+
     role: str
     text: str
     version: int
 
 
 class ConversationState(BaseModel):
+    """Derived snapshot of a conversation, computed by folding the event log."""
+
     version: int = 0
     checkpoint_id: str | None = None
     checkpoint_entered_version: int = 0  # version of the AdvanceEvent that entered it
+    # Append-only audit trail of exited checkpoints (revisits duplicate).
     completed: list[str] = Field(default_factory=list)
     transcript: list[TranscriptEntry] = Field(default_factory=list)
     slots: dict[str, SlotValue] = Field(default_factory=dict)
@@ -68,6 +78,21 @@ class ConversationState(BaseModel):
     def fold(
         cls, log: EventLog, playbook: Playbook | None = None
     ) -> "ConversationState":
+        """Fold the event log into a fresh state snapshot.
+
+        Returns a snapshot whose payloads are deep-copied from events, so
+        mutating the result never aliases the log. Slot invalidation is
+        NON-TRANSITIVE (authors list the transitive closure in `invalidates`)
+        and is skipped when a write re-asserts the same value.
+        """
+        # Precompute slot specs once; first declaration wins (matches
+        # Playbook.slot_spec semantics).
+        specs: dict[str, SlotSpec] = {}
+        if playbook:
+            for journey in playbook.journeys.values():
+                for cp in journey.checkpoints:
+                    for key, slot_spec in cp.slots.items():
+                        specs.setdefault(key, slot_spec)
         s = cls()
         for e in log.replay():
             s.version = e.version
@@ -78,7 +103,7 @@ class ConversationState(BaseModel):
                 if e.role == "user":
                     s.user_turns_in_checkpoint += 1
             elif isinstance(e, SlotWriteEvent):
-                spec = playbook.slot_spec(e.key) if playbook else None
+                spec = specs.get(e.key)
                 if spec and spec.authoritative and e.by == "talker":
                     continue  # authoritative slots are Director/tool-only
                 existing = s.slots.get(e.key)
@@ -88,13 +113,18 @@ class ConversationState(BaseModel):
                     and e.status == "provisional"
                 ):
                     continue  # never downgrade
+                unchanged = existing is not None and existing.value == e.value
                 s.slots[e.key] = SlotValue(
-                    value=e.value, status=e.status, by=e.by, version=e.version
+                    value=copy.deepcopy(e.value),
+                    status=e.status,
+                    by=e.by,
+                    version=e.version,
                 )
-                if spec:
+                if spec and not unchanged:
                     for dep in spec.invalidates:
-                        s.slots.pop(dep, None)
-                        s.tool_results.pop(dep, None)
+                        if dep != e.key:
+                            s.slots.pop(dep, None)
+                            s.tool_results.pop(dep, None)
             elif isinstance(e, AdvanceEvent):
                 if e.from_checkpoint:
                     s.completed.append(e.from_checkpoint)
@@ -112,7 +142,7 @@ class ConversationState(BaseModel):
                         tool=e.tool,
                         ok=e.ok,
                         status=e.status,
-                        data=e.data,
+                        data=copy.deepcopy(e.data),
                         error=e.error,
                         version=e.version,
                     )
@@ -131,13 +161,16 @@ class ConversationState(BaseModel):
 
     # convenience used by expr judge and renderer
     def slot_value(self, key: str) -> Any:
+        """Return the slot's value, or None when the slot is unset."""
         sv = self.slots.get(key)
         return sv.value if sv else None
 
     def confirmed(self, keys: list[str]) -> bool:
+        """True when every key is filled with a confirmed value."""
         return all(
             k in self.slots and self.slots[k].status == "confirmed" for k in keys
         )
 
     def filled(self, keys: list[str]) -> bool:
+        """True when every key has a value (provisional or confirmed)."""
         return all(k in self.slots for k in keys)
