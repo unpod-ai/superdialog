@@ -1,7 +1,8 @@
 """Render the Talker's view: priority-packed, token-budgeted (design doc §3).
 
-Priority: persona -> guidance -> steering note -> slots -> computed views ->
-recent transcript (newest first) -> summary. Env lane is NEVER rendered.
+The system block (persona, guidance, steering note, slots, computed views,
+summary) is protected; only the recent transcript (packed newest-first) is
+droppable under budget pressure. Env lane is NEVER rendered.
 Guidance/say_verbatim are Jinja templates over {slots, views, results}.
 """
 
@@ -9,19 +10,27 @@ from __future__ import annotations
 
 from typing import Any
 
-from jinja2 import Environment, TemplateError, Undefined
+from jinja2 import TemplateError, Undefined
+from jinja2.sandbox import SandboxedEnvironment
 from pydantic import BaseModel, Field
 
 from .expr import ExprError, evaluate
 from .models import Playbook
 from .state import ConversationState
 
-_jinja = Environment(undefined=Undefined, autoescape=False)
+# Sandboxed: templates come from playbook artifacts (optimizer-generated),
+# so attribute-walking SSTI payloads must be blocked, not executed.
+_jinja = SandboxedEnvironment(undefined=Undefined, autoescape=False)
 
 
 def estimate_tokens(text: str) -> int:
-    """Cheap token estimate: ~4 chars per token, floor of 1."""
-    return max(1, len(text) // 4)
+    """Cheap token estimate: ~4 UTF-8 bytes per token, floor of 1.
+
+    Byte-based so non-Latin scripts (e.g. Devanagari at 3 bytes/char,
+    which also tokenizes worse) don't blow past the budget.
+    TODO: wire the real Talker tokenizer in Task 9+.
+    """
+    return max(1, len(text.encode("utf-8")) // 4)
 
 
 class RenderedView(BaseModel):
@@ -61,14 +70,16 @@ def render_template(
 ) -> str:
     """Render a Jinja template over {slots, views, results}.
 
-    ``ns`` accepts a precomputed namespace to avoid re-evaluating views.
+    Callers rendering repeatedly for the same state should pass a
+    precomputed ``ns=`` to avoid re-evaluating views on every call.
     """
     namespace = ns if ns is not None else template_namespace(pb, state)
     try:
         return _jinja.from_string(text).render(**namespace)
     except TemplateError:
-        # An authoring typo (undefined name, broken syntax) must never crash
-        # the speaking path: degrade to the raw text, which surfaces the
+        # An authoring typo (undefined name, broken syntax) or a sandbox
+        # SecurityError (a TemplateError subclass) must never crash the
+        # speaking path: degrade to the raw text, which surfaces the
         # un-rendered template in transcripts as the debugging signal.
         return text
 

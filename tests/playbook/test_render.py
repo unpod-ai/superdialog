@@ -10,7 +10,7 @@ from superdialog.playbook.events import (
     UtteranceEvent,
 )
 from superdialog.playbook.models import Playbook
-from superdialog.playbook.render import render_view
+from superdialog.playbook.render import estimate_tokens, render_view
 from superdialog.playbook.state import ConversationState
 from tests.playbook.test_models import MINIMAL_YAML
 
@@ -128,3 +128,58 @@ def test_guidance_is_jinja_rendered_with_views() -> None:
     system = view.messages[0]["content"]
     assert "09:00" in system and "Ravi" in system
     assert "{{" not in system
+
+
+def test_ssti_payloads_contained() -> None:
+    """SSTI payloads in guidance must never execute (sandboxed Jinja)."""
+    pb, state = _setup()
+    cp = pb.checkpoint("booking.collect")
+
+    cp.guidance = "{{ ''.__class__ }}"
+    view = render_view(pb, state, token_budget=10_000)
+    system = view.messages[0]["content"]
+    assert "<class" not in system  # not executed; degraded or empty
+
+    cp.guidance = (
+        "{{ cycler.__init__.__globals__.__builtins__"
+        ".__import__('os').popen('id').read() }}"
+    )
+    view = render_view(pb, state, token_budget=10_000)
+    system = view.messages[0]["content"]
+    assert "uid=" not in system  # shell command must not run
+    assert "cycler.__init__" in system  # degraded to raw template text
+
+
+def test_devanagari_budget_estimate() -> None:
+    """Byte-based estimate keeps Devanagari from voiding the token budget."""
+    assert estimate_tokens("मुझे कल सुबह दस बजे का स्लॉट चाहिए") >= 22
+
+
+def test_render_edges() -> None:
+    # (a) tiny budget: system message always survives, transcript dropped
+    pb, state = _setup()
+    view = render_view(pb, state, token_budget=1)
+    assert len(view.messages) == 1
+    assert view.messages[0]["role"] == "system"
+
+    # (b) no checkpoint: persona + grounding render, no "Current step"
+    pb2 = Playbook.from_yaml(MINIMAL_YAML)
+    state2 = ConversationState.fold(EventLog())
+    assert state2.checkpoint_id is None
+    view2 = render_view(pb2, state2, token_budget=10_000)
+    system2 = view2.messages[0]["content"]
+    assert "booking assistant" in system2  # persona
+    assert "Only state facts" in system2  # grounding rule
+    assert "Current step" not in system2
+
+    # (c) repair steering yields the "Correction" label
+    log = EventLog()
+    log.append(
+        AdvanceEvent(from_checkpoint=None, to_checkpoint="booking.collect", rule="init")
+    )
+    log.append(SteeringNoteEvent(text="Apologise for the mixup.", kind="repair"))
+    state3 = ConversationState.fold(log, playbook=pb2)
+    view3 = render_view(pb2, state3, token_budget=10_000)
+    system3 = view3.messages[0]["content"]
+    assert "Correction" in system3
+    assert "Direction" not in system3
