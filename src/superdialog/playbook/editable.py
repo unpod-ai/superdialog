@@ -20,6 +20,7 @@ from pydantic import BaseModel
 # safe load — it cannot construct arbitrary Python objects — and mirrors
 # what Playbook.from_yaml itself does.
 from .models import Playbook, _YamlLoader
+from .simple import is_simple_playbook, simple_to_playbook
 
 
 class MutationError(ValueError):
@@ -142,3 +143,80 @@ def _set_full(doc: dict[str, Any], address: str, value: str | list[str]) -> None
         cp["advance_when"][int(rule_match.group(1))]["when"] = value
         return
     cp[rest[0]] = value
+
+
+class SimpleDoc:
+    """Editable view over a simple-format playbook document."""
+
+    def __init__(self, doc: dict[str, Any]) -> None:
+        self._doc = doc
+        self.compile()  # validate eagerly
+
+    @classmethod
+    def from_text(cls, text: str) -> "SimpleDoc":
+        """Parse simple-format YAML/JSON text (same loader as load_simple)."""
+        return cls(yaml.safe_load(text))
+
+    def compile(self) -> Playbook:
+        """Lower to the validated runtime Playbook."""
+        return simple_to_playbook(self._doc)
+
+    def emit(self) -> str:
+        """Serialize back to simple-format YAML, preserving key order."""
+        return yaml.safe_dump(self._doc, sort_keys=False, allow_unicode=True)
+
+    def fields(self) -> list[FieldRef]:
+        """Enumerate the simple-format prose whitelist."""
+        persona = self._doc.get("persona") or {}
+        refs = [
+            FieldRef(address="opening", text=self._doc.get("opening", "")),
+            FieldRef(address="closing", text=self._doc.get("closing", "")),
+            FieldRef(address="persona.identity", text=persona.get("identity", "")),
+            FieldRef(
+                address="persona.voice_style", text=persona.get("voice_style", "")
+            ),
+        ]
+        for step in self._doc.get("playbook", []):
+            base = f"steps.{step['id']}"
+            refs.append(FieldRef(address=f"{base}.say", text=step.get("say", "")))
+            refs.append(
+                FieldRef(address=f"{base}.done_when", text=step.get("done_when", ""))
+            )
+            refs.append(
+                FieldRef(address=f"{base}.purpose", text=step.get("purpose", ""))
+            )
+        return refs
+
+    def apply(self, edits: list[Edit]) -> "SimpleDoc":
+        """Return a new SimpleDoc with edits applied; reject frozen addresses."""
+        allowed = {f.address: f.text for f in self.fields()}
+        new = copy.deepcopy(self._doc)
+        for edit in edits:
+            if edit.address not in allowed:
+                raise MutationError(f"address not editable: {edit.address}")
+            _check_payload(edit, allowed[edit.address])
+            _set_simple(new, edit.address, edit.new_text)
+        return SimpleDoc(new)
+
+
+def _set_simple(doc: dict[str, Any], address: str, value: str | list[str]) -> None:
+    """Write `value` at a (pre-validated) SimpleDoc address inside the dict."""
+    if address.startswith("steps."):
+        _, step_id, field = address.split(".")
+        step = next(s for s in doc["playbook"] if s["id"] == step_id)
+        step[field] = value
+    elif address.startswith("persona."):
+        doc.setdefault("persona", {})[address.split(".", 1)[1]] = value
+    else:
+        doc[address] = value
+
+
+EditableDoc = FullDoc | SimpleDoc
+
+
+def make_editable(text: str) -> EditableDoc:
+    """Detect the source format and wrap it in the matching editable doc."""
+    probe = yaml.safe_load(text)
+    if is_simple_playbook(probe):
+        return SimpleDoc(probe)
+    return FullDoc.from_text(text)

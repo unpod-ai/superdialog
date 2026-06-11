@@ -1,9 +1,17 @@
 """Tests for the EditableDoc abstraction (FullDoc / SimpleDoc)."""
 
 import pytest
+import yaml as _yaml
 
-from superdialog.playbook.editable import Edit, FullDoc, MutationError
+from superdialog.playbook.editable import (
+    Edit,
+    FullDoc,
+    MutationError,
+    SimpleDoc,
+    make_editable,
+)
 from tests.playbook.test_models import MINIMAL_YAML
+from tests.playbook.test_simple import SIMPLE
 
 _GUIDANCE = "journeys.booking.checkpoints.collect.guidance"
 
@@ -80,3 +88,60 @@ def test_pipeline_on_keys_survive_the_round_trip() -> None:
     doc = FullDoc.from_text(MINIMAL_YAML)
     reparsed = FullDoc.from_text(doc.emit())
     assert reparsed.compile().pipeline("confirm_and_hold").steps[0].on
+
+
+def test_simple_fields_enumerate_step_and_persona_prose() -> None:
+    doc = SimpleDoc.from_text(SIMPLE)
+    addrs = {f.address for f in doc.fields()}
+    assert {
+        "opening",
+        "closing",
+        "persona.identity",
+        "persona.voice_style",
+        "steps.collect.say",
+        "steps.collect.done_when",
+        "steps.collect.purpose",
+    } <= addrs
+    # reference data is frozen
+    assert not any(
+        a.startswith(("facts", "objections", "boundaries", "fallback_actions"))
+        for a in addrs
+    )
+
+
+def test_simple_apply_recompiles_and_emits_simple_format() -> None:
+    doc = SimpleDoc.from_text(SIMPLE)
+    edited = doc.apply(
+        [Edit(address="steps.collect.say", new_text="Warmly ask their name.")]
+    )
+    cp = edited.compile().checkpoint("main.collect")
+    assert cp.guidance == "Warmly ask their name."
+    out = _yaml.safe_load(edited.emit())
+    assert "playbook" in out and "journeys" not in out  # still simple format
+
+
+def test_simple_facts_survive_prose_edits() -> None:
+    doc = SimpleDoc.from_text(SIMPLE)
+    edited = doc.apply(
+        [Edit(address="persona.voice_style", new_text="Bubbly and quick.")]
+    )
+    persona = edited.compile().persona
+    assert "₹400" in persona  # canonical pricing intact
+    assert "NEVER invent prices" in persona  # boundaries intact
+
+
+def test_simple_apply_rejects_frozen_addresses() -> None:
+    doc = SimpleDoc.from_text(SIMPLE)
+    for bad in (
+        "facts.canonical_pricing.haircut",
+        "boundaries",
+        "steps.collect.collect",
+        "steps.nope.say",
+    ):
+        with pytest.raises(MutationError):
+            doc.apply([Edit(address=bad, new_text="x")])
+
+
+def test_make_editable_routes_by_format() -> None:
+    assert isinstance(make_editable(SIMPLE), SimpleDoc)
+    assert isinstance(make_editable(MINIMAL_YAML), FullDoc)
