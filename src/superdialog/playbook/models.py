@@ -216,6 +216,12 @@ class Playbook(BaseModel):
         tool_seen: set[str] = set()
         for t in self.tools:
             need_unique(tool_seen, t.id, "tools")
+            # "pipeline" is the runtime's reserved result key gating the
+            # pipeline.ok/pipeline.failed expr namespace — never clobber it.
+            if t.store_response_as == "pipeline":
+                raise ValueError(
+                    f"tool {t.id!r}: store_response_as 'pipeline' is reserved"
+                )
         pipe_seen: set[str] = set()
         for p in self.pipelines:
             need_unique(pipe_seen, p.id, "pipelines")

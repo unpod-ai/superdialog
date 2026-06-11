@@ -185,3 +185,11 @@ def test_dotted_journey_name_rejected() -> None:
                         terminal: true
             """)
         )
+
+
+def test_reserved_pipeline_store_key_rejected() -> None:
+    bad = MINIMAL_YAML.replace(
+        "store_response_as: hold_result", "store_response_as: pipeline"
+    )
+    with pytest.raises(ValueError, match="reserved"):
+        Playbook.from_yaml(bad)
