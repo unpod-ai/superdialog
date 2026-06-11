@@ -81,7 +81,7 @@ async def main() -> None:
         print(hint)
         return
     agent = _build_agent(model)
-    print(f"Glow Studio booking demo on {model} — type 'quit' to exit.")
+    print(f"Lumina Spa booking demo on {model} — type 'quit' to exit.")
     print("Try: hi, I'm Sam — can I get a haircut next Friday?")
 
     while True:

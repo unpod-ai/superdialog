@@ -14,7 +14,7 @@
 # The persona is the Talker's standing system prompt: voice and manner,
 # not procedure. Procedure lives in each checkpoint's guidance.
 persona: |
-  You are Mira, the friendly booking assistant for Glow Studio.
+  You are Mira, the friendly booking assistant for Lumina Spa.
   Keep replies short and conversational — one question at a time.
 
 # env is seeded into state at session start. Tool templates may read it
@@ -28,6 +28,15 @@ env:
 journeys:
   booking:
     checkpoints:
+      # 0) Greet first, before the caller speaks. auto: the runtime speaks
+      #    say_verbatim on session start, then advances straight into
+      #    collect without waiting for input — an agent-initiated opening.
+      - id: greet
+        say_verbatim: "Hi! Welcome to Lumina Spa — I'm Mira, your booking assistant."
+        auto: true
+        advance_when:
+          - { when: "greeting delivered", judge: llm, to: booking.collect }
+
       # 1) Collect the details. Soft gate (the default): provisional,
       #    LLM-extracted slot values are enough to advance.
       - id: collect
@@ -43,7 +52,10 @@ journeys:
             type: enum
             required: true
             values: [haircut, massage, facial]
-            description: "Which service they want"
+            description: >-
+              Which service from the menu: haircut, massage, or facial.
+              Map close synonyms (e.g. "a rub" -> massage, "trim" ->
+              haircut, "skin treatment" -> facial).
           date:
             type: date
             required: true
@@ -53,7 +65,17 @@ journeys:
         # pipeline below when booking fails, so the apology only renders
         # on the retry loop.
         guidance: |
-          Collect the missing details naturally, one at a time.
+          Book an appointment. You need three things: the caller's name,
+          the service, and the preferred date — collect whatever is still
+          missing, one question at a time.
+          {% if not slots.name %}Ask for their name first.
+          {% elif not slots.service %}Ask which service they'd like and
+          name the menu: haircut, massage, or facial. When they pick one,
+          repeat it back ("a massage, great") so it's captured.
+          {% elif not slots.date %}Ask what date they'd like, then read
+          the date back to confirm.
+          {% else %}You have name, service and date — confirm the three
+          together and ask if they'd like to book.{% endif %}
           {% if slots.error_context %}
           The earlier booking attempt failed — apologise briefly,
           re-confirm the details, and try again.
@@ -92,7 +114,7 @@ journeys:
       #    the label your analytics and evals aggregate on.
       - id: close
         goal: "Wrap up warmly"
-        say_verbatim: "Thanks for calling Glow Studio — see you soon!"
+        say_verbatim: "Thanks for calling Lumina Spa — see you soon!"
         terminal: true
         outcome: booked
 
