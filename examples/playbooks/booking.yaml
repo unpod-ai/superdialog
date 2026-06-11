@@ -1,0 +1,154 @@
+# booking.yaml — a complete, runnable appointment-booking Playbook.
+#
+# A Playbook declares the conversation as CHECKPOINTS (goals that gate
+# outcomes, never utterances) plus a process layer: tools, pipelines,
+# interrupts, policies. At runtime a fast Talker LLM streams every spoken
+# turn while the async Director extracts slots, judges advance rules, and
+# runs tools — all over an append-only event log.
+#
+# Load it:   from superdialog.playbook import Playbook
+#            pb = Playbook.load("examples/playbooks/booking.yaml")
+# Drive it:  uv run python examples/playbook_quickstart.py
+# Docs:      src/superdialog/playbook/README.md
+
+# The persona is the Talker's standing system prompt: voice and manner,
+# not procedure. Procedure lives in each checkpoint's guidance.
+persona: |
+  You are Mira, the friendly booking assistant for Glow Studio.
+  Keep replies short and conversational — one question at a time.
+
+# env is seeded into state at session start. Tool templates may read it
+# as {{ env.X }}; the Talker NEVER sees env, so secrets stay out of speech.
+env:
+  # httpbin echoes whatever we POST, so the demo books "for real" without
+  # a backend. Point this at your actual API to go live.
+  API_BASE_URL: "https://httpbin.org/anything"
+  API_TOKEN: "demo-token-not-a-secret"
+
+journeys:
+  booking:
+    checkpoints:
+      # 1) Collect the details. Soft gate (the default): provisional,
+      #    LLM-extracted slot values are enough to advance.
+      - id: collect
+        goal: "Have the caller's name, service, and preferred date"
+        slots:
+          # Typed slots: the Director casts what it extracts; values that
+          # fail the cast (or miss the enum) are skipped, never stored.
+          name:
+            type: str
+            required: true
+            description: "Caller's first name"
+          service:
+            type: enum
+            required: true
+            values: [haircut, massage, facial]
+            description: "Which service they want"
+          date:
+            type: date
+            required: true
+            description: "Preferred appointment date"
+        # Guidance is procedure for the Talker — a Jinja template over
+        # {slots, views, results}. error_context is written by the
+        # pipeline below when booking fails, so the apology only renders
+        # on the retry loop.
+        guidance: |
+          Collect the missing details naturally, one at a time.
+          {% if slots.error_context %}
+          The earlier booking attempt failed — apologise briefly,
+          re-confirm the details, and try again.
+          {% endif %}
+        never_say: ["prices or discounts — the desk handles billing"]
+        advance_when:
+          # judge: llm — the Director reads the transcript and decides.
+          # requires: the rule cannot fire until these slots are filled,
+          # however confident the judge is.
+          - when: "caller has given name, service and date and agrees to book"
+            judge: llm
+            to: booking.confirm
+            requires: [name, service, date]
+
+      # 2) Book it. HARD gate: the Talker barriers on the Director (a
+      #    filler line covers the wait) so it can never claim success
+      #    before the pipeline result is in; any rule `requires` here
+      #    would demand CONFIRMED slots, not provisional ones.
+      - id: confirm
+        goal: "Create the booking and confirm it to the caller"
+        gate: hard
+        # The pipeline runs on entry; the expr rule routes on its result.
+        pipeline: book_appointment
+        # say_verbatim bypasses the Talker LLM entirely — the caller hears
+        # exactly this line (same Jinja namespace as guidance).
+        say_verbatim: >-
+          All set, {{ slots.name }} — your {{ slots.service }} is booked
+          for {{ slots.date }}.
+        advance_when:
+          # judge: expr — deterministic, LLM-free routing on tool results.
+          - { when: "pipeline.ok", judge: expr, to: booking.close }
+          # No `pipeline.failed` rule needed: failures retry inside the
+          # pipeline and route back to collect on exhaust (see below).
+
+      # 3) Terminal checkpoints end the session and stamp an outcome —
+      #    the label your analytics and evals aggregate on.
+      - id: close
+        goal: "Wrap up warmly"
+        say_verbatim: "Thanks for calling Glow Studio — see you soon!"
+        terminal: true
+        outcome: booked
+
+      - id: abandon
+        goal: "End politely without a booking"
+        say_verbatim: "No problem — call back any time. Goodbye!"
+        terminal: true
+        outcome: abandoned
+
+# Tools are Director-side side effects. Templates render over
+# {slots, env, results} in a Jinja sandbox; secret-shaped headers and
+# query params are redacted before the event log records the call.
+tools:
+  - id: create_booking
+    type: http
+    method: POST
+    url: "{{ env.API_BASE_URL }}/appointments"
+    headers:
+      Authorization: "Bearer {{ env.API_TOKEN }}"
+    body:
+      name: "{{ slots.name }}"
+      service: "{{ slots.service }}"
+      date: "{{ slots.date }}"
+    # The response lands in results.booking_result for exprs and templates.
+    store_response_as: booking_result
+    timeout: 10
+
+# Pipelines run tools in order and route on typed results
+# (ok | failed | http_<code>).
+pipelines:
+  - id: book_appointment
+    steps:
+      - tool: create_booking
+        on:
+          ok: continue # 2xx → next step (none left) → pipeline.ok
+          # Anything else: retry once, then give up and route back to
+          # collect. Retry-exhaust also writes slots.error_context, which
+          # collect's guidance uses to apologise.
+          failed: { retry: 1, on_exhaust: booking.collect }
+
+# Interrupts are journey-independent exits the Director may take from any
+# checkpoint — here, a clean goodbye instead of a dead-air hangup.
+interrupts:
+  - id: goodbye
+    when: "caller clearly wants to stop, cancel, or says goodbye"
+    judge: llm
+    to: booking.abandon
+    resume: false
+
+# Policies are LLM-free runtime behaviours. Silence fires when the host
+# feeds runtime.on_external(ExternalEvent(kind="silence", name="user_silence")):
+# prompts are spoken in order, then the session routes to `then`.
+policies:
+  silence:
+    max_prompts: 2
+    prompts:
+      - "Are you still there?"
+      - "I'll wrap up if now is a bad time."
+    then: booking.abandon

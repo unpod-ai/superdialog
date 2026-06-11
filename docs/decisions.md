@@ -1,4 +1,4 @@
-why# SuperDialog — Decisions
+# SuperDialog — Decisions
 
 **Status:** Canonical for the SuperDialog product
 **Parent:** [README.md](README.md)
@@ -98,3 +98,63 @@ stricter floor).
 - Embedding guides: [03-embedding-guides.md](03-embedding-guides.md)
 - Voice Infra (the other product): [../voice-infra/](../voice-infra/)
 - Strategic framing: [../00-two-products.md](../00-two-products.md)
+
+---
+
+## 6. Decision records
+
+### 2026-06-12 — Checkpoint compound architecture (Playbook engine)
+
+**Context.** The graph-railed state machine alone cannot deliver fluid
+conversations: users do not follow graphs, and flexibility had accumulated as
+~6 stacked escape hatches (`__stay_on_node__`, global edges + intent stack,
+`allow_skip`, fallback edges, smart-skip, auto-proceed chains), each patching
+one failure mode and interacting subtly with the rest. Every turn cost two
+serial LLM calls (route, then speak), so streaming was cosmetic — the user
+waited for both calls before hearing anything. Info extraction was split
+across multiple mechanisms with no unified schema. Design rationale:
+[plans/2026-06-10-checkpoint-compound-architecture-design.md](plans/2026-06-10-checkpoint-compound-architecture-design.md).
+
+**Decision.** Ship a second engine, `superdialog.playbook`:
+
+- A declarative **Playbook** artifact (YAML/JSON or Python): journeys of
+  checkpoints — goal, typed slots, guidance, ordered `advance_when` rules —
+  plus a process layer (tools, pipelines, handlers, interrupts, policies).
+  Checkpoints gate **outcomes, not utterances**.
+- A **Talker/Director compound runtime**: a fast Talker streams every spoken
+  turn with one LLM call; an async Director extracts slots, judges
+  advancement, runs tools, and writes steering/repair notes. Soft checkpoints
+  never block; hard gates barrier the Talker until the Director settles.
+- An **event-sourced log** (`EventLog` → `ConversationState` fold) as the
+  single source of truth — also the audit, replay, and eval artifact.
+- `PlaybookAgent` implements the existing `Agent` protocol, so SessionWorker
+  and all host adapters run playbooks unchanged.
+- The legacy machine (`superdialog.machine`, DialogMachine) stays **fully
+  supported in maintenance**; `compile_flow` + `coverage_report` convert
+  existing flow JSON into playbooks (validated against a 61-node production
+  booking flow) for migration when teams choose to move.
+
+**Consequences.**
+
+- Real token streaming, barge-in safe — TTFT is one fast model's TTFT, not
+  route-then-speak.
+- Exactly one LLM call on the speech path; judgment and tools move off the
+  critical path into the Director.
+- The event log becomes a replay/eval substrate (`replay`, `run_session`,
+  `run_eval`) — recorded sessions re-run against changed prompts or code.
+- Two engines to document and support; positioning must be explicit (flows
+  keep working, playbooks are where new investment goes).
+- The `superdialog optimize` command (run → eval → improve loop over playbook
+  artifacts) is **deferred** — the event log and eval bridge are the
+  substrate for it, but the command does not exist yet.
+
+**Alternatives considered.**
+
+- *Patch the machine further* (a seventh escape hatch, smarter routing
+  prompts) — **rejected**: the foundation is too rigid; each patch increased
+  the interaction surface between the existing six and none removed the two
+  serial calls from the speech path.
+- *Full agent-harness free-for-all* (drop structure, let one agentic LLM
+  loop with tools) — **rejected**: no outcome gating. Business conversations
+  need typed extraction, gated irreversible steps, and auditable progression
+  — exactly what checkpoints keep and a free-running agent gives up.
