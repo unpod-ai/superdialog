@@ -137,9 +137,7 @@ def test_flow_generate_default_output_is_flow_json(tmp_path, monkeypatch, capsys
     mock_flow = _make_mock_flow()
 
     with (
-        patch.object(
-            _cli_main_module, "create_dialog_flow", new_callable=MagicMock
-        ) as mock_create,
+        patch.object(_cli_main_module, "create_dialog_flow", new_callable=MagicMock),
         patch("asyncio.run", return_value=mock_flow),
     ):
         rc = main(["flow", "generate", "A simple agent"])
@@ -347,7 +345,7 @@ def test_generate_runs_lint_and_prints_issues(
         patch("superdialog.cli.main.asyncio") as mock_asyncio,
     ):
         mock_asyncio.run.return_value = broken_flow
-        rc = main(["flow", "generate", "test prompt", "--output", output_file])
+        main(["flow", "generate", "test prompt", "--output", output_file])
 
     out = capsys.readouterr().out
     assert "Lint warnings" in out
@@ -390,7 +388,117 @@ def test_generate_prints_lint_ok_when_clean(
         patch("superdialog.cli.main.asyncio") as mock_asyncio,
     ):
         mock_asyncio.run.return_value = clean_flow
-        rc = main(["flow", "generate", "test prompt", "--output", output_file])
+        main(["flow", "generate", "test prompt", "--output", output_file])
 
     out = capsys.readouterr().out
     assert "Lint: OK" in out
+
+
+# -- playbook detection / dispatch -------------------------------------------
+
+_MINIMAL_PLAYBOOK = """\
+persona: "You are a tiny demo agent."
+journeys:
+  demo:
+    checkpoints:
+      - id: done
+        terminal: true
+        outcome: finished
+"""
+
+
+def _write_playbook(tmp_path: Path) -> Path:
+    path = tmp_path / "play.yaml"
+    path.write_text(_MINIMAL_PLAYBOOK)
+    return path
+
+
+def test_chat_detects_playbook(tmp_path: Path) -> None:
+    """A --flow path whose content has top-level 'journeys' runs the playbook."""
+    path = _write_playbook(tmp_path)
+
+    with (
+        patch.object(_cli_main_module, "_run_playbook_repl") as mock_play,
+        patch.object(_cli_main_module, "_run_chat_repl") as mock_flow,
+    ):
+        rc = main(["chat", "--flow", str(path)])
+
+    assert rc == 0
+    mock_flow.assert_not_called()
+    mock_play.assert_called_once()
+    assert mock_play.call_args[0][0] == str(path)
+
+
+def test_chat_explicit_playbook_flag(tmp_path: Path) -> None:
+    """--playbook PATH runs the playbook REPL with that path."""
+    path = _write_playbook(tmp_path)
+
+    with (
+        patch.object(_cli_main_module, "_run_playbook_repl") as mock_play,
+        patch.object(_cli_main_module, "_run_chat_repl") as mock_flow,
+    ):
+        rc = main(["chat", "--playbook", str(path)])
+
+    assert rc == 0
+    mock_flow.assert_not_called()
+    mock_play.assert_called_once()
+    assert mock_play.call_args[0][0] == str(path)
+
+
+def test_chat_still_runs_flow(tmp_path: Path) -> None:
+    """A flow JSON (nodes/initial_node) via --flow runs the DialogMachine REPL."""
+    flow_data = {
+        "id": "t",
+        "system_prompt": "s",
+        "initial_node": "n",
+        "nodes": [{"id": "n", "name": "N", "edges": [], "is_final": True}],
+    }
+    flow_file = tmp_path / "flow.json"
+    flow_file.write_text(json.dumps(flow_data))
+
+    with (
+        patch.object(_cli_main_module, "_run_playbook_repl") as mock_play,
+        patch.object(_cli_main_module, "_run_chat_repl") as mock_flow,
+    ):
+        rc = main(["chat", "--flow", str(flow_file)])
+
+    assert rc == 0
+    mock_play.assert_not_called()
+    mock_flow.assert_called_once()
+    assert isinstance(mock_flow.call_args[0][0], Flow)
+
+
+def test_chat_missing_playbook_file(
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """--playbook with a missing path exits 1 with a helpful message."""
+    rc = main(["chat", "--playbook", "/nope.yaml"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "/nope.yaml" in err
+
+
+def test_chat_malformed_playbook_exits_clean(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """A file with 'journeys' but an invalid schema exits 1, no traceback."""
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("journeys: not-a-dict\n")  # detected as playbook, fails to load
+    with patch.object(_cli_main_module, "_run_playbook_repl") as mock_play:
+        rc = main(["chat", "--flow", str(bad)])
+    assert rc == 1
+    mock_play.assert_not_called()
+    assert "Invalid playbook" in capsys.readouterr().err
+
+
+def test_chat_malformed_flow_exits_clean(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """Malformed flow JSON exits 1 with a clean message, not a traceback."""
+    bad = tmp_path / "f.json"
+    bad.write_text("{not json")
+    with patch.object(_cli_main_module, "_run_chat_repl") as mock_flow:
+        rc = main(["chat", "--flow", str(bad)])
+    assert rc == 1
+    mock_flow.assert_not_called()
+    assert "Could not load flow" in capsys.readouterr().err

@@ -30,7 +30,12 @@ from typing import Any, AsyncIterator, cast
 import anyio
 
 from superdialog.llm.litellm_provider import LitellmProvider
-from superdialog.playbook import Playbook, PlaybookAgent, httpx_http
+from superdialog.playbook import (
+    Playbook,
+    PlaybookAgent,
+    httpx_http,
+    provider_adapters,
+)
 from superdialog.stream import StreamChunk
 
 PLAYBOOK_PATH = Path(__file__).parent / "playbooks" / "booking.yaml"
@@ -42,30 +47,6 @@ _KEY_ENV = {
     "gemini": "GEMINI_API_KEY",
     "groq": "GROQ_API_KEY",
 }
-
-
-class DirectorLLM:
-    """``CompletesLLM`` adapter: one plain-text completion per verdict."""
-
-    def __init__(self, provider: LitellmProvider) -> None:
-        self._provider = provider
-
-    async def complete(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
-        return (await self._provider.complete(list(messages))).text
-
-
-class TalkerLLM:
-    """``StreamsLLM`` adapter: yield raw text tokens from the provider."""
-
-    def __init__(self, provider: LitellmProvider) -> None:
-        self._provider = provider
-
-    async def stream(
-        self, messages: list[dict[str, str]], **kwargs: Any
-    ) -> AsyncIterator[str]:
-        async for chunk in self._provider.stream(list(messages)):
-            if chunk.text:
-                yield chunk.text
 
 
 def _missing_key_hint(model: str) -> str | None:
@@ -84,10 +65,11 @@ def _missing_key_hint(model: str) -> str | None:
 
 def _build_agent(model: str) -> PlaybookAgent:
     provider = LitellmProvider(model)
+    director, talker = provider_adapters(provider)
     return PlaybookAgent(
         playbook=Playbook.load(str(PLAYBOOK_PATH)),
-        talker_llm=TalkerLLM(provider),
-        director_llm=DirectorLLM(provider),
+        talker_llm=talker,
+        director_llm=director,
         http=httpx_http,  # the booking pipeline makes real HTTP calls
     )
 

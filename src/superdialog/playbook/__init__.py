@@ -12,6 +12,7 @@ from .eval_bridge import (
 )
 from .events import EventLog
 from .models import Playbook
+from .providers import ProviderDirector, ProviderTalker, provider_adapters
 from .replay import ReplayReport, replay
 from .state import ConversationState
 from .talker import StreamsLLM
@@ -26,6 +27,8 @@ __all__ = [
     "PersonaSpec",
     "Playbook",
     "PlaybookAgent",
+    "ProviderDirector",
+    "ProviderTalker",
     "PythonToolFn",
     "ReplayReport",
     "SessionMetrics",
@@ -33,6 +36,7 @@ __all__ = [
     "compile_flow",
     "coverage_report",
     "httpx_http",
+    "provider_adapters",
     "replay",
     "run_eval",
     "run_session",

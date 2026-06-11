@@ -13,11 +13,13 @@ import asyncio
 import sys
 import time
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, AsyncIterator, Sequence, cast
 
+import yaml
 from dotenv import load_dotenv
 
 from .. import DialogMachine, Flow, create_dialog_flow
+from ..stream import StreamChunk
 
 
 def _run_chat_repl(flow: "Flow", llm: str, adapter: str = "llm") -> None:
@@ -50,9 +52,82 @@ def _run_chat_repl(flow: "Flow", llm: str, adapter: str = "llm") -> None:
     asyncio.run(_loop())
 
 
+def _looks_like_playbook(path: str) -> bool:
+    """True when ``path`` parses to a mapping carrying a top-level 'journeys'.
+
+    Tolerant by design: any read/parse failure means "not a playbook" so the
+    caller falls back to the flow loader, which then reports the real error.
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+        doc = yaml.safe_load(text)
+    except (OSError, yaml.YAMLError):
+        return False
+    return isinstance(doc, dict) and "journeys" in doc
+
+
+def _run_playbook_repl(playbook_path: str, llm: str) -> None:
+    """Blocking interactive REPL driving a Playbook. Separated for testability.
+
+    One model drives both the Director and the Talker here — fine for a dev
+    REPL. Production splits them (a cheap streaming Talker, a stronger
+    Director); see :func:`superdialog.playbook.provider_adapters`.
+    """
+    from ..llm.resolver import resolve_llm
+    from ..playbook import Playbook, PlaybookAgent, httpx_http, provider_adapters
+
+    provider = resolve_llm(llm)
+    director, talker = provider_adapters(provider)
+    agent = PlaybookAgent(
+        playbook=Playbook.load(playbook_path),
+        talker_llm=talker,
+        director_llm=director,
+        http=httpx_http,
+    )
+
+    async def _loop() -> None:
+        for line in await agent.runtime.start():
+            print(line)
+        while True:
+            try:
+                user = input("> ")
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return
+            if user.strip() in {"quit", "exit"}:
+                return
+            if not user.strip():
+                continue
+            chunks = cast(
+                AsyncIterator[StreamChunk], await agent.turn(user, stream=True)
+            )
+            async for chunk in chunks:
+                if chunk.text:
+                    print(chunk.text, end="", flush=True)
+            print()
+            state = agent.runtime.state
+            print(
+                f"[checkpoint={state.checkpoint_id} ended={state.ended}]",
+                file=sys.stderr,
+            )
+            if state.ended:
+                return
+
+    asyncio.run(_loop())
+
+
 def _cmd_chat(args: argparse.Namespace) -> int:
-    """Interactive REPL: auto-detect flow.json in cwd or use --flow path."""
+    """Interactive REPL over a flow or a playbook (auto-detected or explicit)."""
     load_dotenv()
+
+    llm = getattr(args, "llm", "openai/gpt-4o-mini") or "openai/gpt-4o-mini"
+
+    playbook_path = getattr(args, "playbook", None)
+    if playbook_path:
+        if not Path(playbook_path).exists():
+            print(f"No playbook found at: {playbook_path}", file=sys.stderr)
+            return 1
+        return _chat_playbook(playbook_path, llm)
 
     flow_path = getattr(args, "flow", "flow.json") or "flow.json"
     if not Path(flow_path).exists():
@@ -63,10 +138,29 @@ def _cmd_chat(args: argparse.Namespace) -> int:
         )
         return 1
 
-    flow = Flow.load(flow_path)
-    llm = getattr(args, "llm", "openai/gpt-4o-mini") or "openai/gpt-4o-mini"
+    if _looks_like_playbook(flow_path):
+        return _chat_playbook(flow_path, llm)
+
+    try:
+        flow = Flow.load(flow_path)
+    except Exception as exc:  # malformed JSON / schema -> clean exit, no traceback
+        print(f"Could not load flow {flow_path}: {exc}", file=sys.stderr)
+        return 1
     adapter = getattr(args, "adapter", "llm") or "llm"
     _run_chat_repl(flow, llm, adapter)
+    return 0
+
+
+def _chat_playbook(path: str, llm: str) -> int:
+    """Validate-load a playbook (clean error on failure) then run its REPL."""
+    from ..playbook import Playbook
+
+    try:
+        Playbook.load(path)  # pre-flight: surface schema errors as one line
+    except Exception as exc:
+        print(f"Invalid playbook {path}: {exc}", file=sys.stderr)
+        return 1
+    _run_playbook_repl(path, llm)
     return 0
 
 
@@ -191,11 +285,17 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="superdialog")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    chat = sub.add_parser("chat", help="Interactive REPL against a flow")
+    chat = sub.add_parser("chat", help="Interactive REPL against a flow or playbook")
     chat.add_argument(
         "--flow",
         default="flow.json",
-        help="Path to flow JSON (default: ./flow.json)",
+        help="Path to flow JSON (default: ./flow.json); a YAML/JSON file with "
+        "a top-level 'journeys' key is auto-detected as a playbook",
+    )
+    chat.add_argument(
+        "--playbook",
+        default=None,
+        help="Path to a playbook (YAML/JSON); forces the playbook REPL",
     )
     chat.add_argument("--llm", default="openai/gpt-4o-mini")
     chat.add_argument(
