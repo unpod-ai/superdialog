@@ -1,0 +1,145 @@
+"""Simple authoring format -> Playbook compiler.
+
+The simple format is a human-friendly surface for authoring playbooks: prose
+steps, a nested persona, and reference data (facts/objections/boundaries/
+fallbacks). `simple_to_playbook` lowers it to the validated `Playbook` runtime
+artifact, the same way `compile_flow` lowers legacy flows.
+
+Facts, objections, boundaries, fallbacks, and the closing line are folded into
+ONE rich `persona` string. The Talker sees `persona` every turn but the `env`
+lane is never rendered to it, so this reference material must live in persona —
+NOT env — to stay visible during speech.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+import yaml
+from pydantic import BaseModel, Field
+
+from .models import AdvanceRule, Checkpoint, Journey, Playbook, SlotSpec
+
+
+class SimplePersona(BaseModel):
+    name: str = ""
+    language: str = ""
+    voice_style: str = ""
+    identity: str = ""
+
+
+class SimpleStep(BaseModel):
+    id: str
+    purpose: str = ""
+    say: str = ""
+    collect: list[str] = Field(default_factory=list)
+    done_when: str = ""
+
+
+class SimpleObjection(BaseModel):
+    trigger: str
+    handle: str
+
+
+class SimplePlaybook(BaseModel):
+    name: str = ""
+    goal: str = ""
+    persona: SimplePersona = Field(default_factory=SimplePersona)
+    opening: str = ""
+    closing: str = ""
+    playbook: list[SimpleStep] = Field(min_length=1)
+    facts: dict[str, Any] = Field(default_factory=dict)
+    objections: list[SimpleObjection] = Field(default_factory=list)
+    boundaries: list[str] = Field(default_factory=list)
+    fallback_actions: dict[str, str] = Field(default_factory=dict)
+
+
+def is_simple_playbook(doc: Any) -> bool:
+    """True when ``doc`` is a simple playbook: top-level ``playbook`` is a list."""
+    return (
+        isinstance(doc, dict)
+        and isinstance(doc.get("playbook"), list)
+        and len(doc["playbook"]) > 0
+    )
+
+
+def _build_persona(sp: SimplePlaybook) -> str:
+    parts: list[str] = []
+    if sp.persona.identity.strip():
+        parts.append(sp.persona.identity.strip())
+    if sp.persona.voice_style.strip():
+        parts.append(f"Voice & manner: {sp.persona.voice_style.strip()}")
+    if sp.goal.strip():
+        parts.append(f"Overall goal: {sp.goal.strip()}")
+    if sp.facts:
+        dumped = yaml.safe_dump(sp.facts, sort_keys=False, allow_unicode=True)
+        parts.append(
+            "## Reference facts (never invent beyond these)\n" + dumped.strip()
+        )
+    if sp.objections:
+        bullets = "\n".join(
+            f"- If {o.trigger} -> {o.handle.strip()}" for o in sp.objections
+        )
+        parts.append("## Objection handling\n" + bullets)
+    if sp.boundaries:
+        bullets = "\n".join(f"- {b}" for b in sp.boundaries)
+        parts.append("## Hard boundaries\n" + bullets)
+    if sp.fallback_actions:
+        bullets = "\n".join(f"- {k}: {v}" for k, v in sp.fallback_actions.items())
+        parts.append("## Fallback actions\n" + bullets)
+    if sp.closing.strip():
+        parts.append("## Closing line\n" + sp.closing.strip())
+    return "\n\n".join(parts)
+
+
+def _step_to_checkpoint(
+    step: SimpleStep, next_id: str | None, opening: str
+) -> Checkpoint:
+    guidance = step.say.strip() or opening.strip()
+    slots = {c: SlotSpec(type="str", description="") for c in step.collect}
+    if next_id is None:
+        return Checkpoint(
+            id=step.id,
+            goal=step.purpose,
+            guidance=guidance,
+            slots=slots,
+            terminal=True,
+            outcome="closed",
+        )
+    rule = AdvanceRule(
+        when=step.done_when.strip() or "step complete",
+        judge="llm",
+        to=next_id,
+        requires=list(step.collect),
+    )
+    return Checkpoint(
+        id=step.id,
+        goal=step.purpose,
+        guidance=guidance,
+        slots=slots,
+        advance_when=[rule],
+    )
+
+
+def simple_to_playbook(doc: dict[str, Any]) -> Playbook:
+    """Compile a simple-format dict into a validated ``Playbook``."""
+    sp = SimplePlaybook.model_validate(doc)
+    checkpoints: list[Checkpoint] = []
+    for i, step in enumerate(sp.playbook):
+        is_last = i == len(sp.playbook) - 1
+        next_id = None if is_last else f"main.{sp.playbook[i + 1].id}"
+        opening = sp.opening if i == 0 else ""
+        checkpoints.append(_step_to_checkpoint(step, next_id, opening))
+    return Playbook(
+        persona=_build_persona(sp),
+        journeys={"main": Journey(checkpoints=checkpoints)},
+    )
+
+
+def load_simple(path: str) -> Playbook:
+    """Load a simple-format file (YAML or JSON) and compile it to a Playbook."""
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    doc = json.loads(text) if path.endswith(".json") else yaml.safe_load(text)
+    return simple_to_playbook(doc)
