@@ -142,6 +142,9 @@ class SilencePolicy(BaseModel):
 
 class Policies(BaseModel):
     silence: SilencePolicy | None = None
+    # Max post-filler wait for the Director before the hold line is spoken;
+    # short enough that a caller doesn't feel disengaged.
+    hold_timeout: float = Field(default=4.0, gt=0)
 
 
 class Playbook(BaseModel):

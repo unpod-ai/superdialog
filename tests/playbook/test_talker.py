@@ -202,3 +202,9 @@ async def test_custom_speech_lines() -> None:
     out = [c.text async for c in dead.speak(state2)]
     assert "R" in out  # recovery path uses instance attr
     assert RECOVERY_LINE not in "".join(out)
+
+
+def test_default_hold_timeout_is_four_seconds() -> None:
+    pb, _ = _state("booking.collect")
+    talker = Talker(pb, StreamLLM([]))
+    assert talker._hold_timeout == 4.0

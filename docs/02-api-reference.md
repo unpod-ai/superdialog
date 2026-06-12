@@ -526,7 +526,8 @@ agent = PlaybookAgent(
     python_tools=None,          # dict[str, PythonToolFn] | None
     token_budget=4000,          # Talker view budget (estimated tokens)
     barrier_timeout=0.4,        # hard gate: wait this long for the Director
-    hold_timeout=5.0,           # then filler + this much more before degrading
+    hold_timeout=None,          # then filler + this much more before degrading;
+                                # None -> the playbook's policies.hold_timeout (4.0)
 )
 ```
 

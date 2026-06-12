@@ -193,3 +193,19 @@ def test_reserved_pipeline_store_key_rejected() -> None:
     )
     with pytest.raises(ValueError, match="reserved"):
         Playbook.from_yaml(bad)
+
+
+def test_policies_hold_timeout_default_and_yaml_override() -> None:
+    pb = Playbook.from_yaml(MINIMAL_YAML)
+    assert pb.policies.hold_timeout == 4.0  # voice default: short post-filler wait
+    tuned = Playbook.from_yaml(
+        MINIMAL_YAML.replace("policies:", "policies:\n  hold_timeout: 2.5")
+    )
+    assert tuned.policies.hold_timeout == 2.5
+
+
+def test_policies_hold_timeout_must_be_positive() -> None:
+    with pytest.raises(ValidationError):
+        Playbook.from_yaml(
+            MINIMAL_YAML.replace("policies:", "policies:\n  hold_timeout: 0")
+        )

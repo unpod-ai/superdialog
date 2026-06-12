@@ -50,7 +50,7 @@ class PlaybookAgent:
         python_tools: dict[str, PythonToolFn] | None = None,
         token_budget: int = 4000,
         barrier_timeout: float = 0.4,
-        hold_timeout: float = 5.0,
+        hold_timeout: float | None = None,
     ) -> None:
         self.runtime = PlaybookRuntime(
             playbook,
@@ -63,7 +63,12 @@ class PlaybookAgent:
             talker_llm,
             token_budget=token_budget,
             barrier_timeout=barrier_timeout,
-            hold_timeout=hold_timeout,
+            # explicit arg wins; else the playbook's policies decide
+            hold_timeout=(
+                hold_timeout
+                if hold_timeout is not None
+                else playbook.policies.hold_timeout
+            ),
         )
 
     # ---- Agent Protocol -----------------------------------------------------

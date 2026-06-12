@@ -41,7 +41,7 @@ class Talker:
         llm: StreamsLLM,
         token_budget: int = 4000,
         barrier_timeout: float = 0.4,
-        hold_timeout: float = 5.0,
+        hold_timeout: float = 4.0,
         filler: str = FILLER,
         hold_line: str = HOLD_LINE,
         recovery_line: str = RECOVERY_LINE,

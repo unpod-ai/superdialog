@@ -214,3 +214,29 @@ async def test_advance_suppresses_stale_reply() -> None:
     assert isinstance(result, TurnResult)
     assert "held" in result.text  # pass-through verbatim present
     assert "city?" not in result.text  # stale collect question suppressed
+
+
+def test_agent_hold_timeout_resolves_from_playbook_policies() -> None:
+    pb = Playbook.from_yaml(
+        MINIMAL_YAML.replace("policies:", "policies:\n  hold_timeout: 2.5")
+    )
+    agent = PlaybookAgent(
+        playbook=pb,
+        talker_llm=StreamLLM([]),
+        director_llm=CannedLLM({"slots": {}, "advance": None, "note": None}),
+        http=FakeHttp([]),
+    )
+    assert agent._talker._hold_timeout == 2.5
+
+
+def test_agent_explicit_hold_timeout_wins_over_policies() -> None:
+    agent = _agent()
+    assert agent._talker._hold_timeout == 4.0  # playbook default
+    explicit = PlaybookAgent(
+        playbook=Playbook.from_yaml(MINIMAL_YAML),
+        talker_llm=StreamLLM([]),
+        director_llm=CannedLLM({"slots": {}, "advance": None, "note": None}),
+        http=FakeHttp([]),
+        hold_timeout=1.5,
+    )
+    assert explicit._talker._hold_timeout == 1.5
