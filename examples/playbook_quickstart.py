@@ -25,48 +25,28 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, cast
 
 import anyio
 
 from superdialog.llm.litellm_provider import LitellmProvider
-from superdialog.playbook import Playbook, httpx_http
-from superdialog.playbook.runtime import PlaybookRuntime as Runtime
-from superdialog.playbook.talker import Talker
+from superdialog.playbook import (
+    Playbook,
+    PlaybookAgent,
+    httpx_http,
+    provider_adapters,
+)
+from superdialog.stream import StreamChunk
 
-PLAYBOOK_PATH = Path(__file__).parent.parent / "bank_agent_playbook.yaml"
-DEFAULT_MODEL = "openai/gpt-4.1-mini"
+PLAYBOOK_PATH = Path(__file__).parent / "playbooks" / "booking.yaml"
+DEFAULT_MODEL = "openai/gpt-5.1"
 
 _KEY_ENV = {
-        "openai": "OPENAI_API_KEY",
+    "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "gemini": "GEMINI_API_KEY",
     "groq": "GROQ_API_KEY",
 }
-
-
-class DirectorLLM:
-    """``CompletesLLM`` adapter: one plain-text completion per verdict."""
-
-    def __init__(self, provider: LitellmProvider) -> None:
-        self._provider = provider
-
-    async def complete(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
-        return (await self._provider.complete(list(messages))).text
-
-
-class TalkerLLM:
-    """``StreamsLLM`` adapter: yield raw text tokens from the provider."""
-
-    def __init__(self, provider: LitellmProvider) -> None:
-        self._provider = provider
-
-    async def stream(
-        self, messages: list[dict[str, str]], **kwargs: Any
-    ) -> AsyncIterator[str]:
-        async for chunk in self._provider.stream(list(messages)):
-            if chunk.text:
-                yield chunk.text
 
 
 def _missing_key_hint(model: str) -> str | None:
@@ -83,13 +63,15 @@ def _missing_key_hint(model: str) -> str | None:
     )
 
 
-async def _speak(talker: Talker, runtime: Runtime) -> None:
-    """Stream Talker output from current (post-director) runtime state."""
-    print("agent> ", end="", flush=True)
-    async for chunk in talker.speak(runtime.state):
-        if chunk.text:
-            print(chunk.text, end="", flush=True)
-    print()
+def _build_agent(model: str) -> PlaybookAgent:
+    provider = LitellmProvider(model)
+    director, talker = provider_adapters(provider)
+    return PlaybookAgent(
+        playbook=Playbook.load(str(PLAYBOOK_PATH)),
+        talker_llm=talker,
+        director_llm=director,
+        http=httpx_http,  # the booking pipeline makes real HTTP calls
+    )
 
 
 async def main() -> None:
@@ -98,17 +80,9 @@ async def main() -> None:
     if hint is not None:
         print(hint)
         return
-
-    provider = LitellmProvider(model)
-    playbook = Playbook.load(str(PLAYBOOK_PATH))
-    runtime = Runtime(playbook, director_llm=DirectorLLM(provider), http=httpx_http)
-    talker = Talker(playbook, llm=TalkerLLM(provider))
-
-    print(f"Agent demo on {model} — type 'quit' to exit.\n")
-
-    # Seed env + enter initial checkpoint, then agent speaks opening
-    await runtime.start()
-    await _speak(talker, runtime)
+    agent = _build_agent(model)
+    print(f"Lumina Spa booking demo on {model} — type 'quit' to exit.")
+    print("Try: hi, I'm Sam — can I get a haircut next Friday?")
 
     while True:
         try:
@@ -121,24 +95,27 @@ async def main() -> None:
         if not text.strip():
             continue
 
+        print("mira> ", end="", flush=True)
+        metadata: dict[str, Any] = {}
         try:
-            cp_before = runtime.state.checkpoint_id
-            # Director processes user input first → state advances
-            await runtime.on_user_text(text)
-            cp_after = runtime.state.checkpoint_id
-            print(f"[DEBUG] {cp_before} → {cp_after}  ended={runtime.state.ended}")
-            # Talker speaks from post-director state → correct checkpoint, no repeat
-            await _speak(talker, runtime)
-        except Exception as exc:  # noqa: BLE001
+            chunks = cast(
+                AsyncIterator[StreamChunk], await agent.turn(text, stream=True)
+            )
+            async for chunk in chunks:
+                if chunk.text:
+                    print(chunk.text, end="", flush=True)
+                if chunk.done and chunk.turn is not None:
+                    metadata = chunk.turn.metadata
+            print()
+        except Exception as exc:  # noqa: BLE001 — REPL surface, not a library
             print(f"\n[error] LLM call failed: {exc}")
             print(
                 "Check your provider API key (e.g. OPENAI_API_KEY) and "
                 "SUPERDIALOG_MODEL, then try again."
             )
             return
-
-        if runtime.state.ended:
-            print(f"[session ended — outcome: {runtime.state.outcome}]")
+        if metadata.get("ended"):
+            print(f"[session ended — outcome: {metadata.get('outcome')}]")
             break
 
 

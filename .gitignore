@@ -23,3 +23,4 @@ dist/
 # Local-only planning docs (kept out of the deploy repo)
 docs/plans/
 docs/superpowers/
+bank_agent.yaml

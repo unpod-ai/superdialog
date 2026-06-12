@@ -17,6 +17,19 @@ from tests.playbook.test_toolexec import FakeHttp
 _IDLE_VERDICT: dict = {"slots": {}, "advance": None, "note": None}
 
 
+class SpyStreamLLM(StreamLLM):
+    """StreamLLM that records the messages passed to each stream() call."""
+
+    def __init__(self, chunks: list[str]) -> None:
+        super().__init__(chunks)
+        self.prompts: list[list[dict]] = []
+
+    async def stream(self, messages, **kwargs):
+        self.prompts.append(messages)
+        async for c in super().stream(messages, **kwargs):
+            yield c
+
+
 class SlowStreamLLM:
     """Talker LLM that sleeps between tokens so a barge-in lands mid-stream."""
 
@@ -157,7 +170,47 @@ async def test_turn_includes_pass_through() -> None:
     )
     result = await agent.turn("Pune tomorrow")
     assert isinstance(result, TurnResult)
-    assert "Which city?" in result.text
+    # The Director advanced this turn, so the Talker's stale "Which city?"
+    # is suppressed from the final text; the verbatim pass-through stands.
+    assert "Which city?" not in result.text
     assert "held" in result.text
     assert result.metadata["ended"] is True
     assert result.metadata["outcome"] == "confirmed"
+
+
+async def test_talker_sees_current_user_turn() -> None:
+    """The Talker's prompt must contain the CURRENT user utterance, not lag."""
+    spy = SpyStreamLLM(["Which", " city?"])
+    agent = _agent(talker_llm=spy)  # idle verdict, soft collect gate
+    await agent.turn("I want a massage")
+    assert spy.prompts, "Talker stream was never called"
+    user_msgs = [m["content"] for m in spy.prompts[-1] if m["role"] == "user"]
+    assert any("I want a massage" in c for c in user_msgs)
+
+
+async def test_user_utterance_logged_once() -> None:
+    """The user utterance is appended exactly once across a streaming turn."""
+    agent = _agent()
+    await agent.turn("hello")
+    users = [
+        e
+        for e in agent.runtime.log.events
+        if isinstance(e, UtteranceEvent) and e.role == "user" and e.text == "hello"
+    ]
+    assert len(users) == 1
+
+
+async def test_advance_suppresses_stale_reply() -> None:
+    """An advancing turn drops the stale Talker question from Turn.text."""
+    agent = _agent(
+        verdict={
+            "slots": {"city": "Pune", "date": "2026-06-12"},
+            "advance": "booking.confirm",
+            "note": None,
+        },
+        http_responses=[(200, {"data": {"hold_id": "h1"}})],
+    )
+    result = await agent.turn("Pune tomorrow")
+    assert isinstance(result, TurnResult)
+    assert "held" in result.text  # pass-through verbatim present
+    assert "city?" not in result.text  # stale collect question suppressed

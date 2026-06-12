@@ -92,13 +92,20 @@ class PlaybookRuntime:
         pass_through.extend(await self._quiesce())
         return pass_through
 
-    async def on_user_text(self, text: str) -> list[str]:
+    async def on_user_text(self, text: str, *, record: bool = True) -> list[str]:
         """Process one user utterance: Director verdict, policies, quiescence.
 
         Returning implies the runtime is quiescent: all hops and policies have
         resolved (Task 11's barrier relies on this as API).
+
+        ``record`` defaults to True so the utterance is appended to the log.
+        The streaming agent appends it itself BEFORE snapshotting the Talker's
+        state (so the Talker sees the current turn), then calls this with
+        ``record=False`` to avoid a double-append. Everything below reads the
+        folded ``self.state``, so skipping the append is safe.
         """
-        self.log.append(UtteranceEvent(role="user", text=text))
+        if record:
+            self.log.append(UtteranceEvent(role="user", text=text))
         decision = await self._director.evaluate(self.state)
         pass_through: list[str] = []
         if decision.degraded:

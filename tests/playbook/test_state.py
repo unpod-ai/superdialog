@@ -193,6 +193,26 @@ def test_counters_and_resets() -> None:
     assert state.completed == ["booking.collect"]
 
 
+def test_steering_note_cleared_on_advance() -> None:
+    """A steer note is advice for the current step; advancing clears it."""
+    log = EventLog()
+    log.append(
+        AdvanceEvent(from_checkpoint=None, to_checkpoint="booking.collect", rule="init")
+    )
+    log.append(SteeringNoteEvent(text="wrap this step up", kind="steer"))
+    assert ConversationState.fold(log).steering_note == "wrap this step up"
+    log.append(
+        AdvanceEvent(
+            from_checkpoint="booking.collect",
+            to_checkpoint="booking.confirm",
+            rule="llm:booking.confirm",
+        )
+    )
+    state = ConversationState.fold(log)
+    assert state.steering_note is None
+    assert state.steering_kind == "steer"
+
+
 def test_gating_helpers() -> None:
     log = EventLog()
     log.append(

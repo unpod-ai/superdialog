@@ -144,7 +144,9 @@ class PlaybookAgent:
             # guarantees the decision lands even on an immediate abort.
             with anyio.CancelScope(shield=True):
                 task_status.started()
-                pass_through.extend(await self.runtime.on_user_text(text))
+                # The utterance is already in the log (appended before the
+                # snapshot below); record=False avoids a double-append.
+                pass_through.extend(await self.runtime.on_user_text(text, record=False))
                 quiescent.set()
 
         async def director_done() -> ConversationState:
@@ -154,9 +156,16 @@ class PlaybookAgent:
             await quiescent.wait()
             return self.runtime.state
 
-        # Snapshot BEFORE the Director mutates the log: the Talker speaks
-        # from the current state; hard gates barrier via director_done.
+        # Append the current user utterance BEFORE snapshotting so the Talker
+        # renders a transcript that ends at THIS turn (not the previous one).
+        # run_director runs on_user_text with record=False to avoid a
+        # double-append.
+        self.runtime.log.append(UtteranceEvent(role="user", text=text))
+        # Snapshot AFTER the append (includes the current turn) but BEFORE the
+        # Director mutates state further: the Talker speaks from this snapshot;
+        # hard gates barrier via director_done.
         speak_state = self.runtime.state
+        entry_cp = speak_state.checkpoint_id
         talker_chunks: list[SpeechChunk] = []
         speech = self._talker.speak(speak_state, director_done=director_done)
         aborted = False
@@ -182,7 +191,16 @@ class PlaybookAgent:
             with anyio.CancelScope(shield=True):
                 await speech.aclose()  # close the Talker's LLM stream now
                 talker_text = "".join(c.text for c in talker_chunks).strip()
-                if talker_text:
+                # If the Director advanced the checkpoint this turn AND there
+                # is pass-through, the Talker spoke from the PRE-advance state:
+                # its reply is stale (e.g. re-asking for a slot just filled).
+                # Suppress it — keep the LOG honest and the final Turn.text
+                # clean. The new checkpoint's verbatim pass-through is the
+                # authoritative reply. (Live-streamed Talker chunks were
+                # already yielded; that is an accepted streaming limitation.)
+                advanced = self.runtime.state.checkpoint_id != entry_cp
+                suppress = advanced and bool(pass_through)
+                if talker_text and not suppress:
                     # The runtime never sees Talker speech; log it here —
                     # exactly once, partial or complete.
                     self.runtime.log.append(
@@ -198,9 +216,12 @@ class PlaybookAgent:
 
         for line in pass_through:
             yield StreamChunk(text=line)
-        full = talker_text
-        if pass_through:
-            full = (talker_text + " " + " ".join(pass_through)).strip()
+        if suppress:
+            full = " ".join(pass_through).strip()
+        else:
+            full = talker_text
+            if pass_through:
+                full = (talker_text + " " + " ".join(pass_through)).strip()
         yield StreamChunk(done=True, turn=Turn(text=full, metadata=self._metadata()))
 
     async def _ensure_started(self) -> list[str]:

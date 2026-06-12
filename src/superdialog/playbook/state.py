@@ -132,6 +132,10 @@ class ConversationState(BaseModel):
                 s.checkpoint_entered_version = e.version
                 s.user_turns_in_checkpoint = 0
                 s.silence_count = 0
+                # A steer note is advice for the current step; it must not
+                # bleed into the next checkpoint.
+                s.steering_note = None
+                s.steering_kind = "steer"
             elif isinstance(e, SteeringNoteEvent):
                 s.steering_note, s.steering_kind = e.text, e.kind
             elif isinstance(e, ToolCallEvent):
