@@ -1,4 +1,4 @@
-# SuperDialog — Playbook Authoring Guide
+# SuperDialog — Playbook Guide
 
 **Status:** Canonical
 **Parent:** [README.md](README.md)
@@ -6,21 +6,184 @@
 
 ---
 
-A **Playbook** declares a conversation as journeys of checkpoints plus a
-process layer (tools, pipelines, handlers, interrupts, policies). At runtime
-a fast **Talker** LLM streams every spoken turn while an async **Director**
-extracts slots, judges advancement, and runs tools — both over an
-append-only event log that doubles as the audit and replay artifact. The
-legacy `DialogMachine` flow engine remains fully supported; playbooks are
-where new investment goes, and `compile_flow` migrates existing flow JSON
-(§5).
+This guide is in two deliberately separate parts:
 
-## 1. Anatomy of a playbook
+- **Part 1 — Authoring: the playbook formats.** What you *write*: the
+  simple format (start here), the full format (when you need precision),
+  and how one maps onto the other.
+- **Part 2 — Technical design: how the engine runs it.** What *happens*:
+  the Talker/Director runtime, gating semantics, the process layer, speech
+  control, and the testing/optimization substrate.
 
-Playbooks load from YAML or JSON (`Playbook.load(path)` /
-`Playbook.from_yaml(text)`); every cross-reference (rule targets, pipeline
-ids, tool ids, `requires` keys) is validated at load time. A complete,
-annotated example:
+If you're stuck writing YAML, your answer is in Part 1. If your playbook
+loads but the conversation behaves unexpectedly — doesn't advance, speaks
+a filler line, re-asks a question — your answer is in Part 2. The two
+parts meet at exactly one object: the validated `Playbook` artifact that
+every format compiles into and the engine executes. There is **one
+engine**; formats differ only in what they can express, never in how they
+run (paired evals measured a dead quality tie and identical latency).
+
+---
+
+# Part 1 — Authoring: the playbook formats
+
+## 1. Two formats, one engine
+
+```
+simple YAML ──(auto-detected)──▶ simple_to_playbook ─▶ Playbook ─▶ one runtime
+full YAML ─────────────────────▶ Playbook.load ──────▶ (the IR)    (Talker+Director)
+legacy flow JSON ──────────────▶ compile_flow ───────▶
+```
+
+`Playbook.load(path)` / `from_yaml` / `from_json` auto-detect the simple
+format (a top-level `playbook:` list) and lower it at load time — callers
+and the CLI never branch on format; `load_simple` and
+`superdialog chat --simple PATH` remain as explicit routes.
+
+**Which format when:**
+
+| You need… | Use |
+| --- | --- |
+| A linear conversation: greet → qualify → close, with early exits | **Simple** — less YAML, no hand-wired transitions |
+| Tools/pipelines, hard gates, typed slots, multiple journeys or outcomes | **Full** |
+| To keep authoring simple AND `superdialog optimize` output in your format | **Simple** (optimize round-trips it) |
+| An existing flow JSON on the new engine | `compile_flow` (§4) |
+
+## 2. The simple format
+
+Prose steps, a structured persona, and reference data as real YAML.
+
+```yaml
+goal: "Book a haircut and confirm it."
+persona:
+  name: Mira
+  language: ["en", "hi"]
+  voice_style: "Warm and brief. One question at a time."
+  identity: "You are Mira, a booking assistant for Glow Studio."
+opening: "Greet the caller warmly."
+closing: "Thank them and say goodbye."
+playbook:
+  - id: greet
+    purpose: "Open the call."
+    say: "Greet the caller and ask how you can help."
+    done_when: "Caller is ready to book."
+  - id: collect
+    purpose: "Get the booking details."
+    say: "Ask for their name and preferred service."
+    collect: [name, service]
+    done_when: "Name and service are captured."
+  - id: confirm
+    purpose: "Confirm and close."
+    say: "Read back the booking and confirm."
+    done_when: "Caller has confirmed."
+facts:
+  canonical_pricing: {haircut: "₹400"}
+boundaries: ["NEVER invent prices."]
+interrupts:
+  - {when: "Caller says goodbye or asks to end the call.", to: main.confirm}
+```
+
+### Section reference
+
+**`name`** (string, optional) — a human-readable title. Metadata only;
+not folded into the compiled artifact.
+
+**`goal`** (string) — the call's mission statement. Folds into the persona
+as `Overall goal: …`. Write it as the success definition: what makes this
+call a win, including acceptable fallbacks.
+
+**`persona`** (mapping) — compiles into one rich `Playbook.persona` string
+the Talker sees every turn:
+
+- `identity` — who the agent is; the verbatim first paragraph and the
+  highest-leverage prose in the file.
+- `name` — folded as `Your name is <name>.` only when the identity prose
+  doesn't already mention it.
+- `language` — a name (`English`), an ISO 639-1 code (`hi`), or a list of
+  either (`["en", "hi"]`): first entry is the default, the rest fold as
+  `Also speaks: …`. The code map covers the
+  [Soniox translation set](https://soniox.com/docs/translation/supported-languages)
+  (59 languages); unmapped values pass through as written. Quote the
+  Norwegian code (`"no"`) — unquoted YAML parses it as a boolean.
+- `voice_style` — folded as `Voice & manner: …`: tone, pacing, sentence
+  length, language-switching rules.
+
+**`opening`** (string, optional) — seed guidance for the **first step
+only, and only when that step has no `say`**. Prefer putting the opening
+line in the first step's `say` and omitting this.
+
+**`closing`** (string, optional) — folds into the persona under
+`## Closing line`. An *instruction*, not an auto-spoken line — pair it
+with a final step whose `say` tells the agent to deliver it.
+
+**`playbook`** (list of steps) — each step becomes a `Checkpoint` in a
+single journey named `main`, chained **linearly in list order**: step N's
+`done_when` advances to step N+1; the last step is `terminal: true,
+outcome: closed`. Reordering the list re-wires the chain — there are no
+hand-written `to:` targets to maintain. Per step:
+
+- `id` — the checkpoint id; addressable as `main.<id>` in logs, metrics,
+  and replay.
+- `purpose` — compiles to `Checkpoint.goal`. Director-facing context: what
+  this step is *for*. One sentence.
+- `say` — compiles to `Checkpoint.guidance`, the Talker's playbook for the
+  step. May contain Jinja over `{slots, views, results}`. This is the
+  prose `superdialog optimize` mutates most.
+- `collect` — slot keys to capture; compiled to untyped (`str`) slots
+  **plus** the advance rule's `requires`. ⚠️ All collected keys gate
+  advancement together: a 3-slot step needs all three extracted before the
+  conversation moves — measured in evals as the single biggest source of
+  stalls. Prefer 1–2 slots per step.
+- `done_when` — compiles to a single `judge: llm` advance rule the
+  Director judges each turn. Write an observable condition ("Caller has
+  confirmed a day and time"), not an intention.
+
+**`facts`** (mapping, optional) — folds under `## Reference facts (never
+invent beyond these)`. The agent's grounding data: pricing, amenities,
+policies. It lives in the persona (not `env`) deliberately — the `env`
+lane is never rendered to the Talker, so facts must ride the persona to
+stay visible during speech. Keep it canonical; anything here is recited.
+
+**`objections`** (list of `{trigger, handle}`, optional) — folds as
+`## Objection handling` bullets. Prose-level steering, not control flow:
+handled *within* the current step; they cannot re-route the journey.
+
+**`boundaries`** (list of strings, optional) — folds as `## Hard
+boundaries`. Compliance-critical "NEVER…" rules. Prose-enforced; the full
+format's `never_say` is the stronger mechanism.
+
+**`fallback_actions`** (mapping `{name: instruction}`, optional) — folds
+as `## Fallback actions`: what to do when the happy path fails (callback,
+message, reschedule, do-not-call). Pair with an `interrupts:` entry that
+routes there, or the instructions have no path to fire on.
+
+**`interrupts`** (list of `{id?, when, to}`, optional) — global jumps,
+judged from any step: when the Director sees `when` matching, the
+conversation re-routes to the `to` step (`main.<id>` ref, validated at
+load). Compiles to engine interrupts with `judge: llm`, `resume: false`;
+ids default to `interrupt_<n>`. **Use at least a goodbye interrupt** — in
+a 56-session assessment, linear playbooks with no early exit never
+completed a single call (a satisfied or busy caller loops until the turn
+cap), while the same playbook with goodbye/busy interrupts completed 8/8.
+
+### What the simple format cannot express
+
+| Engine feature | Why it matters |
+| --- | --- |
+| Multiple terminals / outcomes | One `closed` outcome can't distinguish booked vs callback vs DNC in metrics. |
+| `gate: hard`, pipelines, tools | Transactional steps (holds, payments) with barriered speech (Part 2 §6). |
+| `judge: expr` rules | Machine-evaluated transitions — zero LLM cost, zero latency. |
+| Typed/required slots, `never_say`, `say_verbatim`, silence policy, multi-journey, dispatch | Precision controls. |
+
+When you need any of these, move to the full format. The escape hatch is
+one-way: compile your simple file (`Playbook.load(...)` then
+`yaml.safe_dump(pb.model_dump(exclude_defaults=True))`) and continue
+authoring the result; there is no decompiler back.
+
+## 3. The full format
+
+Everything the engine can do, stated explicitly. A complete, annotated
+example:
 
 ```yaml
 persona: "You are Asha, a friendly golf-course booking assistant."
@@ -56,9 +219,9 @@ journeys:
             to: booking.confirm
             requires: [city, date]   # rule fires only when these are met
       - id: confirm
-        gate: hard            # outcomes barrier on the Director here (§2)
+        gate: hard            # outcomes barrier on the Director here (Part 2 §6)
         say_verbatim: "Held until {{ views.hold_valid_until }}."  # no LLM
-        pipeline: confirm_and_hold   # process layer runs on entry (§3)
+        pipeline: confirm_and_hold   # process layer runs on entry (Part 2 §7)
         slots:
           price: {type: float, authoritative: true}   # tool-written only
         advance_when:
@@ -116,6 +279,7 @@ policies:
     max_prompts: 2
     prompts: ["Can you hear me?", "Are you there?"]
     then: booking.close       # route here after max_prompts silences
+  hold_timeout: 4.0           # post-filler wait for a slow Director (Part 2 §8)
 
 initial: booking.collect      # defaults to the first checkpoint anyway
 ```
@@ -126,18 +290,128 @@ Top-level fields, all on `superdialog.playbook.models.Playbook`:
 |---|---|---|
 | `persona` | str | System-level voice of the agent, every Talker turn |
 | `journeys` | dict[name, Journey] | Named checkpoint sequences (min 1) |
-| `dispatch` | list[DispatchEntry] | Intent→entry table (compile-time in v1, §5) |
+| `dispatch` | list[DispatchEntry] | Intent→entry table (compile-time in v1, §4) |
 | `tools` | list[ToolSpec] | Declarative HTTP / registered python tools |
 | `pipelines` | list[PipelineSpec] | Ordered tool steps with typed branches |
 | `handlers` | list[HandlerSpec] | `webhook.<name>` / `timer.<name>` triggers |
 | `interrupts` | list[InterruptSpec] | Global jumps (`judge: llm` or `event`) |
-| `policies` | Policies | Cross-cutting behavior (silence today) |
+| `policies` | Policies | Silence handling; `hold_timeout` (default 4.0 s) |
 | `middleware` | MiddlewareSpec | `on_status` → refresh tool → replay |
 | `env` | dict[str, str] | Secret/handle lane, hidden from the Talker |
 | `views` | dict[name, expr] | Computed, LLM-free reference data |
 | `initial` | str | Starting checkpoint ref (`journey.checkpoint`) |
 
-## 2. Checkpoints gate outcomes, not utterances
+Every cross-reference (rule targets, pipeline ids, tool ids, `requires`
+keys) is validated at load time.
+
+**How simple maps onto full** — useful when graduating a file:
+
+| Simple key | Compiles to |
+| --- | --- |
+| `persona.*` + `goal` + `facts` + `objections` + `boundaries` + `fallback_actions` + `closing` | one rich `persona` string |
+| each `playbook` step | a `Checkpoint` in journey `main` |
+| `step.purpose` / `step.say` | `goal` / `guidance` |
+| `step.collect` | `str` slots + the step rule's `requires` |
+| `step.done_when` | a `judge: llm` rule, `to` the next step |
+| last step | `terminal: true`, `outcome: closed` |
+| `interrupts[{when, to}]` | `InterruptSpec` (`judge: llm`, `resume: false`) |
+| `opening` | first step's guidance, only if it has no `say` |
+
+## 4. Migrating a legacy flow
+
+Existing flow JSON keeps working on `DialogMachine` — nothing breaks. When
+you want a flow on the Playbook engine, the compiler converts it losslessly
+and proves it did:
+
+```python
+import json
+from superdialog.flow.models import ConversationFlow
+from superdialog.playbook import compile_flow, coverage_report
+
+flow = ConversationFlow.model_validate(
+    json.loads(open("golf_booking.json").read())
+)
+pb = compile_flow(flow)
+report = coverage_report(flow, pb)
+assert report.unmapped_nodes == []      # every node landed somewhere
+assert report.unmapped_edges == []
+assert report.unmapped_actions == []
+print(report.dropped)   # informational buckets: what folded into what
+print(report.notes)     # compiler judgment calls, worth reading once
+```
+
+The reference workload is the 61-node / 135-edge golf-course booking flow
+(`tests/fixtures/flow/golf_booking.json`, 25 HTTP actions). It compiles —
+with full coverage asserted in CI — into a single `main` journey: 25 tools,
+13 dispatch entries, 2 handlers, a 2-prompt silence policy, a 401
+auth-refresh middleware, and a `global_goodbye` interrupt. What maps to
+what:
+
+| Flow construct | Playbook construct |
+|---|---|
+| Conversational node | Checkpoint (`guidance` / `say_verbatim`) |
+| Edge condition (intent prose) | `advance_when` rule, `judge: llm` |
+| Edge condition (data predicate) | `advance_when` rule, `judge: expr` |
+| Edge `input_schema` | Slot union + per-rule `requires` |
+| Tool-free computational chain | Folded into the source's advance rules |
+| Tool-bearing computational chain | `PipelineSpec` + synthetic intermediate checkpoint routing on `pipeline.ok/failed` |
+| Hub router (≥4 exits) | `dispatch` entries + rules merged into inbound checkpoints |
+| Silence nodes | `policies.silence` |
+| Token-expiry global edge + refresh node | `middleware` |
+| Other global edges | `interrupts` |
+| Webhook/timer system nodes | `handlers` with single-step pipelines |
+| `global_actions` | `tools` 1:1, templates rewritten to `{env, slots, results}` |
+| `is_final` nodes | `terminal: true` + `outcome` |
+
+Templates are rewritten from bare legacy names to the new namespaces
+(`{{ACCESS_TOKEN}}` → `{{env.ACCESS_TOKEN}}`, `{{city}}` → `{{slots.city}}`,
+`X.success` → `results.X.ok`). Only single-clause data predicates over known
+`store_response_as` keys become expr rules; anything ambiguous stays a
+`judge: llm` rule verbatim — lossless beats clever.
+
+Known v1 limitations, stated honestly:
+
+- **Self-loop suppression.** A folded chain edge that cycles back to its
+  source checkpoint is suppressed (it would loop the rule fold) and
+  surfaced as a `chain loop suppressed` note in the coverage report.
+- **Dispatch is compile-time.** Hub routes are merged into each inbound
+  checkpoint's `advance_when`; the `dispatch` block is organizational, not
+  a runtime jump table.
+- **Voice events are host-fed.** Silence/webhook/timer events work through
+  `runtime.on_external`, but no adapter emits them automatically yet
+  (roadmap, §10).
+- **Deferred fields.** `interrupts.resume: true` restoration and tool
+  `ttl_seconds` / `on_expire` are reserved, not yet active.
+- Non-`on_enter` action triggers are not carried; the coverage report notes
+  each occurrence.
+
+## 5. Tooling, whichever format you author in
+
+- `superdialog chat --playbook X.yaml` — REPL; auto-detects both formats.
+- `superdialog optimize --playbook X.yaml` — reflective prose optimizer
+  (Part 2 §9); **emits improved YAML in your source format**. For simple
+  files it edits `say`/`done_when`/`purpose`/`opening`/`closing`/
+  `persona.identity`/`persona.voice_style`; facts, objections, boundaries,
+  and interrupt conditions are never touched.
+- Persona evals and replay (Part 2 §9) operate on the compiled artifact;
+  metrics key on `journey.<id>` checkpoint ids (`main.<step id>` for
+  simple-origin files).
+
+---
+
+# Part 2 — Technical design: how the engine runs it
+
+A **Playbook** declares a conversation as journeys of checkpoints plus a
+process layer (tools, pipelines, handlers, interrupts, policies). At
+runtime a fast **Talker** LLM streams every spoken turn while an async
+**Director** extracts slots, judges advancement, and runs tools — both
+over an append-only event log that doubles as the audit and replay
+artifact. Within each turn they run **concurrently**: the Talker speaks
+from a pre-decision snapshot while the Director settles in parallel, so
+per-turn latency is max(Talker, Director), not the sum. The one
+synchronization point is a hard gate (§6).
+
+## 6. Checkpoints gate outcomes, not utterances
 
 Within a checkpoint the conversation is free — the Talker speaks however the
 moment requires. What is gated is *progression*: the ordered `advance_when`
@@ -198,15 +472,16 @@ asks for them naturally.
 
 At a hard gate the Talker also **barriers**: it waits briefly (default
 0.4 s) for the Director's verdict before speaking; past that it emits a
-filler line, waits up to 5 s more, then degrades politely (§4). Soft
-checkpoints never wait.
+filler line, then waits up to the playbook's `policies.hold_timeout`
+(default 4 s, must be > 0) before degrading politely (§8). Soft
+checkpoints never wait — Talker and Director run fully concurrent there.
 
 Two more checkpoint behaviors: `auto: true` speaks `say_verbatim` once and
 advances to the first rule's target without user input (announce-then-move
 patterns), and `terminal: true` ends the session on entry, recording
 `outcome` in the final `SessionEndEvent`.
 
-## 3. The process layer
+## 7. The process layer
 
 Everything that is work rather than talk: tools, pipelines, middleware,
 handlers, and policies. All of it runs Director-side; the Talker only ever
@@ -279,13 +554,13 @@ if result.prompt:
 
 The first `max_prompts` silences return the configured prompts in order;
 after that the session routes to `then`. (No host adapter emits silence
-events automatically yet — see §5 limitations.)
+events automatically yet — see §10 limitations.)
 
 **Turn budgets.** `turn_budget: N` on a checkpoint injects a wrap-up
 steering note once the user has spent more than N turns there; two grace
 turns later the session routes to the checkpoint's `on_failure`.
 
-## 4. Speech control
+## 8. Speech control
 
 What the agent says is controlled at four levels, strongest first:
 
@@ -316,86 +591,20 @@ information* (slots) or *Reference data* (views) and to say it is checking
 otherwise. The env lane is never rendered, even if a view expression tries
 to read it.
 
-**Canned lines.** Three host-facing strings live on the `Talker`
-(`superdialog.playbook.talker`): `FILLER` ("One moment, let me confirm
-that…", spoken when a hard-gate barrier outlasts `barrier_timeout`),
-`HOLD_LINE` (spoken if the Director is still silent after `hold_timeout`),
-and `RECOVERY_LINE` (spoken when the Talker LLM fails twice). Localize them
-via the `Talker(..., filler=, hold_line=, recovery_line=)` constructor
-parameters; `PlaybookAgent` currently builds its Talker with the English
-defaults (forwarding these is roadmap). The rendered view is packed under
+**Canned lines and timeouts.** Three host-facing strings live on the
+`Talker` (`superdialog.playbook.talker`): `FILLER` ("One moment, let me
+confirm that…", spoken when a hard-gate barrier outlasts `barrier_timeout`,
+default 0.4 s), `HOLD_LINE` (spoken if the Director is still silent after
+the hold window — the playbook's `policies.hold_timeout`, default 4 s, or
+an explicit `PlaybookAgent(hold_timeout=…)` override), and `RECOVERY_LINE`
+(spoken when the Talker LLM fails twice). Localize them via the
+`Talker(..., filler=, hold_line=, recovery_line=)` constructor parameters;
+`PlaybookAgent` currently builds its Talker with the English defaults
+(forwarding these is roadmap). The rendered view is packed under
 `token_budget` (default 4000 estimated tokens): persona, guidance, notes,
 slots, and views are protected; only older transcript turns are dropped.
 
-## 5. Migrating a flow
-
-Existing flow JSON keeps working on `DialogMachine` — nothing breaks. When
-you want a flow on the Playbook engine, the compiler converts it losslessly
-and proves it did:
-
-```python
-import json
-from superdialog.flow.models import ConversationFlow
-from superdialog.playbook import compile_flow, coverage_report
-
-flow = ConversationFlow.model_validate(
-    json.loads(open("golf_booking.json").read())
-)
-pb = compile_flow(flow)
-report = coverage_report(flow, pb)
-assert report.unmapped_nodes == []      # every node landed somewhere
-assert report.unmapped_edges == []
-assert report.unmapped_actions == []
-print(report.dropped)   # informational buckets: what folded into what
-print(report.notes)     # compiler judgment calls, worth reading once
-```
-
-The reference workload is the 61-node / 135-edge golf-course booking flow
-(`tests/fixtures/flow/golf_booking.json`, 25 HTTP actions). It compiles —
-with full coverage asserted in CI — into a single `main` journey: 25 tools,
-13 dispatch entries, 2 handlers (`webhook.payment_captured`,
-`timer.hold_expired`), a 2-prompt silence policy, a 401 auth-refresh
-middleware, and a `global_goodbye` interrupt. What maps to what:
-
-| Flow construct | Playbook construct |
-|---|---|
-| Conversational node | Checkpoint (`guidance` / `say_verbatim`) |
-| Edge condition (intent prose) | `advance_when` rule, `judge: llm` |
-| Edge condition (data predicate) | `advance_when` rule, `judge: expr` |
-| Edge `input_schema` | Slot union + per-rule `requires` |
-| Tool-free computational chain | Folded into the source's advance rules |
-| Tool-bearing computational chain | `PipelineSpec` + synthetic intermediate checkpoint routing on `pipeline.ok/failed` |
-| Hub router (≥4 exits) | `dispatch` entries + rules merged into inbound checkpoints |
-| Silence nodes | `policies.silence` |
-| Token-expiry global edge + refresh node | `middleware` |
-| Other global edges | `interrupts` |
-| Webhook/timer system nodes | `handlers` with single-step pipelines |
-| `global_actions` | `tools` 1:1, templates rewritten to `{env, slots, results}` |
-| `is_final` nodes | `terminal: true` + `outcome` |
-
-Templates are rewritten from bare legacy names to the new namespaces
-(`{{ACCESS_TOKEN}}` → `{{env.ACCESS_TOKEN}}`, `{{city}}` → `{{slots.city}}`,
-`X.success` → `results.X.ok`). Only single-clause data predicates over known
-`store_response_as` keys become expr rules; anything ambiguous stays a
-`judge: llm` rule verbatim — lossless beats clever.
-
-Known v1 limitations, stated honestly:
-
-- **Self-loop suppression.** A folded chain edge that cycles back to its
-  source checkpoint is suppressed (it would loop the rule fold) and
-  surfaced as a `chain loop suppressed` note in the coverage report.
-- **Dispatch is compile-time.** Hub routes are merged into each inbound
-  checkpoint's `advance_when`; the `dispatch` block is organizational, not
-  a runtime jump table.
-- **Voice events are host-fed.** Silence/webhook/timer events work through
-  `runtime.on_external`, but no adapter emits them automatically yet
-  (roadmap, §7).
-- **Deferred fields.** `interrupts.resume: true` restoration and tool
-  `ttl_seconds` / `on_expire` are reserved, not yet active.
-- Non-`on_enter` action triggers are not carried; the coverage report notes
-  each occurrence.
-
-## 6. Testing and evals
+## 9. Testing, evals, and optimization
 
 The event log is the substrate for all three layers.
 
@@ -505,61 +714,18 @@ each round ≈ 2 evals × personas × n sessions × ~2 LLM calls per turn, plus
 one reflect call — the most expensive command in the tool; `n=1` with the
 default 4-persona suite keeps dev runs reasonable.
 
-## 8. Simple authoring format
+## 10. Roadmap
 
-The simple format is the easiest way to author a playbook: prose steps, a
-nested persona, and reference data (facts, objections, boundaries, fallbacks).
-`Playbook.load(path)` / `from_yaml` auto-detect it (top-level `playbook:`
-list) and compile it to a `Playbook` — the same validated artifact
-`compile_flow` produces from flows, so it runs on the same Talker/Director
-runtime; `load_simple(path)` and `superdialog chat --simple PATH` remain as
-explicit routes. v1 supports linear step sequences only.
-
-```yaml
-name: "Tiny Booking Bot"
-goal: "Book a haircut and confirm it."
-persona:
-  identity: "You are Mira, a booking assistant for Glow Studio."
-  voice_style: "Warm and brief. One question at a time."
-playbook:
-  - {id: greet, purpose: "Open the call.", say: "Greet and ask how you can help.", done_when: "Caller is ready to book."}
-  - {id: collect, purpose: "Get details.", say: "Ask for their name and service.", collect: [name, service], done_when: "Name and service captured."}
-  - {id: confirm, purpose: "Confirm and close.", say: "Read back the booking and confirm.", done_when: "Caller confirmed."}
-facts:
-  canonical_pricing: {haircut: "₹400"}
-objections:
-  - {trigger: "Caller says it's too expensive.", handle: "Acknowledge and offer the cheapest option."}
-boundaries: ["NEVER invent prices."]
-```
-
-| Simple key | Compiles to |
-| --- | --- |
-| `persona.identity` + `voice_style` + `goal` + `facts` + `objections` + `boundaries` + `fallback_actions` + `closing` | one rich `Playbook.persona` string |
-| each `playbook` step | a `Checkpoint` in journey `main` |
-| `step.id` | checkpoint id |
-| `step.purpose` | `checkpoint.goal` |
-| `step.say` | `checkpoint.guidance` |
-| `step.collect` | `str` slots + the step rule's `requires` |
-| `step.done_when` | the step's single `judge: llm` advance rule `when`, `to` the next step |
-| last step | `terminal: true`, `outcome: closed` |
-| `opening` | seeds the first step's guidance only if it has no `say` |
-
-What's NOT in v1: linear step sequences only; objections live in persona prose
-(not interrupts); all collected slots are `str`. See the plan's deferred list.
-
-Full section-by-section reference — every field, its compile target, engine
-use, and authoring tips: [05-simple-format.md](05-simple-format.md).
-
-## 9. Roadmap
-
-Shipped: `superdialog optimize` runs a reflective prose optimizer over the
-eval substrate (§6) — paired-round acceptance, prose-only targeted edits,
-simple-format round-trip, generated persona suites. **Structure mutation**
+Shipped: `superdialog optimize` (reflective prose optimizer — paired-round
+acceptance, prose-only targeted edits, simple-format round-trip, generated
+persona suites); simple-format `interrupts`; the unified loader;
+configurable `policies.hold_timeout`. **Structure mutation** in optimize
 (checkpoint split/merge/reorder, slot-schema tightening) remains future, as
 do GEPA-style frontier parent sampling, production-log feedback ingestion,
 CI metric-threshold gates, and response caching across rounds.
 
 Clearly future, not in this release: voice-event plumbing in the host
 adapters (silence/barge-in events emitted into `runtime.on_external`
-automatically); and sessionless webhook workers that load a persisted log,
-apply a handler, and exit. Today's surface is what §1–§6 and §8 document.
+automatically); simple-format sugar for multiple terminal outcomes; and
+sessionless webhook workers that load a persisted log, apply a handler,
+and exit. Today's surface is what Parts 1–2 document.

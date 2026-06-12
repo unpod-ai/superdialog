@@ -322,3 +322,28 @@ def test_language_map_covers_soniox_translation_set() -> None:
     for code, name in spot.items():
         assert _LANG_NAMES.get(code) == name, code
     assert len(_LANG_NAMES) >= 59  # full Soniox translation set
+
+
+def test_interrupts_compile_to_interrupt_specs() -> None:
+    import yaml
+
+    doc = yaml.safe_load(SIMPLE)
+    doc["interrupts"] = [
+        {"when": "Caller says goodbye.", "to": "main.confirm"},
+        {"id": "busy", "when": "Caller is busy.", "to": "main.confirm"},
+    ]
+    pb = simple_to_playbook(doc)
+    assert len(pb.interrupts) == 2
+    auto, named = pb.interrupts
+    assert auto.id == "interrupt_0" and auto.judge == "llm" and auto.resume is False
+    assert named.id == "busy" and named.to == "main.confirm"
+
+
+def test_interrupt_with_dangling_target_is_rejected() -> None:
+    import pytest as _pytest
+    import yaml
+
+    doc = yaml.safe_load(SIMPLE)
+    doc["interrupts"] = [{"when": "Caller says goodbye.", "to": "main.nope"}]
+    with _pytest.raises(ValueError):
+        simple_to_playbook(doc)

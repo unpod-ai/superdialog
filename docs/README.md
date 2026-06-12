@@ -22,8 +22,7 @@ This folder is the canonical documentation set.
 | [01-architecture.md](01-architecture.md) | Dual-engine internals — flow graph + DialogMachine runtime; Playbook event log, Talker/Director, process layer |
 | [02-api-reference.md](02-api-reference.md) | Function signatures and worked examples for both engines |
 | [03-embedding-guides.md](03-embedding-guides.md) | How to embed in LiveKit, PipeCat, FastAPI, CLI chatbot, unit tests |
-| [04-playbook-guide.md](04-playbook-guide.md) | Authoring playbooks — checkpoint anatomy, the process layer, compiling flows, replay/eval |
-| [05-simple-format.md](05-simple-format.md) | Simple authoring format — section-by-section reference, compile mapping, limits, tooling |
+| [04-playbook-guide.md](04-playbook-guide.md) | Playbooks in two parts — Part 1: authoring formats (simple + full); Part 2: technical design (runtime, process layer, evals/optimize) |
 | [decisions.md](decisions.md) | OSS-specific decisions: license, repo, governance, roadmap |
 
 ---
