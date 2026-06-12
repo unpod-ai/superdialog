@@ -241,3 +241,34 @@ def test_public_exports() -> None:
     assert callable(is_simple_playbook)
     assert callable(load_simple)
     assert callable(simple_to_playbook)
+
+
+def test_persona_language_is_folded() -> None:
+    import yaml
+
+    pb = simple_to_playbook(yaml.safe_load(SIMPLE))
+    assert "Default conversation language: English" in pb.persona
+
+
+def test_persona_name_folds_only_when_identity_lacks_it() -> None:
+    import yaml
+
+    doc = yaml.safe_load(SIMPLE)
+    # SIMPLE's identity already says "You are Mira..." -> no duplicate line
+    pb = simple_to_playbook(doc)
+    assert "Your name is Mira." not in pb.persona
+
+    doc["persona"]["identity"] = "You are a booking assistant for Glow Studio."
+    pb2 = simple_to_playbook(doc)
+    assert "Your name is Mira." in pb2.persona
+
+
+def test_blank_name_and_language_fold_nothing() -> None:
+    import yaml
+
+    doc = yaml.safe_load(SIMPLE)
+    doc["persona"]["name"] = ""
+    doc["persona"]["language"] = ""
+    pb = simple_to_playbook(doc)
+    assert "Your name is" not in pb.persona
+    assert "Default conversation language" not in pb.persona

@@ -68,6 +68,11 @@ def _build_persona(sp: SimplePlaybook) -> str:
     parts: list[str] = []
     if sp.persona.identity.strip():
         parts.append(sp.persona.identity.strip())
+    name = sp.persona.name.strip()
+    if name and name.lower() not in sp.persona.identity.lower():
+        parts.append(f"Your name is {name}.")
+    if sp.persona.language.strip():
+        parts.append(f"Default conversation language: {sp.persona.language.strip()}.")
     if sp.persona.voice_style.strip():
         parts.append(f"Voice & manner: {sp.persona.voice_style.strip()}")
     if sp.goal.strip():

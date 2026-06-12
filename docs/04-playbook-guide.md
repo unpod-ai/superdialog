@@ -547,6 +547,9 @@ boundaries: ["NEVER invent prices."]
 What's NOT in v1: linear step sequences only; objections live in persona prose
 (not interrupts); all collected slots are `str`. See the plan's deferred list.
 
+Full section-by-section reference — every field, its compile target, engine
+use, and authoring tips: [05-simple-format.md](05-simple-format.md).
+
 ## 9. Roadmap
 
 Shipped: `superdialog optimize` runs a reflective prose optimizer over the
