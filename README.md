@@ -3,10 +3,11 @@
 **Standalone dialog framework. Pure text in, pure text out.**
 
 SuperDialog is the **brain** layer for conversational systems. It ships two
-engines behind one text interface: **DialogMachine**, the graph-railed dialog
-state machine that executes flow graphs deterministically, and **Playbook**,
-a checkpoint-based compound runtime — a fast streaming Talker plus an async
-Director — for fluid, outcome-driven conversations. Both manage turn-by-turn
+engines behind one text interface: **Playbook**, the default - a
+checkpoint-based compound runtime (a fast streaming Talker plus an async
+Director) for fluid, outcome-driven conversations - and **DialogMachine**,
+the supported legacy engine, a graph-railed dialog state machine that
+executes flow graphs deterministically. Both manage turn-by-turn
 logic, tool calls, transitions, and conversation memory; both speak the same
 `Agent` protocol, so every host adapter runs either one unchanged.
 
@@ -57,10 +58,10 @@ pip install superdialog[mcp]        # MCP tool support
 pip install superdialog[langchain]  # LangChainAgent
 ```
 
-## Quickstart A — Playbook engine (recommended)
+## Quickstart A - Playbook engine (default)
 
-A **Playbook** declares a conversation as journeys of checkpoints — goal, typed
-slots, guidance prose, advance rules — plus a process layer of tools, pipelines,
+A **Playbook** declares a conversation as journeys of checkpoints - goal, typed
+slots, guidance prose, advance rules - plus a process layer of tools, pipelines,
 handlers, and policies. Checkpoints gate **outcomes**, not utterances: a fast
 Talker LLM streams every spoken turn while the async Director extracts slots,
 judges advancement, and runs tools, both over an append-only event log that
@@ -124,16 +125,16 @@ asyncio.run(chat())
 Streaming is real, not cosmetic: `await agent.turn(text, stream=True)` yields
 `StreamChunk`s as the Talker produces tokens, and barge-in (aborting the
 stream) interrupts speech without losing the Director's decision. The event
-log replays offline — `superdialog.playbook.replay` re-runs the Director over
+log replays offline - `superdialog.playbook.replay` re-runs the Director over
 a recorded session and diffs every decision.
 
-Adapting providers is two lambdas — or use the bundled
+Adapting providers is two lambdas - or use the bundled
 `superdialog.playbook.provider_adapters(provider)`, which returns the
 `(director, talker)` pair for any `LLMProvider`. (By hand: the Director wants
 plain text, `(await provider.complete(messages)).text`; the Talker wants raw
 tokens, `chunk.text` from `provider.stream(messages)`.)
 
-Or skip the Python entirely — generate a playbook from a description and
+Or skip the Python entirely - generate a playbook from a description and
 chat against it. The Playbook engine is the default for every format
 (full, simple, and flow JSON, which is compiled automatically):
 
@@ -143,9 +144,10 @@ superdialog chat                              # picks up ./playbook.yaml
 superdialog chat --playbook booking.yaml      # explicit (any format)
 superdialog chat --flow appointment.json      # flow JSON, compiled onto the engine
 superdialog chat --flow appointment.json --mode flow   # legacy DialogMachine
+superdialog optimize --playbook playbook.yaml  # reflective prose optimizer
 ```
 
-## Quickstart B — DialogMachine (flow graphs, legacy)
+## Quickstart B - DialogMachine (flow graphs, legacy)
 
 The original engine: a flow graph executed as a deterministic state machine.
 Opt in with `--mode flow`; new agents should start with Quickstart A.
@@ -179,10 +181,10 @@ async def chat():
 asyncio.run(chat())
 ```
 
-Or skip the Python and use the bundled CLI:
+Or skip the Python and use the bundled CLI - legacy mode is an explicit opt-in:
 
 ```bash
-superdialog chat --flow appointment.json
+superdialog chat --flow appointment.json --mode flow
 ```
 
 Tools plug in as `PythonTool` / `HttpTool` / `MCPTool`; models are picked per
@@ -194,11 +196,11 @@ machine with litellm-style URIs (`openai/gpt-5.1`, `vllm/<model>@<host>`,
 
 | You are building | Use |
 |---|---|
-| IVR-style scripts: deterministic, graph-railed, every path enumerable | **DialogMachine** |
+| IVR-style scripts: deterministic, graph-railed, every path enumerable | **DialogMachine** (legacy, opt-in via `--mode flow`) |
 | Fluid conversations where the model owns fluidity and checkpoints gate outcomes | **Playbook** |
 | Real token streaming with a compound Talker/Director turn model | **Playbook** |
 | Event-sourced audit log, deterministic replay, persona-driven eval | **Playbook** |
-| An existing flow JSON in production | **DialogMachine** — it keeps working |
+| An existing flow JSON in production | **Playbook** - every loader auto-compiles flow JSON; `--mode flow` keeps legacy DialogMachine behaviour |
 
 Flows keep working; playbooks are where new investment goes. Existing flow
 graphs compile down losslessly:
@@ -221,9 +223,9 @@ identical.
 
 | Host | Adapter | Approx. LoC |
 |---|---|---|
-| **CLI** | none - `superdialog chat` (flows) or an `input()`/`print()` loop | ~5 |
+| **CLI** | none - `superdialog chat` (playbooks or flows) or an `input()`/`print()` loop | ~5 |
 | **LiveKit** | `superdialog.adapters.livekit.DialogMachineLLM` (`Agent(llm=...)` plugin) | ~6 |
-| **PipeCat** | `superdialog.adapters.pipecat.make_processor(dm)` | ~2 |
+| **PipeCat** | `superdialog.adapters.pipecat.make_processor(agent)` | ~2 |
 | **FastAPI** | direct `/turn` route, or a `SessionWorker` for multi-user | ~6 |
 | **Unpod Voice** | `superdialog.adapters.websocket.WebSocketRunner` | ~6 |
 | **Slack / Discord / IRC / etc.** | none - direct callback | ~3 |
@@ -234,12 +236,12 @@ from livekit.agents import Agent, AgentSession
 from superdialog.adapters.livekit import DialogMachineLLM
 
 async def entrypoint(ctx):
-    agent = Agent(llm=DialogMachineLLM(dialog_machine))
+    agent = Agent(llm=DialogMachineLLM(playbook_agent))
     await AgentSession().start(agent=agent, room=ctx.room)
 ```
 
 When a conversation must outlive the process, hand any agent factory to a
-`SessionWorker` — it builds one agent per session and multiplexes N concurrent
+`SessionWorker` - it builds one agent per session and multiplexes N concurrent
 sessions, serializing same-session requests via a per-session lock. `LLMAgent` and `LangChainAgent`
 are drop-in non-state-machine brains for the same machinery.
 
@@ -256,17 +258,15 @@ are drop-in non-state-machine brains for the same machinery.
 | Doc | Contents |
 |---|---|
 | [docs/00-overview.md](docs/00-overview.md) | What it is, why standalone, positioning |
-| [docs/01-architecture.md](docs/01-architecture.md) | Dual-engine internals, contracts, data shapes |
+| [docs/01-architecture.md](docs/01-architecture.md) | Engine internals - the Playbook runtime (default) and the legacy DialogMachine; contracts, data shapes |
 | [docs/02-api-reference.md](docs/02-api-reference.md) | Every class and method |
 | [docs/03-embedding-guides.md](docs/03-embedding-guides.md) | Host-by-host integration walkthroughs |
-| [docs/04-playbook-guide.md](docs/04-playbook-guide.md) | Authoring playbooks, compiling flows, replay/eval |
+| [docs/04-playbook-guide.md](docs/04-playbook-guide.md) | Part 1: authoring formats (simple + full); Part 2: technical design - compiling flows, replay/eval |
 
 ## Roadmap
 
-Future work — none of this is in the current release:
+Future work - none of this is in the current release:
 
-- `superdialog optimize` - a run → eval → improve loop over recorded sessions
-- Playbook mode for the bundled CLI
 - Voice-event plumbing (silence, barge-in signals) from live adapters into
   playbook external events
 - Distributed session stores (Redis / File / SQLite)

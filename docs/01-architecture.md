@@ -1,9 +1,9 @@
-# SuperDialog — Architecture
+# SuperDialog - Architecture
 
 **Status:** Canonical
 **Parent:** [README.md](README.md)
 **Purpose:** Internal design of the framework. Two engines, one contract:
-the checkpoint-compound Playbook runtime (the default — the unified loader
+the checkpoint-compound Playbook runtime (the default - the unified loader
 runs playbooks, simple-format files, and compiled flow JSON on it) and the
 legacy graph-railed DialogMachine (explicit opt-in, `--mode flow`).
 
@@ -26,7 +26,7 @@ are driving.
                             │
                       SessionWorker               (sessions, stores, locks)
                             │
-       Agent protocol — turn / assist / chat_ctx / load_chat_ctx
+       Agent protocol - turn / assist / chat_ctx / load_chat_ctx
               ┌─────────────┴─────────────┐
        DialogMachine                PlaybookAgent
        (Engine A)                   (Engine B)
@@ -36,10 +36,10 @@ are driving.
      CriteriaJudge · FlowContext   expr rules · policies · tools
 ```
 
-- **Engine A — DialogMachine.** The stable, graph-railed state machine. A
+- **Engine A - DialogMachine.** The legacy, graph-railed state machine. A
   flow graph decides every transition; the LLM speaks within the rails.
   Fully supported; existing flows keep working unchanged.
-- **Engine B — Playbook.** The checkpoint compound runtime for fluid
+- **Engine B - Playbook.** The default engine: the checkpoint compound runtime for fluid
   conversations. Checkpoints gate *outcomes*, not utterances; a fast Talker
   streams every spoken turn while an async Director extracts, judges, and
   steers over an event-sourced log. This is where new investment goes.
@@ -53,7 +53,7 @@ superdialog/
   ├─ flow/                # Flow graph: nodes, edges, serialization
   ├─ machine/             # DialogStateMachine engine (Engine A internals)
   ├─ dialog_machine.py    # Public DialogMachine facade
-  ├─ playbook/            # Playbook engine (Engine B) — models, events,
+  ├─ playbook/            # Playbook engine (Engine B) - models, events,
   │                       #   runtime, talker, director, compiler, replay
   ├─ agent.py             # Agent Protocol + TurnResult
   ├─ agents/              # LLMAgent, LangChainAgent (non-DM brains;
@@ -64,29 +64,29 @@ superdialog/
   ├─ chat_context.py      # ChatContext, ChatMessage (LiveKit-aligned)
   ├─ llm/                 # Model URI resolver and provider adapters
   ├─ tools/               # Python / HTTP / MCP tool wrappers
-  ├─ cli/                 # `superdialog chat / flow lint / draw / generate`
+  ├─ cli/                 # `superdialog generate / chat / optimize / playbook / flow / eval`
   └─ adapters/            # LiveKit, PipeCat, FastAPI, WebSocket
 ```
 
-Shared substrate — `SessionWorker` (one agent per session, pluggable
+Shared substrate - `SessionWorker` (one agent per session, pluggable
 `SessionStore`), the model URI resolver (`openai/gpt-5.1`,
-`anthropic/claude-opus-4-7`, `custom/...`), tools, adapters, and the CLI —
+`anthropic/claude-opus-4-7`, `custom/...`), tools, adapters, and the CLI -
 is documented in [02-api-reference.md](02-api-reference.md) and
 [03-embedding-guides.md](03-embedding-guides.md). Note one seam difference:
 `DialogMachine` takes a model URI; `PlaybookAgent` takes two small LLM
 protocols (`StreamsLLM` for the Talker, `CompletesLLM` for the Director),
-so any provider — or a scripted fake in tests — plugs in directly.
+so any provider - or a scripted fake in tests - plugs in directly.
 
-## 2. Engine A — DialogMachine (graph-railed)
+## 2. Engine A - DialogMachine (legacy, graph-railed)
 
-The mature engine. A `ConversationFlow` is a directed graph: nodes (states,
+The legacy engine, opted into via `superdialog chat --mode flow`. A `ConversationFlow` is a directed graph: nodes (states,
 each with an instruction or static text), edges (transitions with
 natural-language conditions), `global_edges`, and `actions` (declarative HTTP
 calls). The public `Flow` facade loads/saves it as version-controllable JSON;
 `create_dialog_flow(prompt=..., llm=...)` bootstraps one from a prompt (the
 LLM is used at construction time only, never at runtime). For new agents,
-prefer the default creation path — `superdialog generate` /
-`generate_simple_playbook` — which produces a playbook directly.
+prefer the default creation path - `superdialog generate` /
+`generate_simple_playbook` - which produces a playbook directly.
 
 ```python
 dialog_machine = DialogMachine(flow=flow, llm="anthropic/claude-opus-4-7")
@@ -99,7 +99,7 @@ Internals (`superdialog.machine`):
 | Component | Role |
 |---|---|
 | `DialogStateMachine` | Runtime core; two execution models: criteria-based `process_turn(user_input)` (CriteriaJudge picks the edge) and tool-call-based `apply_transition(edge_id)` (the host LLM's tool callback names the edge) |
-| Adapters (`TextAdapter`, `ToolCallAdapter`, `LLMAdapter`) | How the LLM is consulted per turn — compose a reply, or pick an edge via a tool call |
+| Adapters (`TextAdapter`, `ToolCallAdapter`, `LLMAdapter`) | How the LLM is consulted per turn - compose a reply, or pick an edge via a tool call |
 | `CriteriaJudge` | LLM-based node-completion evaluator for the criteria path |
 | `TransitionGate` | Validates every transition, in order: edge valid → node content spoken → self-loop limit → completion criteria (slots) → user spoke → CriteriaJudge verdict |
 | `FlowContext` | Mutable state bag that travels with the machine: `ConversationData` (history, variables) + `MachineState` (current node, visit counts, intent stack) + legacy `node_slots` |
@@ -107,14 +107,14 @@ Internals (`superdialog.machine`):
 Flexibility on this engine is rail-shaped: `__stay_on_node__`, global edges
 with an intent stack, fallback edges, skip/auto-proceed handling. Each turn
 costs a route decision plus a speak call. That is exactly the failure mode
-the Playbook engine was designed to remove — users do not follow graphs.
+the Playbook engine was designed to remove - users do not follow graphs.
 
 `DialogMachine` remains fully supported: `turn` / `reset` / `set_llm` /
 `switch_flow` / `assist`, FlowSets, streaming, sessions, and all four host
 adapters. Full signatures and worked examples:
 [02-api-reference.md](02-api-reference.md).
 
-## 3. Engine B — Playbook (checkpoint compound)
+## 3. Engine B - Playbook (default, checkpoint compound)
 
 Design rationale: [the checkpoint compound architecture design
 doc](plans/2026-06-10-checkpoint-compound-architecture-design.md).
@@ -125,25 +125,28 @@ Source: `src/superdialog/playbook/`. Public surface: `superdialog.playbook`
 ### 3.1 The artifact
 
 A **Playbook** (`playbook/models.py`) is the authored, git-diffable artifact,
-loaded from YAML or JSON via `Playbook.load(path)` with full cross-reference
+loaded from YAML or JSON via `Playbook.load(path)` - which auto-detects all
+three formats (full playbooks, the simple authoring format, and legacy flow
+JSON compiled through `compile_flow`), so callers never route by format -
+with full cross-reference
 validation (unknown checkpoint/pipeline/tool ids, undeclared `requires` keys,
 duplicate ids, and the reserved `pipeline` result key all fail at load time).
 
 Two layers:
 
-- **Conversation layer** — `journeys` of `Checkpoint`s plus a `persona` and
+- **Conversation layer** - `journeys` of `Checkpoint`s plus a `persona` and
   a reusable `dispatch` table. A checkpoint is a call-center-script unit:
   `goal`, typed `slots` (`SlotSpec`), `guidance` prose (Jinja over
   `{slots, views, results}`), an ordered `advance_when` rule list
   (`AdvanceRule`: `when` / `judge: llm|expr` / `to` / `requires` / `set`),
   `gate: soft|hard`, optional `say_verbatim`, `never_say`, `auto`,
   `on_failure`, `terminal` + `outcome`, `turn_budget`.
-- **Process layer** — everything that is *not* conversation: `tools`
+- **Process layer** - everything that is *not* conversation: `tools`
   (`ToolSpec`: templated HTTP or registered python, `store_response_as`,
   `run_once`, `when:`, `env_updates`, timeout), `pipelines` (`PipelineSpec`:
   ordered steps with typed `on: {ok | failed | http_<code>}` branches and
   capped `RetrySpec`), `handlers` (`HandlerSpec`: webhook/timer-triggered
-  pipelines), `interrupts` (`InterruptSpec`), `policies` (silence), optional
+  pipelines), `interrupts` (`InterruptSpec`), `policies` (silence, `hold_timeout`), optional
   auth `middleware` (`on_status: 401 → refresh_with → replay`), an `env`
   lane, and computed `views` (LLM-free expressions).
 
@@ -174,7 +177,7 @@ journeys:
 ```
 
 How each field behaves at runtime: within the checkpoint the conversation is
-free — the Talker speaks from `guidance`, and the caller may answer in any
+free - the Talker speaks from `guidance`, and the caller may answer in any
 order. The Director extracts `city`/`date`/`players` into the typed slots
 (an `invalidates:` write clears stale downstream data on change-of-mind).
 The rules are ordered and multi-way: the Director judges the `llm` rules and
@@ -205,15 +208,18 @@ when a write re-asserts the same value.
 Because the log is the artifact, replay is free: `replay(log, playbook,
 director_llm)` (`playbook/replay.py`) re-runs the Director over each recorded
 user utterance and diffs its decisions against what was recorded
-(`ReplayReport`) — regression evidence for prompt or model changes.
+(`ReplayReport`) - regression evidence for prompt or model changes.
 `eval_bridge.py` (`PersonaSpec`, `run_session`, `run_eval`) drives persona
 self-play sessions and scores checkpoint completion, slot accuracy, and
-turns-per-checkpoint from the same logs.
+turns-per-checkpoint from the same logs. `superdialog optimize`
+(`playbook/optimize.py`) closes the loop: paired persona evals (generated
+suites by default) score reflective, prose-only edits and emit improved
+YAML in the source format.
 
-### 3.3 The compound runtime — one turn
+### 3.3 The compound runtime - one turn
 
 `PlaybookAgent` (`playbook/agent.py`) implements the `Agent` protocol, so
-`SessionWorker` and every host adapter run it unchanged — and streaming is
+`SessionWorker` and every host adapter run it unchanged - and streaming is
 real (tokens leave as the Talker produces them). Internally it composes
 `PlaybookRuntime` (event log owner + quiescence conductor,
 `playbook/runtime.py`), `Talker` (`playbook/talker.py`), and `Director`
@@ -226,7 +232,7 @@ A user turn, in order:
 2. **Director starts concurrently** in a cancellation-shielded task:
    `runtime.on_user_text(text)` appends the `UtteranceEvent`, then
    `Director.evaluate(state)` makes **one structured LLM call** that does
-   three jobs — extract slot values into the checkpoint's typed schema,
+   three jobs - extract slot values into the checkpoint's typed schema,
    judge the `llm` advance rules and interrupts, and write a 1–3 sentence
    **steering note** for the Talker's next context ("user already gave the
    date; nudge toward time selection").
@@ -239,8 +245,8 @@ A user turn, in order:
    hops (bounded by `max_hops=8`) until nothing moves: the entered
    checkpoint's **pipeline** runs (`PipelineRunner.run`, with typed
    branches, capped retries, and 401-refresh-replay middleware), then
-   **`judge: expr` rules** are evaluated synchronously in the fold — no LLM
-   round-trip, which is what makes compiled router chains instant — then
+   **`judge: expr` rules** are evaluated synchronously in the fold - no LLM
+   round-trip, which is what makes compiled router chains instant - then
    **`auto` checkpoints** speak their verbatim line and advance, and a
    **terminal** checkpoint appends `SessionEndEvent` with its `outcome`.
    `say_verbatim` lines crossed during quiescence surface as pass-through
@@ -249,7 +255,7 @@ A user turn, in order:
    `UtteranceEvent` stamped `spoke_from_version=N`; `runtime.check_repairs()`
    compares that stamp against later confirmed slot writes and, if the
    Talker re-asked for something already answered, appends a **repair**
-   steering note — the Talker self-corrects next turn instead of silently
+   steering note - the Talker self-corrects next turn instead of silently
    accumulating drift.
 6. **Done chunk** carries `Turn` metadata: `checkpoint`, state `version`,
    `ended`, and `outcome` when terminal.
@@ -264,7 +270,7 @@ A user turn, in order:
      ▼
  Talker.speak(state@N)
      │ soft gate: stream immediately
-     │ hard gate: barrier ≤0.4s ─miss─► filler ─► wait ≤5s ─miss─► hold line
+     │ hard gate: barrier ≤0.4s ─miss─► filler ─► wait ≤4s ─miss─► hold line
      │ tokens ────────────────────────────────────────────► host / TTS
      ▼
  join (Director done) ─► log speech (spoke_from_version=N)
@@ -293,24 +299,25 @@ at the moments it matters:
 - The Talker **barriers**: `Talker.speak(state, director_done=...)` waits up
   to `barrier_timeout` (0.4s) for the quiescent post-verdict state, emits
   the natural filler (`FILLER`) if exceeded, waits up to `hold_timeout`
-  (5s), and emits `HOLD_LINE` if the Director never lands — politely
+  (default 4.0s, per playbook via `policies.hold_timeout`), and emits
+  `HOLD_LINE` if the Director never lands - politely
   degraded, never hung.
 - `say_verbatim` bypasses the Talker LLM entirely (template → speech) for
   regulated lines; `never_say` lists are injected as renderer constraints.
 
-**Degradation ladder** — the session never dies with a model:
+**Degradation ladder** - the session never dies with a model:
 
 | Failure | Behavior |
 |---|---|
 | Director LLM error / bad JSON | `DegradedEvent(component="director")` appended; Talker continues solo; LLM-free policies (turn budget, silence) still apply; slots settle later |
 | Talker stream failure | One instant retry, then the canned `RECOVERY_LINE` |
 | Hard-gate barrier miss | Filler, then hold line (above) |
-| Quiescence hop exhaustion | `DegradedEvent(detail="quiesce_hop_exhaustion")` — a runaway hop loop is audited, never spun |
+| Quiescence hop exhaustion | `DegradedEvent(detail="quiesce_hop_exhaustion")` - a runaway hop loop is audited, never spun |
 | Tool/pipeline failure | A failed `ToolResultEvent` plus a typed `error_context` slot; declarative `retry` / `on_exhaust` / `on_failure` routing |
 
-Every rung is an *event in the log* — degraded mode is auditable, not silent.
+Every rung is an *event in the log* - degraded mode is auditable, not silent.
 
-## 4. The compiler — flows become playbooks
+## 4. The compiler - flows become playbooks
 
 `compile_flow(flow: ConversationFlow) -> Playbook` (`playbook/compiler.py`)
 converts a legacy graph into a single-journey playbook, lossless by
@@ -329,7 +336,7 @@ The mapping, validated against the 61-node golf flow
   predicates over known result keys become `judge: expr` rules
   (`X.success == true` → `results.X.ok`, `X.status == 409` →
   `results.X.status == 409`); everything not confidently translatable stays
-  `judge: llm` with the prose verbatim — lossless beats clever.
+  `judge: llm` with the prose verbatim - lossless beats clever.
 - **Tool-bearing computational chains** linearize into a `PipelineSpec` plus
   a synthetic intermediate checkpoint that runs it on entry and routes on
   `pipeline.ok` / `pipeline.failed`; status/failure branch edges become step
@@ -347,7 +354,7 @@ The mapping, validated against the 61-node golf flow
 
 `coverage_report(flow, pb) -> CoverageReport` is the lossless proof: it
 re-derives compile provenance and lists every node, edge, and action that did
-not map anywhere (`unmapped_*` — any entry is a compiler bug) alongside
+not map anywhere (`unmapped_*` - any entry is a compiler bug) alongside
 informational `dropped` buckets (constructs absorbed into policies,
 middleware, pipelines, or dispatch). Run it in CI next to the compiled
 artifact.
@@ -360,19 +367,20 @@ report = coverage_report(flow, pb)
 assert not report.unmapped_nodes and not report.unmapped_edges
 ```
 
-Positioning: flows keep working on Engine A; the compiler makes Engine B the
-zero-rewrite destination for them.
+Positioning: the unified loader makes Engine B the zero-rewrite default
+destination for flow JSON - `superdialog chat` compiles and runs it
+automatically; Engine A remains available via `--mode flow`.
 
 ## 5. Security model
 
-The playbook artifact is data — possibly optimizer-generated, possibly
-third-party — and the transcript is untrusted user speech. Defenses, by
+The playbook artifact is data - possibly optimizer-generated, possibly
+third-party - and the transcript is untrusted user speech. Defenses, by
 layer:
 
 - **Sandboxed Jinja.** All template rendering (`render.py`, `toolexec.py`)
   uses `jinja2.sandbox.SandboxedEnvironment`: attribute-walking SSTI
-  payloads are blocked, not executed. Template errors degrade — raw text on
-  the speaking path, a failed `ToolResultEvent` on the tool path — never a
+  payloads are blocked, not executed. Template errors degrade - raw text on
+  the speaking path, a failed `ToolResultEvent` on the tool path - never a
   crash mid-call.
 - **AST-whitelisted expressions.** `expr.evaluate` parses `judge: expr`
   rules and computed views against a strict node whitelist: no
@@ -383,7 +391,7 @@ layer:
 - **Hard gates require pre-verdict confirmation.** Director
   verdict-extracted slots are written `provisional` at hard gates, so a
   single (possibly prompt-injected) verdict can never confirm its own
-  `requires` and advance through a hard gate in one shot — `confirmed`
+  `requires` and advance through a hard gate in one shot - `confirmed`
   comes from tools, expr `set:` writes, or prior soft-checkpoint
   extraction. The Director's prompt additionally pins the transcript as
   untrusted input. `authoritative` slots are tool/Director-only, and the
@@ -391,15 +399,14 @@ layer:
 - **Secret redaction in event recording.** `ToolExecutor` records redacted
   tool calls: secret-shaped keys (token, api-key, password, bearer, otp, …)
   are masked recursively in bodies, and URLs are stripped of userinfo and
-  masked query secrets before the `ToolCallEvent` lands — the real request
+  masked query secrets before the `ToolCallEvent` lands - the real request
   still goes to the wire untouched. The **env lane is never rendered** to
   the Talker: the renderer shadows `env` in view expressions, so
   `ACCESS_TOKEN`-class values cannot leak into speech or the packed prompt.
 
 ## 6. Roadmap (future, not shipped)
 
-Clearly labeled non-features today: a `superdialog optimize` command closing
-the run → score → reflect loop over event logs; a playbook CLI mode; host
+Clearly labeled non-features today: host
 adapter plumbing that feeds LiveKit silence/barge-in signals in as
 `ExternalEvent`s (the Agent-protocol text path already works with the
 existing adapters); sessionless webhook workers for `handlers`;
@@ -410,4 +417,4 @@ promised for a specific version.
 
 Audio processing, STT/TTS, telephony/SIP/RTP, media servers and Rooms,
 numbers, voice profiles, billing. All of those are Voice Infra's problem.
-SuperDialog ends at text in, text out — on both engines.
+SuperDialog ends at text in, text out - on both engines.

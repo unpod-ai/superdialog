@@ -1,4 +1,4 @@
-# SuperDialog — Overview
+# SuperDialog - Overview
 
 **Status:** Canonical
 **Parent:** [README.md](README.md)
@@ -7,12 +7,14 @@
 
 ## 1. What it is
 
-A Python library that turns a prompt, a flow graph, or a checkpoint playbook into
-an executable conversation runtime. Pure text in, pure text out. Plays the role of
-the "brain" in conversational systems.
+A Python library that turns a prompt or a playbook into an executable
+conversation runtime - `superdialog generate` bootstraps a playbook from a
+description, and legacy flow graphs run compiled on the same engine. Pure
+text in, pure text out. Plays the role of the "brain" in conversational
+systems.
 
-Its core engine is the **Playbook** runtime — checkpoints gate outcomes
-while the model owns the phrasing — and it is the **default everywhere**:
+Its core engine is the **Playbook** runtime - checkpoints gate outcomes
+while the model owns the phrasing - and it is the **default everywhere**:
 the unified loader runs full playbooks, simple-format playbooks, and legacy
 flow JSON (auto-compiled via `compile_flow`) on the same engine, so users
 never have to think about which artifact they hold. The legacy
@@ -33,13 +35,11 @@ telephony forecloses every non-voice use case.
 SuperDialog (as one brain option), not the other way around. Putting SuperDialog
 inside the platform makes the platform non-modular and the framework non-portable.
 
-> *"उस machine को release करने का more less idea यह है... इस architecture से इन इस infrastructure से उसका कोई लेना देना नहीं है."*
-
 ## 3. Why OSS
 
 - **Community pull.** LiveKit and PipeCat owe their adoption to OSS. Releasing a
-  strong dialog framework — with good docs, working LiveKit/PipeCat adapters, and
-  a CLI chatbot mode for evaluation — creates a top-of-funnel that no closed
+  strong dialog framework - with good docs, working LiveKit/PipeCat adapters, and
+  a CLI chatbot mode for evaluation - creates a top-of-funnel that no closed
   product can match.
 - **Lower support burden.** Developers who build complex flows and playbooks will
   keep modifying them. If the framework is theirs to fork, our team is not in the
@@ -57,7 +57,7 @@ Unpod stack. Polishing it for OSS release is faster than building new telephony
 infrastructure.
 
 **(b) Independent shippability.** It needs no telephony, no speech, no media
-server, no Room — none of the platform pieces. Therefore nothing on the platform
+server, no Room - none of the platform pieces. Therefore nothing on the platform
 side gates it.
 
 **(c) Validation channel.** Public release is the cheapest way to learn whether
@@ -67,7 +67,7 @@ depends on the same hypothesis) needs rethinking before we burn cycles on it.
 
 ## 5. Positioning
 
-SuperDialog is to **conversation flow** what n8n is to **integration workflow** —
+SuperDialog is to **conversation flow** what n8n is to **integration workflow** -
 a simple, composable, eval-able runtime for orchestrating turn-by-turn logic.
 Where LangChain and LangGraph expose agent primitives, SuperDialog focuses
 narrowly on the conversational core: who speaks next, what to say while tools
@@ -81,37 +81,40 @@ your problem is conversation state, this is the right size."*
 
 | Audience | Why they care |
 |---|---|
-| **Voice developer using LiveKit / PipeCat today** | Drop SuperDialog in as the brain; stop hand-writing turn logic. `PlaybookAgent` gives real token streaming through the same adapters; DialogMachine remains for graph-railed flows |
-| **Chatbot developer (text-only)** | Use either engine directly with FastAPI; test DialogMachine flows as a CLI chat; drive playbooks through the `Agent` protocol |
-| **Developer with compliance / scripted flows** | Author the flow graph as the spec — every path enumerable and lintable — and run it compiled on the Playbook engine (default), or on DialogMachine via `--mode flow` |
+| **Voice developer using LiveKit / PipeCat today** | Drop SuperDialog in as the brain; stop hand-writing turn logic. `PlaybookAgent` gives real token streaming through the same adapters; legacy DialogMachine remains for graph-railed flows |
+| **Chatbot developer (text-only)** | `superdialog generate` a playbook, chat against it from the CLI, embed it with FastAPI through the `Agent` protocol |
+| **Developer with compliance / scripted flows** | Author the flow graph as the spec - every path enumerable and lintable - and run it compiled on the Playbook engine (default), or on DialogMachine via `--mode flow` |
 | **Developer whose calls must feel human** | Playbook: checkpoints gate outcomes while the model owns the phrasing; event log gives replay and eval for free |
 | **Enterprise dev with their own LLM** | Plug their custom LLM URI (`custom/internal/...`) into DialogMachine, or any streaming/completing model pair into Playbook's `StreamsLLM`/`CompletesLLM` protocols |
 | **Unpod Voice Infra customer** | SuperDialog is the default brain Unpod offers; same code runs locally and inside Unpod cloud |
 
 ## 7. Two engines
 
-**DialogMachine** (`superdialog.DialogMachine`; engine internals live in
-`superdialog.machine`) is the graph-railed state machine: the
-flow graph decides what is *possible* and the LLM picks among the outgoing edges.
-Every transition is authored, every reachable utterance path is enumerable, and
-the CLI can lint and draw the graph. That makes it strong where determinism is
-the point — compliance scripts, regulated disclosures, IVR replacement, any flow
-where "the agent must never improvise" is a feature.
-
-**Playbook** (`superdialog.playbook`) inverts the ownership: **checkpoints gate
-outcomes, not utterances.** A playbook declares journeys of checkpoints — goal,
-typed slots, guidance prose, ordered advance rules — plus a process layer of
+**Playbook** (`superdialog.playbook`) - the default engine - works on one
+principle: **checkpoints gate outcomes, not utterances.** A playbook
+declares journeys of checkpoints - goal,
+typed slots, guidance prose, ordered advance rules - plus a process layer of
 tools, pipelines, handlers, interrupts, and policies. At runtime a fast **Talker**
 streams every spoken turn with a single LLM call, while an async **Director**
-extracts slots, judges advancement, runs tools, and writes steering/repair notes
-— both over an append-only, event-sourced log that doubles as the audit, replay,
-and eval artifact. Soft checkpoints never block; hard gates barrier the Talker at
+extracts slots, judges advancement, runs tools, and writes steering/repair
+notes - both over an append-only, event-sourced log that doubles as the
+audit, replay, and eval artifact. Soft checkpoints never block; hard gates barrier the Talker at
 irreversible moments (payments, identity) until the Director's verdict lands.
 
-Why a second engine exists, honestly: users don't follow graphs. The graph-railed
+**DialogMachine** (`superdialog.DialogMachine`; engine internals live in
+`superdialog.machine`) is the legacy graph-railed state machine: the
+flow graph decides what is *possible* and the LLM picks among the outgoing edges.
+Every transition is authored, every reachable utterance path is enumerable, and
+the CLI can lint and draw the graph. That made it strong where determinism is
+the point - and that flow-graph-as-spec authoring style still works today,
+compiled onto the Playbook engine by default, or on the original runtime via
+`--mode flow`.
+
+Why the engines swapped places, honestly: users don't follow graphs. The
+graph-railed
 model accumulated roughly six stacked escape hatches (`__stay_on_node__`, global
 edges + intent stack, `allow_skip`, fallback edges, smart-skip, auto-proceed
-chains) — each patching one failure mode, each interacting subtly with the rest —
+chains) - each patching one failure mode, each interacting subtly with the rest -
 and still cost two serial LLM calls per turn with only cosmetic streaming. Rather
 than bolt on a seventh hatch, the Playbook engine moves fluidity to the model and
 keeps the framework's authority where it belongs: on outcomes.
@@ -141,19 +144,22 @@ agent = PlaybookAgent(
 result = await agent.turn("hello")
 ```
 
-**Migration, not replacement.** Existing flows keep working — by default
+**Migration, not replacement.** Existing flows keep working - by default
 they now run **compiled on the Playbook engine**: `Playbook.load` detects
 flow JSON and converts it via `compile_flow`, with `coverage_report(flow,
 pb)` proving every node, edge, and action mapped (validated against a
 61-node production booking flow). DialogMachine remains fully supported
-for anyone who wants the original graph runtime — pass `--mode flow`. New
+for anyone who wants the original graph runtime - pass `--mode flow`. New
 investment goes into the Playbook engine.
 
-**Roadmap (future, not built yet):** a `superdialog optimize` command closing the
-run → eval → improve loop over playbook artifacts; a playbook CLI chat mode; host
-plumbing that feeds voice events (silence timeouts, barge-in signals) into the
-event log as external events. Today the text path through the `Agent` protocol
-works with all existing adapters.
+**Shipped since:** `superdialog optimize` closes the run → eval → improve
+loop over playbook artifacts (paired evals, prose-only targeted edits,
+output in the source format); `superdialog generate` bootstraps a playbook
+from a description; the CLI chats against any artifact on the Playbook
+engine. **Roadmap (future, not built yet):** host plumbing that feeds voice
+events (silence timeouts, barge-in signals) into the event log as external
+events. Today the text path through the `Agent` protocol works with all
+existing adapters.
 
 ## 8. What it does well
 
@@ -165,7 +171,7 @@ works with all existing adapters.
 | LLM provider abstraction (model URIs) | shipped (v0.1) |
 | Tools: Python callables, HTTP endpoints, MCP servers | shipped (v0.1) |
 | Mid-conversation flow switching (`FlowSet`, `switch_flow`) | shipped (v0.1) |
-| CLI: `chat`, `flow lint / draw / generate` (DialogMachine) | shipped (v0.1) |
+| CLI: `generate`, `chat` (Playbook engine by default), `optimize`, `playbook compile/chat/run`, `flow lint / draw / generate` (legacy), `eval` | shipped |
 | Adapters: LiveKit `DialogMachineLLM`, PipeCat `make_processor`, FastAPI, WebSocket | shipped (v0.1) |
 | `Agent` Protocol + `Session` + `SessionWorker` (multi-conversation lifecycle, in-process persistence, per-session locking) | shipped (v0.2) |
 | `LLMAgent`, `LangChainAgent` (non-DM brains usable in SessionWorker; LangChainAgent via the `langchain` extra, `superdialog.agents.langchain_agent`) | shipped (v0.2) |
@@ -177,8 +183,8 @@ works with all existing adapters.
 | Replay + persona eval bridge: `replay`, `run_session`, `run_eval` | shipped |
 | Distributed stores (`RedisSessionStore`, `FileSessionStore`, `SQLiteSessionStore`) + `RedisLockBackend` | planned |
 | Pluggable HTTP auth (`BearerAuth`, `BasicAuth`, callable) | planned |
-| `Eval` harness + `superdialog eval` CLI | planned |
-| `superdialog optimize` (playbook run → eval → improve loop) | roadmap (future) |
+| `superdialog eval` CLI (flow audit / synthetic corpus) | shipped |
+| `superdialog optimize` (playbook run → eval → improve loop; paired evals, prose-only edits, source-format output) | shipped |
 
 ## 9. What it explicitly is not
 
@@ -193,12 +199,12 @@ works with all existing adapters.
 
 ## 10. Success criteria
 
-- **GitHub stars and forks.** Baseline target TBD, but real numbers — not vanity
+- **GitHub stars and forks.** Baseline target TBD, but real numbers - not vanity
   metrics.
 - **Adapter usage.** Are developers actually plugging SuperDialog into LiveKit
   and PipeCat? Telemetry from optional usage pings if they opt in.
-- **Eval adoption.** Are developers running evals — the playbook replay/eval
-  bridge today, the full harness later — or just using the runtime? The eval is
+- **Eval adoption.** Are developers running evals - the playbook replay/eval
+  bridge today, the full harness later - or just using the runtime? The eval is
   part of what differentiates this from "yet another agent framework."
 - **Playbook uptake.** Of new projects, how many author playbooks (or compile
   flows into them) versus staying on raw graphs? This signals whether the
