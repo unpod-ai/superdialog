@@ -1,0 +1,60 @@
+- name: Alice
+  traits: cooperative and forthcoming
+  goal: Discuss project details for potential investment.
+  max_turns: 12
+  opening: Hello
+  ground_truth_slots:
+    customer_name: Alice Johnson
+    preferred_language: English
+    location: New York
+    purpose: Investment
+    configuration: 2 Bedrooms
+    family_size: 4
+    budget: 500,000
+    possession: Ready to move in
+    visit_slot: Saturday at 10 AM
+- name: Bob
+  traits: terse and impatient
+  goal: Get quick answers and move on.
+  max_turns: 12
+  opening: Hello
+  ground_truth_slots:
+    customer_name: Bob Smith
+    preferred_language: English
+    location: San Francisco
+    purpose: Self-use
+    configuration: 1 Bedroom
+    family_size: 1
+    budget: 300,000
+    possession: 6 months
+    visit_slot: Friday at 2 PM
+- name: Cathy
+  traits: tangent-prone
+  goal: Chat about unrelated topics.
+  max_turns: 12
+  opening: Hello
+  ground_truth_slots:
+    customer_name: Cathy Williams
+    preferred_language: English
+    location: Chicago
+    purpose: Investment
+    configuration: 3 Bedrooms
+    family_size: 5
+    budget: 700,000
+    possession: Now
+    visit_slot: Sunday at 11 AM
+- name: Daniel
+  traits: error-making
+  goal: Provide details with occasional mistakes.
+  max_turns: 12
+  opening: Hello
+  ground_truth_slots:
+    customer_name: Daniel Brown
+    preferred_language: Spanish
+    location: Los Angeles
+    purpose: Self-use
+    configuration: 2 Bedrooms
+    family_size: 3
+    budget: 450,000
+    possession: 4 months
+    visit_slot: Monday at 1 PM
