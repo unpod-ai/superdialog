@@ -40,3 +40,28 @@ def test_explicit_engine_overrides() -> None:
 def test_engine_flow_on_playbook_object_is_error() -> None:
     with pytest.raises(ValueError, match="no graph runtime"):
         _select_engine(Playbook.from_yaml(MINIMAL_YAML), "flow")
+
+
+from superdialog.dialog_machine import _python_tools_from  # noqa: E402
+from superdialog.tools import PythonTool  # noqa: E402
+
+
+async def test_tool_bridge_invokes_execute() -> None:
+    calls = {}
+
+    async def impl(city: str) -> dict:
+        calls["city"] = city
+        return {"ok": True, "city": city}
+
+    tool = PythonTool.of(impl, name="lookup")
+    bridged = _python_tools_from([tool])
+    assert set(bridged) == {tool.id}
+    fn = bridged[tool.id]
+    out = await fn({"city": "Pune"}, None)  # state unused by this bridge
+    assert out == {"ok": True, "city": "Pune"}
+    assert calls["city"] == "Pune"
+
+
+def test_tool_bridge_empty_and_none() -> None:
+    assert _python_tools_from(None) == {}
+    assert _python_tools_from([]) == {}

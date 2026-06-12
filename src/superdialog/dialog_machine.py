@@ -64,6 +64,18 @@ def _select_engine(source: Any, engine: str = "auto") -> Literal["graph", "playb
     return "graph" if is_flow else "playbook"
 
 
+def _python_tools_from(tools: list[Tool] | None) -> dict[str, Any]:
+    """Bridge any Tool to the Playbook engine's PythonToolFn via execute()."""
+
+    def _adapt(tool: Tool) -> Any:
+        async def fn(args: dict[str, Any], state: Any) -> Any:
+            return (await tool.execute(args)).data
+
+        return fn
+
+    return {t.id: _adapt(t) for t in (tools or [])}
+
+
 class DialogMachine:
     """Spec-aligned public facade over :class:`DialogStateMachine`.
 

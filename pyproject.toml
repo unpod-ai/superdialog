@@ -3,7 +3,7 @@ name = "superdialog"
 version = "0.2.8"
 description = "Standalone dialog state machine framework — text in, text out."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Unpod", email = "parvinder@unpod.ai" }]
 dependencies = [
@@ -27,6 +27,17 @@ mcp = ["mcp>=0.9"]
 langchain = ["langchain-core>=0.3"]
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "anyio>=4", "ruff>=0.4", "pyrefly>=0.1"]
 evals = ["openai>=1.0"]
+# Voice-agent playground (playground/) — drives a live unpod AgentRunner over a
+# supervoice speech backend. unpod installs from PyPI so a fresh clone is
+# self-contained; overlay an editable ../unpod-sdk to co-develop the SDK
+# (`task pg-local`).
+playground = [
+  "unpod>=0.1,<0.2",
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.32",
+  "loguru>=0.7",
+  "livekit-agents>=1.0,<2",
+]
 
 [project.urls]
 Homepage = "https://github.com/geneffic/superdialog"
@@ -50,6 +61,9 @@ target-version = "py312"
 # shape, top-of-file imports gated behind a `pytest.importorskip`) that
 # aren't worth scrubbing during the slim port. See Task 7.
 "tests/dialog_machine/*" = ["F841", "E402", "F811"]
+# Playground tests gate heavy optional imports behind ``pytest.importorskip``,
+# so their module-level imports intentionally follow those calls (E402).
+"tests/playground/*" = ["E402"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
