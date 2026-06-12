@@ -10,7 +10,7 @@
 
 **Working context:** Branch `feat/playground-revamp`, **in place** (the `playground/` tree is untracked, so a worktree would lose it). Commit only the exact files each task touches — never `git add -A` (the repo has unrelated untracked WIP: `Taskfile.yml`, `examples/`, `tests/playground/`). Committing our files gradually tracks the playground on this branch, which is intended.
 
-**Test runner:** `bash scripts/run_tests.sh <module>`. Frontend: `cd playground/web && npm run build` (typecheck) and `npm test` (node:test).
+**Test runner:** `uv run --extra playground pytest tests/playground/<file> -v` (the playground needs the `playground` extra; new modules add `pytest.importorskip("fastapi"/"loguru"/"unpod")` guards where they import the harness). There is **no** `scripts/run_tests.sh` in this repo. Async tests use `async def` (pytest `asyncio_mode = "auto"`); fake the LLM with the existing `FakeLLMProvider` + `CompletionResult` from `tests/conftest.py` (fixture `fake_llm_provider`). Frontend: `cd playground/web && npm run build` (typecheck) and `npm test` (node:test).
 
 ---
 
@@ -66,8 +66,7 @@ def test_effective_path_prefers_draft(tmp_path, monkeypatch):
 
 **Step 2: Run it to confirm it fails**
 
-Run: `bash scripts/run_tests.sh playground_paths` (after registering) or directly
-`uv run pytest tests/playground/test_playbook_paths.py -v`
+Run: `uv run --extra playground pytest tests/playground/test_playbook_paths.py -v`
 Expected: FAIL — `AttributeError: module ... has no attribute 'effective_path'`.
 
 **Step 3: Implement the helpers**
@@ -118,10 +117,9 @@ def build(llm: str, playbook_id: str) -> Any:
     return DialogMachine(Playbook.load(str(src)), llm=llm, engine="playbook")
 ```
 
-**Step 4: Register the test module, run, confirm pass**
+**Step 4: Run, confirm pass**
 
-Add a `playground_paths` case to `scripts/run_tests.sh` (see Task 6 for the pattern; do it now for this module). Run:
-`uv run pytest tests/playground/test_playbook_paths.py -v` → PASS.
+Run: `uv run --extra playground pytest tests/playground/test_playbook_paths.py -v` → PASS.
 
 **Step 5: Format + typecheck the touched file only**
 
@@ -134,7 +132,7 @@ uv run pyrefly check   # fix any new errors in the touched files
 **Step 6: Commit**
 
 ```bash
-git add playground/agents/playbooks.py tests/playground/test_playbook_paths.py scripts/run_tests.sh
+git add playground/agents/playbooks.py tests/playground/test_playbook_paths.py
 git commit -m "feat(playground): draft-precedence path helpers; build() runs the draft"
 ```
 
@@ -725,11 +723,10 @@ git commit -m "feat(playground): source/validate/save/publish/edit endpoints"
 
 ---
 
-### Task 6: Gitignore drafts + register test modules
+### Task 6: Gitignore drafts + full backend run
 
 **Files:**
 - Create: `playground/.gitignore`
-- Modify: `scripts/run_tests.sh`
 
 **Step 1:** Create `playground/.gitignore`:
 
@@ -737,16 +734,20 @@ git commit -m "feat(playground): source/validate/save/publish/edit endpoints"
 .drafts/
 ```
 
-**Step 2:** In `scripts/run_tests.sh`, register the new modules following the existing case pattern (run `bash scripts/run_tests.sh list` first to copy the exact style). Ensure these run:
-`tests/playground/test_playbook_paths.py`, `test_playbook_store.py`, `test_playbook_edit.py`, `test_playbook_endpoints.py`.
-
-**Step 3:** Run the whole backend group → all PASS.
-
-**Step 4: Commit**
+**Step 2:** Run the whole backend group → all PASS:
 
 ```bash
-git add playground/.gitignore scripts/run_tests.sh
-git commit -m "chore(playground): ignore .drafts/, register backend tests"
+uv run --extra playground pytest tests/playground/test_playbook_paths.py \
+  tests/playground/test_playbook_store.py \
+  tests/playground/test_playbook_edit.py \
+  tests/playground/test_playbook_endpoints.py -v
+```
+
+**Step 3: Commit**
+
+```bash
+git add playground/.gitignore
+git commit -m "chore(playground): ignore .drafts/"
 ```
 
 ---
@@ -1557,7 +1558,7 @@ git commit -m "feat(playground/web): Stats tab — status + bot audio + metrics"
 
 ### Task 16: Full verification + smoke
 
-**Step 1:** Backend: `bash scripts/run_tests.sh playground_paths playground_store playground_edit playground_endpoints` (or the registered group) → all PASS.
+**Step 1:** Backend: `uv run --extra playground pytest tests/playground -v` → all PASS.
 **Step 2:** Frontend: `cd playground/web && npm test && npm run build` → PASS.
 **Step 3:** `uv run python -m playground.run` → exercise every tab; select a playbook; edit + Save (draft) + Connect (runs draft); Chat an edit; Publish (canonical written, draft cleared); Export downloads YAML; Stats shows live data on a call.
 **Step 4:** `uv run ruff check playground/ && uv run pyrefly check` clean for touched files.
