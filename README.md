@@ -67,8 +67,46 @@ Talker LLM streams every spoken turn while the async Director extracts slots,
 judges advancement, and runs tools, both over an append-only event log that
 doubles as the audit/replay artifact.
 
+Start with the **simple format** - prose steps, a structured persona, and
+reference data as plain YAML. It is what `superdialog generate` produces,
+and every loader and command accepts it directly:
+
 ```yaml
-# booking.yaml
+# playbook.yaml (simple format)
+goal: "Book a haircut and confirm it."
+persona:
+  name: Mira
+  language: ["en", "hi"]
+  identity: "You are Mira, a booking assistant for Glow Studio."
+  voice_style: "Warm and brief. One question at a time."
+playbook:
+  - id: greet
+    purpose: "Open the call."
+    say: "Greet the caller and ask how you can help."
+    done_when: "Caller is ready to book."
+  - id: collect
+    purpose: "Get the booking details."
+    say: "Ask for their name and preferred service."
+    collect: [name, service]
+    done_when: "Name and service are captured."
+  - id: confirm
+    purpose: "Confirm and close."
+    say: "Read back the booking and confirm."
+    done_when: "Caller has confirmed."
+facts:
+  canonical_pricing: {haircut: "₹400"}
+boundaries: ["NEVER invent prices."]
+interrupts:
+  - {when: "Caller says goodbye.", to: main.confirm}
+```
+
+When you need precision the simple format can't express - tools, pipelines,
+hard gates, typed slots, multiple outcomes - graduate to the **full format**
+(same engine, same loader; see
+[docs/04-playbook-guide.md](docs/04-playbook-guide.md) Part 1):
+
+```yaml
+# booking.yaml (full format)
 persona: "You are a booking assistant."
 env: {API_BASE_URL: "https://api.example.com"}
 journeys:

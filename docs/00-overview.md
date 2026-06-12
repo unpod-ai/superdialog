@@ -94,7 +94,10 @@ your problem is conversation state, this is the right size."*
 principle: **checkpoints gate outcomes, not utterances.** A playbook
 declares journeys of checkpoints - goal,
 typed slots, guidance prose, ordered advance rules - plus a process layer of
-tools, pipelines, handlers, interrupts, and policies. At runtime a fast **Talker**
+tools, pipelines, handlers, interrupts, and policies. Authoring starts in
+the **simple format** (prose steps + persona + facts; what `superdialog
+generate` writes) and graduates to the full format for tools, gates, and
+typed slots - both compile to the same artifact. At runtime a fast **Talker**
 streams every spoken turn with a single LLM call, while an async **Director**
 extracts slots, judges advancement, runs tools, and writes steering/repair
 notes - both over an append-only, event-sourced log that doubles as the

@@ -32,8 +32,11 @@ This folder is the canonical documentation set.
 
 - **New to SuperDialog?** Read [00-overview.md](00-overview.md), then run a
   quickstart from the [top-level README](../README.md).
-- **Writing a new conversation?** Author a playbook -
-  [04-playbook-guide.md](04-playbook-guide.md).
+- **Writing a new conversation?** Start with the simple playbook format -
+  `superdialog generate "describe your agent"` writes one, and
+  [04-playbook-guide.md](04-playbook-guide.md) Part 1 is the
+  section-by-section reference (simple first, full format when you need
+  tools, gates, or typed slots).
 - **Operating an existing flow JSON?** It runs on the Playbook engine -
   `Playbook.load` auto-detects flow JSON and compiles it via `compile_flow`;
   `--mode flow` opts into the legacy DialogMachine

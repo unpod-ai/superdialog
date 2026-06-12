@@ -43,8 +43,12 @@ are driving.
   conversations. Checkpoints gate *outcomes*, not utterances; a fast Talker
   streams every spoken turn while an async Director extracts, judges, and
   steers over an event-sourced log. This is where new investment goes.
-- **The bridge.** `compile_flow` converts existing flow JSON into Playbooks
-  losslessly (§4), so migration is a compile step, not a rewrite.
+- **The frontends.** Two compilers lower authoring surfaces onto Engine B:
+  `simple_to_playbook` (`playbook/simple.py`) compiles the simple authoring
+  format - prose steps, structured persona, facts/objections/boundaries -
+  and `compile_flow` converts existing flow JSON losslessly (§4), so
+  migration is a compile step, not a rewrite. The unified loader invokes
+  both automatically.
 
 Package layout:
 
