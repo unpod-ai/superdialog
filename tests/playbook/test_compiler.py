@@ -32,10 +32,10 @@ EXPECTED_COMPUTATIONAL = {
     "hold_slot_payment",
     "confirm_booking",
     "confirm_booking_retry",
-    "slot_taken",
     "profile_check_waitlist",
     "create_player_for_waitlist",
 }
+# slot_taken has static_text and no tools → auto-advancing conversational checkpoint
 
 
 def _flow() -> ConversationFlow:
@@ -349,8 +349,12 @@ def test_money_chain_is_pipeline() -> None:
         "action-slots-hold",
         "action-bookings-confirm",
     ]
-    # a failed hold re-runs availability via the shared intermediate
-    assert steps[0].on["failed"] == AVAIL_REF
+    # a failed hold routes to slot_taken (auto checkpoint that speaks the message),
+    # which then re-runs availability via the shared intermediate
+    assert steps[0].on["failed"] == "main.slot_taken"
+    slot_taken_cp = pb.checkpoint("main.slot_taken")
+    assert slot_taken_cp.auto is True
+    assert any(r.to == AVAIL_REF for r in slot_taken_cp.advance_when)
     # a failed confirm routes to the retry intermediate (legacy retry node)
     retry_ref = steps[1].on["failed"]
     assert retry_ref == "main.confirm_booking__confirm_to_retry"

@@ -69,8 +69,17 @@ class FlowIndex:
         """Classify a node as conversational, computational, or system."""
         if self.indegree.get(node.id, 0) == 0 and node.id != self.flow.initial_node:
             return "system"
-        if node.node_type == "router" or node.auto_proceed:
+        if node.node_type == "router":
             return "computational"
+        # auto_proceed nodes with on-enter tools are computational: their job is
+        # running tools, not speaking. Only tool-free auto_proceed nodes that
+        # carry spoken content (instruction / static_text) are promoted to
+        # conversational so their text is not silently dropped during folding.
+        if node.auto_proceed:
+            has_content = bool(node.instruction or node.static_text)
+            has_tools = bool(_on_enter_ids(node))
+            if not has_content or has_tools:
+                return "computational"
         return "conversational"
 
 
@@ -665,7 +674,7 @@ class _Compiler:
                 slots=slots,
                 guidance=self._rw(node.instruction or ""),
                 say_verbatim=(self._rw(node.static_text) if node.static_text else None),
-                auto=bool(node.static_text) and bool(node.auto_proceed),
+                auto=bool(node.auto_proceed) and bool(node.instruction or node.static_text),
                 on_enter=_on_enter_ids(node),
                 terminal=node.is_final,
                 outcome=node.id if node.is_final else None,

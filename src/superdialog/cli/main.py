@@ -577,7 +577,9 @@ async def _playbook_chat_loop(playbook_path: str, model: str) -> None:
         print()
 
     print(f"Playbook demo on {model} — type 'quit' to exit.\n")
-    await runtime.start()
+    pass_through = await runtime.start()
+    for line in pass_through:
+        print(f"agent> {line}")
     await _speak()
 
     while True:
@@ -591,12 +593,14 @@ async def _playbook_chat_loop(playbook_path: str, model: str) -> None:
         if not text.strip():
             continue
         cp_before = runtime.state.checkpoint_id
-        await runtime.on_user_text(text)
+        pass_through = await runtime.on_user_text(text)
         cp_after = runtime.state.checkpoint_id
         print(
             f"[DEBUG] {cp_before} → {cp_after}  ended={runtime.state.ended}",
             file=sys.stderr,
         )
+        for line in pass_through:
+            print(f"agent> {line}")
         await _speak()
         if runtime.state.ended:
             print(f"[session ended — outcome: {runtime.state.outcome}]")
