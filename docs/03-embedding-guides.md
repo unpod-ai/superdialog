@@ -120,6 +120,12 @@ asyncio.run(main())
 > `traversal_dir` writes a timestamped JSON per completed session (full node
 > path, every turn, collected slots).
 
+**Which engine am I on?** The `chat` REPL prints a per-turn status line to
+stderr that names the engine: `[checkpoint=<id> ended=<bool>]` is the
+Playbook engine (the default), while `[<ms>ms]` is the legacy DialogMachine
+(`--mode flow`). A bare `--flow x.json` shows the checkpoint form because
+flow JSON is compiled onto the Playbook engine.
+
 **When to use:** during initial playbook (or legacy flow) design, before any voice infrastructure is set up.
 
 ---
