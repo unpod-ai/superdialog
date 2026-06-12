@@ -67,7 +67,10 @@ turn. Four fields:
   persona. The highest-leverage prose in the file.
 - **`name`** — the agent's name. Folded as `Your name is <name>.` **only
   when the identity prose doesn't already mention it** (no duplication).
-- **`language`** — folded as `Default conversation language: <language>.`
+- **`language`** — a language name (`English`), an ISO 639-1 code (`hi`),
+  or a list of either (`["en", "hi"]`). The first entry is the default,
+  the rest are also spoken; codes map to readable names. Folds as
+  `Default conversation language: English. Also speaks: Hindi.`
 - **`voice_style`** — folded as `Voice & manner: …`. Tone, pacing,
   sentence length, language-switching rules.
 
