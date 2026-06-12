@@ -1215,6 +1215,12 @@ body {
 .codeeditor { flex: 1; min-height: 0; overflow: hidden; }
 .edit-empty { padding: 24px; color: var(--fg-3); font-family: var(--ui); }
 
+/* ---- Stats tab (status + bot audio + metrics) ---- */
+.statspanel {
+  height: 100%; min-height: 0; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 18px; padding: 16px;
+}
+
 /* ---- Chat tab (AI builder) ---- */
 .chatpanel { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .chat-head {
