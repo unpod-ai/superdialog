@@ -468,8 +468,10 @@ pb = Playbook.load(path)         # picks YAML for .yaml/.yml, else JSON
 ```
 
 All three loaders auto-detect the **simple authoring format** (a top-level
-`playbook:` list) and lower it via `simple_to_playbook` — callers never
-need to route by format; `load_simple` remains as an explicit alias.
+`playbook:` list, lowered via `simple_to_playbook`) **and legacy flow
+JSON** (`nodes` + `initial_node`, compiled via `compile_flow`) — callers
+never route by format; the Playbook engine is the default for every
+artifact. `load_simple` remains as an explicit alias.
 
 Top-level fields:
 

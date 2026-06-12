@@ -52,20 +52,6 @@ def _run_chat_repl(flow: "Flow", llm: str, adapter: str = "llm") -> None:
     asyncio.run(_loop())
 
 
-def _looks_like_playbook(path: str) -> bool:
-    """True when ``path`` parses to a mapping carrying a top-level 'journeys'.
-
-    Tolerant by design: any read/parse failure means "not a playbook" so the
-    caller falls back to the flow loader, which then reports the real error.
-    """
-    try:
-        text = Path(path).read_text(encoding="utf-8")
-        doc = yaml.safe_load(text)
-    except (OSError, yaml.YAMLError):
-        return False
-    return isinstance(doc, dict) and "journeys" in doc
-
-
 def _looks_like_simple_playbook(path: str) -> bool:
     """True when ``path`` parses to a simple playbook (top-level ``playbook`` list).
 
@@ -205,20 +191,23 @@ def _cmd_chat(args: argparse.Namespace) -> int:
         )
         return 1
 
-    if _looks_like_playbook(flow_path):
-        return _chat_playbook(flow_path, llm)
+    mode = getattr(args, "mode", "playbook") or "playbook"
+    if mode == "flow":  # explicit opt-in to the legacy DialogMachine engine
+        try:
+            flow = Flow.load(flow_path)
+        except Exception as exc:  # malformed JSON / schema -> clean exit
+            print(f"Could not load flow {flow_path}: {exc}", file=sys.stderr)
+            return 1
+        adapter = getattr(args, "adapter", "llm") or "llm"
+        _run_chat_repl(flow, llm, adapter)
+        return 0
 
     if _looks_like_simple_playbook(flow_path):
         return _chat_simple(flow_path, llm)
 
-    try:
-        flow = Flow.load(flow_path)
-    except Exception as exc:  # malformed JSON / schema -> clean exit, no traceback
-        print(f"Could not load flow {flow_path}: {exc}", file=sys.stderr)
-        return 1
-    adapter = getattr(args, "adapter", "llm") or "llm"
-    _run_chat_repl(flow, llm, adapter)
-    return 0
+    # Default: the Playbook engine runs everything — full playbooks load
+    # directly; flow JSON is compiled losslessly by the unified loader.
+    return _chat_playbook(flow_path, llm)
 
 
 def _chat_playbook(path: str, llm: str) -> int:
@@ -697,11 +686,19 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     chat.add_argument("--llm", default="openai/gpt-4.1-mini")
     chat.add_argument(
+        "--mode",
+        default="playbook",
+        choices=["playbook", "flow"],
+        help="Engine: 'playbook' (default) runs everything on the Playbook "
+        "engine, compiling flow JSON automatically; 'flow' runs flow JSON "
+        "on the legacy DialogMachine",
+    )
+    chat.add_argument(
         "--adapter",
         default="toolcall",
         choices=["llm", "toolcall"],
-        help="Adapter mode: 'toolcall' (default, 1 LLM call/turn, mirrors production) or "
-        "'llm' (2 LLM calls/turn)",
+        help="DialogMachine adapter (--mode flow only): 'toolcall' (default, "
+        "1 LLM call/turn, mirrors production) or 'llm' (2 LLM calls/turn)",
     )
     chat.set_defaults(fn=_cmd_chat)
 

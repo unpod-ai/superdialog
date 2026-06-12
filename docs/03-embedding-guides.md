@@ -10,15 +10,20 @@
 
 In every host, three things stay the same:
 
-1. **Construct an engine** — a `DialogMachine` (flow + LLM URI + tools) for
-   graph-railed dialogs, or a `PlaybookAgent` (playbook + Talker/Director
-   LLMs) for checkpoint-gated fluid conversations.
+1. **Construct an engine** — a `PlaybookAgent` (the default engine:
+   playbook + Talker/Director LLMs). `Playbook.load` accepts full
+   playbooks, simple-format playbooks, *and* legacy flow JSON
+   (auto-compiled), so you don't pick a format — you just point it at your
+   artifact. The legacy `DialogMachine` (flow + LLM URI + tools) remains
+   for hosts that explicitly want the original graph runtime
+   (`--mode flow` in the CLI).
 2. **Route inbound text** to `engine.turn(text)`.
 3. **Send the reply text** back to the host's output channel.
 
 Both engines implement the same `superdialog.agent.Agent` protocol
 (`turn` / `assist` / `chat_ctx` / `load_chat_ctx`), so every adapter below
 accepts either one. The host varies; the SuperDialog code is identical.
+The `DialogMachine` examples below apply to the opt-in legacy mode.
 
 ### Provider adapters for the Playbook engine
 

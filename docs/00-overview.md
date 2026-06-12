@@ -11,11 +11,14 @@ A Python library that turns a prompt, a flow graph, or a checkpoint playbook int
 an executable conversation runtime. Pure text in, pure text out. Plays the role of
 the "brain" in conversational systems.
 
-It ships **two engines behind one `Agent` protocol** (see §7): **DialogMachine**,
-the stable graph-railed state machine, and **Playbook**, the new checkpoint
-compound runtime for conversations that must feel human. Hosts pick an engine the
-way they pick a model — the surrounding machinery (sessions, adapters, tools) is
-shared.
+Its core engine is the **Playbook** runtime — checkpoints gate outcomes
+while the model owns the phrasing — and it is the **default everywhere**:
+the unified loader runs full playbooks, simple-format playbooks, and legacy
+flow JSON (auto-compiled via `compile_flow`) on the same engine, so users
+never have to think about which artifact they hold. The legacy
+**DialogMachine** graph engine remains fully supported behind the same
+`Agent` protocol as an explicit opt-in (`--mode flow` in the CLI); the
+surrounding machinery (sessions, adapters, tools) is shared (see §7).
 
 ## 2. Why standalone
 
@@ -80,7 +83,7 @@ your problem is conversation state, this is the right size."*
 |---|---|
 | **Voice developer using LiveKit / PipeCat today** | Drop SuperDialog in as the brain; stop hand-writing turn logic. `PlaybookAgent` gives real token streaming through the same adapters; DialogMachine remains for graph-railed flows |
 | **Chatbot developer (text-only)** | Use either engine directly with FastAPI; test DialogMachine flows as a CLI chat; drive playbooks through the `Agent` protocol |
-| **Developer with compliance / scripted flows** | DialogMachine: the graph is the spec — every reachable utterance path is enumerable and lintable |
+| **Developer with compliance / scripted flows** | Author the flow graph as the spec — every path enumerable and lintable — and run it compiled on the Playbook engine (default), or on DialogMachine via `--mode flow` |
 | **Developer whose calls must feel human** | Playbook: checkpoints gate outcomes while the model owns the phrasing; event log gives replay and eval for free |
 | **Enterprise dev with their own LLM** | Plug their custom LLM URI (`custom/internal/...`) into DialogMachine, or any streaming/completing model pair into Playbook's `StreamsLLM`/`CompletesLLM` protocols |
 | **Unpod Voice Infra customer** | SuperDialog is the default brain Unpod offers; same code runs locally and inside Unpod cloud |
@@ -113,7 +116,7 @@ and still cost two serial LLM calls per turn with only cosmetic streaming. Rathe
 than bolt on a seventh hatch, the Playbook engine moves fluidity to the model and
 keeps the framework's authority where it belongs: on outcomes.
 
-| | DialogMachine (stable) | Playbook (new) |
+| | DialogMachine (legacy, opt-in) | Playbook (default) |
 |---|---|---|
 | Authoring unit | Graph node + edges | Checkpoint (goal, slots, guidance, advance rules) |
 | Who owns fluidity | The graph | The model, inside checkpoints |
@@ -138,11 +141,13 @@ agent = PlaybookAgent(
 result = await agent.turn("hello")
 ```
 
-**Migration, not replacement.** Existing flows keep working — DialogMachine is
-fully supported. `compile_flow(flow)` converts existing flow JSON into a playbook
-and `coverage_report(flow, pb)` proves every node, edge, and action mapped
-(validated against a 61-node production booking flow). New investment goes into
-the Playbook engine.
+**Migration, not replacement.** Existing flows keep working — by default
+they now run **compiled on the Playbook engine**: `Playbook.load` detects
+flow JSON and converts it via `compile_flow`, with `coverage_report(flow,
+pb)` proving every node, edge, and action mapped (validated against a
+61-node production booking flow). DialogMachine remains fully supported
+for anyone who wants the original graph runtime — pass `--mode flow`. New
+investment goes into the Playbook engine.
 
 **Roadmap (future, not built yet):** a `superdialog optimize` command closing the
 run → eval → improve loop over playbook artifacts; a playbook CLI chat mode; host

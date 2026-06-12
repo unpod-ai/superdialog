@@ -296,12 +296,23 @@ class Playbook(BaseModel):
     # -- io -------------------------------------------------------------------
     @classmethod
     def _from_doc(cls, doc: Any) -> "Playbook":
-        """Validate a parsed document, lowering simple-format docs first."""
-        # Lazy import: simple.py imports this module's models.
+        """Validate a parsed document, lowering other formats first.
+
+        Three authoring surfaces land here: simple-format docs (top-level
+        ``playbook`` list) and legacy flow docs (``nodes`` +
+        ``initial_node``) are compiled; full-format docs validate directly.
+        """
+        # Lazy imports: both frontends import this module's models.
         from .simple import is_simple_playbook, simple_to_playbook
 
         if is_simple_playbook(doc):
             return simple_to_playbook(doc)
+        if isinstance(doc, dict) and "nodes" in doc and "initial_node" in doc:
+            from superdialog.flow.models import ConversationFlow
+
+            from .compiler import compile_flow
+
+            return compile_flow(ConversationFlow.model_validate(doc))
         return cls.model_validate(doc)
 
     @classmethod

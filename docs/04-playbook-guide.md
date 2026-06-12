@@ -318,9 +318,12 @@ keys) is validated at load time.
 
 ## 4. Migrating a legacy flow
 
-Existing flow JSON keeps working on `DialogMachine` — nothing breaks. When
-you want a flow on the Playbook engine, the compiler converts it losslessly
-and proves it did:
+Flow JSON needs no migration step to *run*: the unified loader detects it
+(`nodes` + `initial_node`) and compiles it onto the Playbook engine
+automatically — `superdialog chat --flow legacy.json` just works, and
+`--mode flow` opts back into the original `DialogMachine` runtime when you
+want the graph engine itself. For a permanent conversion, the compiler is
+explicit and proves its coverage:
 
 ```python
 import json

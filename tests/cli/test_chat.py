@@ -146,7 +146,8 @@ def test_flow_generate_default_output_is_flow_json(tmp_path, monkeypatch, capsys
     mock_flow.save.assert_called_once_with("flow.json")
 
 
-def test_chat_auto_detects_flow_json(tmp_path, monkeypatch):
+def test_chat_flow_json_defaults_to_playbook_engine(tmp_path, monkeypatch):
+    """Default mode runs flow JSON on the Playbook engine (auto-compiled)."""
     flow_data = {
         "id": "t",
         "system_prompt": "s",
@@ -156,19 +157,19 @@ def test_chat_auto_detects_flow_json(tmp_path, monkeypatch):
     (tmp_path / "flow.json").write_text(json.dumps(flow_data))
     monkeypatch.chdir(tmp_path)
 
-    with patch.object(_cli_main_module, "_run_chat_repl") as mock_repl:
+    with (
+        patch.object(_cli_main_module, "_run_playbook_repl") as mock_play,
+        patch.object(_cli_main_module, "_run_chat_repl") as mock_legacy,
+    ):
         rc = main(["chat"])
 
     assert rc == 0
-    mock_repl.assert_called_once()
-    call_args = mock_repl.call_args
-    from superdialog import Flow
-
-    assert isinstance(call_args[0][0], Flow)
-    assert isinstance(call_args[0][1], str)
+    mock_play.assert_called_once()
+    mock_legacy.assert_not_called()
 
 
-def test_chat_explicit_flow_path(tmp_path):
+def test_chat_explicit_flow_path_mode_flow(tmp_path):
+    """--mode flow opts into the legacy DialogMachine engine."""
     flow_data = {
         "id": "t",
         "system_prompt": "s",
@@ -179,7 +180,7 @@ def test_chat_explicit_flow_path(tmp_path):
     flow_file.write_text(json.dumps(flow_data))
 
     with patch.object(_cli_main_module, "_run_chat_repl") as mock_repl:
-        rc = main(["chat", "--flow", str(flow_file)])
+        rc = main(["chat", "--flow", str(flow_file), "--mode", "flow"])
 
     assert rc == 0
     mock_repl.assert_called_once()
@@ -445,8 +446,8 @@ def test_chat_explicit_playbook_flag(tmp_path: Path) -> None:
     assert mock_play.call_args[0][0] == str(path)
 
 
-def test_chat_still_runs_flow(tmp_path: Path) -> None:
-    """A flow JSON (nodes/initial_node) via --flow runs the DialogMachine REPL."""
+def test_chat_mode_flow_still_runs_dialogmachine(tmp_path: Path) -> None:
+    """--mode flow runs flow JSON on the legacy DialogMachine REPL."""
     flow_data = {
         "id": "t",
         "system_prompt": "s",
@@ -460,7 +461,7 @@ def test_chat_still_runs_flow(tmp_path: Path) -> None:
         patch.object(_cli_main_module, "_run_playbook_repl") as mock_play,
         patch.object(_cli_main_module, "_run_chat_repl") as mock_flow,
     ):
-        rc = main(["chat", "--flow", str(flow_file)])
+        rc = main(["chat", "--flow", str(flow_file), "--mode", "flow"])
 
     assert rc == 0
     mock_play.assert_not_called()
@@ -494,11 +495,23 @@ def test_chat_malformed_playbook_exits_clean(
 def test_chat_malformed_flow_exits_clean(
     tmp_path: Path, capsys: pytest.CaptureFixture
 ) -> None:
-    """Malformed flow JSON exits 1 with a clean message, not a traceback."""
+    """Malformed input exits 1 with a clean message, not a traceback."""
+    bad = tmp_path / "f.json"
+    bad.write_text("{not json")
+    with patch.object(_cli_main_module, "_run_playbook_repl") as mock_play:
+        rc = main(["chat", "--flow", str(bad)])
+    assert rc == 1
+    mock_play.assert_not_called()
+    assert "Invalid playbook" in capsys.readouterr().err
+
+
+def test_chat_malformed_flow_exits_clean_in_flow_mode(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
     bad = tmp_path / "f.json"
     bad.write_text("{not json")
     with patch.object(_cli_main_module, "_run_chat_repl") as mock_flow:
-        rc = main(["chat", "--flow", str(bad)])
+        rc = main(["chat", "--flow", str(bad), "--mode", "flow"])
     assert rc == 1
     mock_flow.assert_not_called()
     assert "Could not load flow" in capsys.readouterr().err
@@ -583,7 +596,7 @@ def test_chat_malformed_simple_exits_clean(
     assert "Invalid simple playbook" in capsys.readouterr().err
 
 
-def test_chat_still_runs_flow_after_simple_detection(tmp_path: Path) -> None:
+def test_chat_flow_json_not_swallowed_by_simple_detection(tmp_path: Path) -> None:
     flow_data = {
         "id": "t",
         "system_prompt": "s",
@@ -594,12 +607,12 @@ def test_chat_still_runs_flow_after_simple_detection(tmp_path: Path) -> None:
     flow_file.write_text(json.dumps(flow_data))
     with (
         patch.object(_cli_main_module, "_run_simple_repl") as mock_simple,
-        patch.object(_cli_main_module, "_run_chat_repl") as mock_flow,
+        patch.object(_cli_main_module, "_run_playbook_repl") as mock_play,
     ):
         rc = main(["chat", "--flow", str(flow_file)])
     assert rc == 0
     mock_simple.assert_not_called()
-    mock_flow.assert_called_once()
+    mock_play.assert_called_once()  # default: compiled onto the Playbook engine
 
 
 def test_chat_playbook_flag_accepts_simple_format(tmp_path: Path) -> None:

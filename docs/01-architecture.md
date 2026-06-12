@@ -3,7 +3,9 @@
 **Status:** Canonical
 **Parent:** [README.md](README.md)
 **Purpose:** Internal design of the framework. Two engines, one contract:
-the graph-railed DialogMachine and the checkpoint-compound Playbook runtime.
+the checkpoint-compound Playbook runtime (the default — the unified loader
+runs playbooks, simple-format files, and compiled flow JSON on it) and the
+legacy graph-railed DialogMachine (explicit opt-in, `--mode flow`).
 
 ---
 

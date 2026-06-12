@@ -249,3 +249,28 @@ def test_load_auto_detects_simple_yaml_and_json_files(tmp_path) -> None:
 def test_from_yaml_rejects_neither_format() -> None:
     with pytest.raises(ValidationError):
         Playbook.from_yaml("name: not-a-playbook-of-either-format\n")
+
+
+def test_loaders_compile_flow_json_to_the_playbook_engine() -> None:
+    import json
+
+    flow_doc = {
+        "system_prompt": "You are a test agent.",
+        "initial_node": "greet",
+        "nodes": [{"id": "greet", "name": "Greet", "edges": [], "is_final": True}],
+    }
+    pb = Playbook.from_json(json.dumps(flow_doc))
+    assert isinstance(pb, Playbook)
+    assert "main.greet" in pb.checkpoint_ids() or "greet" in {
+        c for c in (cid.split(".", 1)[-1] for cid in pb.checkpoint_ids())
+    }
+
+
+def test_load_compiles_a_flow_json_file(tmp_path) -> None:
+    import shutil
+
+    src = "tests/fixtures/flow/golf_booking.json"
+    dst = tmp_path / "golf.json"
+    shutil.copy(src, dst)
+    pb = Playbook.load(str(dst))
+    assert len(pb.tools) > 0  # the golf flow's actions became tools
