@@ -1168,6 +1168,31 @@ body {
   height: auto; flex: 1; border: none; border-radius: 0; background: transparent;
 }
 
+/* ---- Edit tab (CodeMirror) ---- */
+.editpanel { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.editpanel-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 8px 12px; border-bottom: 1px solid var(--line-1);
+  font-family: var(--mono); font-size: 12px; flex-shrink: 0;
+}
+.edit-status.ok { color: var(--mint); }
+.edit-status.err { color: var(--rose); }
+.edit-actions { display: flex; align-items: center; gap: 8px; }
+.edit-draft {
+  font-size: 10px; color: var(--amber); text-transform: uppercase; letter-spacing: 0.08em;
+}
+.btn-mini {
+  font: inherit; font-size: 12px; cursor: pointer; color: var(--fg-1);
+  background: var(--bg-3); border: 1px solid var(--line-2); border-radius: var(--r-sm);
+  padding: 5px 11px; transition: all 0.14s var(--ease);
+}
+.btn-mini:hover:not(:disabled) { background: var(--bg-4); }
+.btn-mini:disabled { opacity: 0.5; cursor: default; }
+.btn-mini.publish { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn-mini.publish:hover:not(:disabled) { box-shadow: 0 0 16px -4px var(--accent-glow); }
+.codeeditor { flex: 1; min-height: 0; overflow: hidden; }
+.edit-empty { padding: 24px; color: var(--fg-3); font-family: var(--ui); }
+
 /* ---- composer ---- */
 .composer { flex-shrink: 0; display: flex; align-items: center; gap: 10px; padding: 12px 4px 4px; }
 .comp-mic {
