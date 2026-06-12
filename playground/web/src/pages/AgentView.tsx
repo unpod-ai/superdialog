@@ -33,6 +33,7 @@ import {
   type Turn,
 } from "../types";
 import { isTurnActive, type ConvState } from "../state/convState";
+import { usePlaybookEditor } from "../hooks/usePlaybookEditor";
 
 // Left work pane: preview the running plan, edit it, inspect the call.
 type Tab =
@@ -141,8 +142,9 @@ export function AgentView() {
 
   const [playbooks, setPlaybooks] = useState<PlaybookInfo[]>([]);
   const [activePlaybook, setActivePlaybook] = useState("");
-  // YAML the AI builder proposes — handed to the Edit tab for review + Save.
-  const [pendingYaml, setPendingYaml] = useState<string | null>(null);
+  // The playbook editor (YAML buffer, validation, draft/save/publish) — shared
+  // by the Edit tab and the TopBar controls so they never diverge.
+  const editor = usePlaybookEditor(activePlaybook);
 
   const [turns, setTurns] = useState<Turn[]>([]);
   const [metrics, setMetrics] = useState<MetricSnapshot>(EMPTY_METRICS);
@@ -385,6 +387,17 @@ export function AgentView() {
     setActivePlaybook(playbookId);
   }, []);
 
+  const handleExport = useCallback(() => {
+    // Download the current editor YAML as a file (browser-only, no backend).
+    const blob = new Blob([editor.yaml], { type: "text/yaml" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${activePlaybook || "playbook"}.yaml`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [editor.yaml, activePlaybook]);
+
   if (configError) {
     return (
       <div className="loading loading--error">
@@ -408,10 +421,17 @@ export function AgentView() {
   return (
     <div className={`shell shell--${appState}`}>
       <TopBar
-        hasVoice={!!selectedVoiceProfile}
-        hasFlow={hasSelection}
-        flowName={selectionName}
+        playbookName={selectionName}
+        format={editor.format}
         appState={appState}
+        hasPlaybook={hasSelection}
+        dirty={editor.dirty}
+        draft={editor.draft}
+        valid={editor.validation.valid}
+        saving={editor.saving}
+        onExport={handleExport}
+        onSave={editor.save}
+        onPublish={editor.publish}
         onConnect={connect}
         onDisconnect={disconnect}
       />
@@ -448,10 +468,9 @@ export function AgentView() {
             )}
             {tab === "edit" && (
               <EditPanel
-                playbookId={activePlaybook}
+                editor={editor}
                 appState={appState}
-                injectedYaml={pendingYaml}
-                onInjected={() => setPendingYaml(null)}
+                hasPlaybook={hasSelection}
               />
             )}
             {tab === "conversation" && (
@@ -510,7 +529,7 @@ export function AgentView() {
               <ChatPanel
                 playbookId={activePlaybook}
                 onApplied={(y) => {
-                  setPendingYaml(y);
+                  editor.inject(y);
                   setTab("edit");
                 }}
               />

@@ -1019,7 +1019,29 @@ body {
 .brand-name { font-family: var(--display); font-weight: 600; font-size: 15px; color: var(--fg-0); letter-spacing: -0.01em; }
 .brand-name span { color: var(--fg-3); font-weight: 500; }
 .topbar-mid { display: flex; justify-content: center; }
-.topbar-right { display: flex; justify-content: flex-end; }
+.topbar-right { display: flex; justify-content: flex-end; align-items: center; gap: 8px; }
+
+/* playbook name + format badge (left) */
+.format-badge {
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.04em; color: var(--fg-3);
+  background: var(--bg-2); border: 1px solid var(--line-1); border-radius: 99px; padding: 3px 9px;
+}
+/* saved / unsaved / draft indicator (right) */
+.saved-ind {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-2);
+  margin-right: 2px;
+}
+/* topbar action buttons */
+.btn--ghost {
+  background: var(--bg-2); color: var(--fg-1); border: 1px solid var(--line-2);
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.btn--ghost:hover:not(:disabled) { background: var(--bg-3); }
+.btn--publish {
+  background: var(--accent); color: #fff; border: 1px solid var(--accent);
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.btn--publish:hover:not(:disabled) { box-shadow: 0 0 16px -4px var(--accent-glow); }
 
 .led { width: 7px; height: 7px; border-radius: 99px; background: var(--fg-4); display: inline-block; flex-shrink: 0; }
 .led.green { background: var(--mint); box-shadow: 0 0 8px var(--mint-glow); }
