@@ -42,6 +42,28 @@ logger = logging.getLogger(__name__)
 _SYSTEM_MARKER_KEY = "_pending_system_messages"
 
 
+def _select_engine(source: Any, engine: str = "auto") -> Literal["graph", "playbook"]:
+    """Resolve the backend engine from the constructor inputs (pure)."""
+    from .playbook import Playbook
+
+    is_flow = isinstance(source, (Flow, FlowSet))
+    is_playbook = isinstance(source, Playbook)
+    if engine == "flow":
+        if is_playbook:
+            raise ValueError(
+                "engine='flow' but source is a Playbook (no graph runtime "
+                "exists for it)"
+            )
+        return "graph"
+    if engine == "playbook":
+        return "playbook"
+    if engine != "auto":
+        raise ValueError(f"unknown engine: {engine!r}")
+    # auto: a Flow object keeps the legacy graph engine (back-compat);
+    # everything else (Playbook object, path string, parsed dict) runs Playbook.
+    return "graph" if is_flow else "playbook"
+
+
 class DialogMachine:
     """Spec-aligned public facade over :class:`DialogStateMachine`.
 
@@ -79,7 +101,9 @@ class DialogMachine:
         self._pending_chat_ctx: Any = None
         self._pending_flow_state: Any = None
         # Traversal tracking
-        self._traversal_dir: Path | None = Path(traversal_dir) if traversal_dir else None
+        self._traversal_dir: Path | None = (
+            Path(traversal_dir) if traversal_dir else None
+        )
         self._chat_turns: list[dict[str, Any]] = []
         self._session_started_at: datetime | None = None
         self._traversal_saved: bool = False
@@ -96,13 +120,17 @@ class DialogMachine:
             self._adapter = ToolCallAdapter(
                 model_id=self._llm_uri,
                 system_prompt=getattr(active_flow, "system_prompt", "") or "",
-                environment_variables=dict(getattr(active_flow, "environment_variables", {}) or {}),
+                environment_variables=dict(
+                    getattr(active_flow, "environment_variables", {}) or {}
+                ),
             )
         else:
             self._adapter = LLMAdapter(
                 provider=self._llm,
                 system_prompt=getattr(active_flow, "system_prompt", "") or "",
-                environment_variables=dict(getattr(active_flow, "environment_variables", {}) or {}),
+                environment_variables=dict(
+                    getattr(active_flow, "environment_variables", {}) or {}
+                ),
             )
         self._machine = await DialogStateMachine.from_flow(
             flow=active_flow,
@@ -151,13 +179,15 @@ class DialogMachine:
             machine.context.add_assistant_message(response)
         # Record initial turn for traversal
         self._session_started_at = datetime.now(timezone.utc)
-        self._chat_turns = [{
-            "step": 1,
-            "bot": response or "",
-            "user": None,
-            "node": current.id,
-            "ts": datetime.now(timezone.utc).isoformat(),
-        }]
+        self._chat_turns = [
+            {
+                "step": 1,
+                "bot": response or "",
+                "user": None,
+                "node": current.id,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }
+        ]
         self._traversal_saved = False
         return Turn(
             text=response,
@@ -208,13 +238,15 @@ class DialogMachine:
 
         # Append a new record for the node we just transitioned INTO.
         # user=None will be filled on the next turn (or stay None at final nodes).
-        self._chat_turns.append({
-            "step": len(self._chat_turns) + 1,
-            "bot": result.response or "",
-            "user": None,
-            "node": result.to_node,
-            "ts": datetime.now(timezone.utc).isoformat(),
-        })
+        self._chat_turns.append(
+            {
+                "step": len(self._chat_turns) + 1,
+                "bot": result.response or "",
+                "user": None,
+                "node": result.to_node,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }
+        )
         # Auto-save traversal when session completes
         if self._traversal_dir and machine.is_complete and not self._traversal_saved:
             self._traversal_saved = True
@@ -380,6 +412,7 @@ class DialogMachine:
         """Save traversal JSON to _traversal_dir. Swallows all errors."""
         try:
             from .traversal import build_traversal, save_traversal
+
             flow = self._flowset[self._active_flow_name]
             traversal = build_traversal(
                 self,
