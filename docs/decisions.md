@@ -114,8 +114,9 @@ conversations: users do not follow graphs, and flexibility had accumulated as
 one failure mode and interacting subtly with the rest. Every turn cost two
 serial LLM calls (route, then speak), so streaming was cosmetic - the user
 waited for both calls before hearing anything. Info extraction was split
-across multiple mechanisms with no unified schema. Design rationale:
-[plans/2026-06-10-checkpoint-compound-architecture-design.md](plans/2026-06-10-checkpoint-compound-architecture-design.md).
+across multiple mechanisms with no unified schema. The architecture is
+documented in [01-architecture.md](01-architecture.md) §3 and
+[04-playbook-guide.md](04-playbook-guide.md) Part 2.
 
 **Decision.** Ship a second engine, `superdialog.playbook`:
 

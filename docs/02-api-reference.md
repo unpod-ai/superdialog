@@ -480,7 +480,7 @@ freely; the Director decides when a step's goal is actually met.
 Authoring guide: [docs/04-playbook-guide.md](04-playbook-guide.md) - Part 1
 the playbook formats (full and simple), Part 2 the technical design.
 Concepts and rationale:
-[design doc](plans/2026-06-10-checkpoint-compound-architecture-design.md);
+[decisions.md §6](decisions.md#6-decision-records);
 module overview: `src/superdialog/playbook/README.md`.
 
 Public exports (`from superdialog.playbook import ...`): `Playbook`,

@@ -120,8 +120,8 @@ adapters. Full signatures and worked examples:
 
 ## 3. Engine B - Playbook (default, checkpoint compound)
 
-Design rationale: [the checkpoint compound architecture design
-doc](plans/2026-06-10-checkpoint-compound-architecture-design.md).
+Design rationale: the decision record in
+[decisions.md §6](decisions.md#6-decision-records).
 Source: `src/superdialog/playbook/`. Public surface: `superdialog.playbook`
 (`Playbook`, `PlaybookAgent`, `EventLog`, `ConversationState`,
 `compile_flow`, `coverage_report`, `replay`, `run_eval`, …).
