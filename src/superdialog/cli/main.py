@@ -347,15 +347,10 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
     if not Path(path).exists():
         print(f"Playbook not found: {path}", file=sys.stderr)
         return 1
-    try:  # pre-flight either format; surface schema errors as one line
-        if _looks_like_simple_playbook(path):
-            from ..playbook.simple import load_simple
+    try:  # pre-flight: the unified loader accepts full and simple formats
+        from ..playbook import Playbook
 
-            load_simple(path)
-        else:
-            from ..playbook import Playbook
-
-            Playbook.load(path)
+        Playbook.load(path)
     except Exception as exc:
         print(f"Invalid playbook {path}: {exc}", file=sys.stderr)
         return 1

@@ -467,6 +467,10 @@ pb = Playbook.from_json(text)    #   stay strings; only true/false are bool
 pb = Playbook.load(path)         # picks YAML for .yaml/.yml, else JSON
 ```
 
+All three loaders auto-detect the **simple authoring format** (a top-level
+`playbook:` list) and lower it via `simple_to_playbook` — callers never
+need to route by format; `load_simple` remains as an explicit alias.
+
 Top-level fields:
 
 | Field | Type / default | Meaning |

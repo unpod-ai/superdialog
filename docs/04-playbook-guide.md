@@ -509,10 +509,11 @@ default 4-persona suite keeps dev runs reasonable.
 
 The simple format is the easiest way to author a playbook: prose steps, a
 nested persona, and reference data (facts, objections, boundaries, fallbacks).
-`load_simple(path)` (or `superdialog chat --simple PATH`) compiles it to a
-`Playbook` — the same validated artifact `compile_flow` produces from flows, so
-it runs on the same Talker/Director runtime. v1 supports linear step sequences
-only.
+`Playbook.load(path)` / `from_yaml` auto-detect it (top-level `playbook:`
+list) and compile it to a `Playbook` — the same validated artifact
+`compile_flow` produces from flows, so it runs on the same Talker/Director
+runtime; `load_simple(path)` and `superdialog chat --simple PATH` remain as
+explicit routes. v1 supports linear step sequences only.
 
 ```yaml
 name: "Tiny Booking Bot"

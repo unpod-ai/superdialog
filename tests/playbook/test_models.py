@@ -209,3 +209,43 @@ def test_policies_hold_timeout_must_be_positive() -> None:
         Playbook.from_yaml(
             MINIMAL_YAML.replace("policies:", "policies:\n  hold_timeout: 0")
         )
+
+
+def test_from_yaml_auto_detects_simple_format() -> None:
+    from tests.playbook.test_simple import SIMPLE
+
+    pb = Playbook.from_yaml(SIMPLE)
+    assert pb.checkpoint("main.collect").guidance.startswith("Ask for their name")
+    assert "₹400" in pb.persona  # folded reference facts came through
+
+
+def test_from_yaml_simple_routing_matches_simple_to_playbook() -> None:
+    import yaml
+
+    from superdialog.playbook.simple import simple_to_playbook
+    from tests.playbook.test_simple import SIMPLE
+
+    via_loader = Playbook.from_yaml(SIMPLE)
+    via_compiler = simple_to_playbook(yaml.safe_load(SIMPLE))
+    assert via_loader.model_dump() == via_compiler.model_dump()
+
+
+def test_load_auto_detects_simple_yaml_and_json_files(tmp_path) -> None:
+    import json
+
+    import yaml
+
+    from tests.playbook.test_simple import SIMPLE
+
+    y = tmp_path / "simple.yaml"
+    y.write_text(SIMPLE)
+    assert Playbook.load(str(y)).checkpoint("main.greet").terminal is False
+
+    j = tmp_path / "simple.json"
+    j.write_text(json.dumps(yaml.safe_load(SIMPLE)))
+    assert Playbook.load(str(j)).checkpoint("main.confirm").terminal is True
+
+
+def test_from_yaml_rejects_neither_format() -> None:
+    with pytest.raises(ValidationError):
+        Playbook.from_yaml("name: not-a-playbook-of-either-format\n")

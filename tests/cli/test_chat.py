@@ -600,3 +600,15 @@ def test_chat_still_runs_flow_after_simple_detection(tmp_path: Path) -> None:
     assert rc == 0
     mock_simple.assert_not_called()
     mock_flow.assert_called_once()
+
+
+def test_chat_playbook_flag_accepts_simple_format(tmp_path: Path) -> None:
+    """The unified loader lets --playbook take a simple-format file."""
+    from tests.playbook.test_simple import SIMPLE
+
+    p = tmp_path / "simple.yaml"
+    p.write_text(SIMPLE)
+    with patch.object(_cli_main_module, "_run_playbook_repl") as mock_play:
+        rc = main(["chat", "--playbook", str(p)])
+    assert rc == 0
+    mock_play.assert_called_once()

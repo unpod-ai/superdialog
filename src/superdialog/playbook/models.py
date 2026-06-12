@@ -295,12 +295,22 @@ class Playbook(BaseModel):
 
     # -- io -------------------------------------------------------------------
     @classmethod
+    def _from_doc(cls, doc: Any) -> "Playbook":
+        """Validate a parsed document, lowering simple-format docs first."""
+        # Lazy import: simple.py imports this module's models.
+        from .simple import is_simple_playbook, simple_to_playbook
+
+        if is_simple_playbook(doc):
+            return simple_to_playbook(doc)
+        return cls.model_validate(doc)
+
+    @classmethod
     def from_yaml(cls, text: str) -> "Playbook":
-        return cls.model_validate(yaml.load(text, Loader=_YamlLoader))
+        return cls._from_doc(yaml.load(text, Loader=_YamlLoader))
 
     @classmethod
     def from_json(cls, text: str) -> "Playbook":
-        return cls.model_validate(json.loads(text))
+        return cls._from_doc(json.loads(text))
 
     @classmethod
     def load(cls, path: str) -> "Playbook":
