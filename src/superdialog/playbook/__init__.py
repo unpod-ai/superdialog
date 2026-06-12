@@ -12,6 +12,7 @@ from .eval_bridge import (
     run_session,
 )
 from .events import EventLog
+from .generate import generate_simple_playbook
 from .models import Playbook
 from .optimize import ObjectiveBreakdown, OptimizeReport, RoundTrace, optimize
 from .personas import generate_personas, load_personas
@@ -47,6 +48,7 @@ __all__ = [
     "compile_flow",
     "coverage_report",
     "generate_personas",
+    "generate_simple_playbook",
     "httpx_http",
     "is_simple_playbook",
     "load_personas",

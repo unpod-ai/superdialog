@@ -133,20 +133,22 @@ Adapting providers is two lambdas — or use the bundled
 plain text, `(await provider.complete(messages)).text`; the Talker wants raw
 tokens, `chunk.text` from `provider.stream(messages)`.)
 
-Or skip the Python and chat against the playbook from the CLI — `chat` runs
-either engine, auto-detecting a playbook by its top-level `journeys` key, or a
-simple playbook by its top-level `playbook` list:
+Or skip the Python entirely — generate a playbook from a description and
+chat against it. The Playbook engine is the default for every format
+(full, simple, and flow JSON, which is compiled automatically):
 
 ```bash
-superdialog chat --playbook booking.yaml     # explicit
-superdialog chat --flow booking.yaml         # auto-detected as a playbook
-superdialog chat --simple intake.yaml         # simple format -> compiled playbook
-superdialog chat --flow appointment.json     # a flow graph -> DialogMachine
+superdialog generate "Book a demo call; capture day and time."   # -> playbook.yaml
+superdialog chat                              # picks up ./playbook.yaml
+superdialog chat --playbook booking.yaml      # explicit (any format)
+superdialog chat --flow appointment.json      # flow JSON, compiled onto the engine
+superdialog chat --flow appointment.json --mode flow   # legacy DialogMachine
 ```
 
-## Quickstart B — DialogMachine (flow graphs)
+## Quickstart B — DialogMachine (flow graphs, legacy)
 
 The original engine: a flow graph executed as a deterministic state machine.
+Opt in with `--mode flow`; new agents should start with Quickstart A.
 
 ```python
 import asyncio

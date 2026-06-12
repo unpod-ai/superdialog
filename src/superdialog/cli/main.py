@@ -1,9 +1,11 @@
-"""superdialog CLI: chat / flow lint / flow draw / flow generate / playbook.
+"""superdialog CLI: generate / chat / optimize / playbook / flow / eval.
 
-Each subcommand operates on a flow file (JSON or YAML) loaded via
-:meth:`superdialog.Flow.load`. The CLI is intentionally thin -- it
-defers all real work to the public API so ``superdialog flow lint X``
-behaves the same as a Python caller would.
+``generate`` creates a playbook from a prompt (the default creation path)
+and ``chat`` runs any artifact — full playbook, simple format, or legacy
+flow JSON — on the Playbook engine by default (``--mode flow`` opts into
+the legacy DialogMachine). The CLI is intentionally thin -- it defers all
+real work to the public API so each command behaves the same as a Python
+caller would.
 """
 
 from __future__ import annotations
@@ -162,6 +164,35 @@ def _run_simple_repl(simple_path: str, llm: str) -> None:
     _drive_agent(agent, speak_first=True)
 
 
+def _run_generate_playbook(prompt: str, llm: str) -> str:
+    """Generate simple-format playbook YAML from a description (LLM-backed)."""
+    from ..llm.resolver import resolve_llm
+    from ..playbook import provider_adapters
+    from ..playbook.generate import generate_simple_playbook
+
+    director, _ = provider_adapters(resolve_llm(llm))
+    return asyncio.run(generate_simple_playbook(prompt, director))
+
+
+def _cmd_generate_playbook(args: argparse.Namespace) -> int:
+    """Generate a playbook (simple format) — the default creation path."""
+    load_dotenv()
+    prompt = args.prompt
+    if not prompt and getattr(args, "from_file", None):
+        prompt = Path(args.from_file).read_text(encoding="utf-8")
+    if not prompt or not prompt.strip():
+        print(
+            'Provide an agent description: superdialog generate "..." (or --from FILE)',
+            file=sys.stderr,
+        )
+        return 1
+    text = _run_generate_playbook(prompt.strip(), args.llm)
+    Path(args.output).write_text(text, encoding="utf-8")
+    print(f"Wrote {args.output}")
+    print(f"Try it: superdialog chat --playbook {args.output}")
+    return 0
+
+
 def _cmd_chat(args: argparse.Namespace) -> int:
     """Interactive REPL over a flow or a playbook (auto-detected or explicit)."""
     load_dotenv()
@@ -182,11 +213,17 @@ def _cmd_chat(args: argparse.Namespace) -> int:
             return 1
         return _chat_simple(simple_path, llm)
 
-    flow_path = getattr(args, "flow", "flow.json") or "flow.json"
-    if not Path(flow_path).exists():
+    flow_path = getattr(args, "flow", None)
+    if not flow_path:  # default: prefer a playbook, fall back to a flow
+        for candidate in ("playbook.yaml", "flow.json"):
+            if Path(candidate).exists():
+                flow_path = candidate
+                break
+    if not flow_path or not Path(flow_path).exists():
         print(
-            f"No flow found at: {flow_path}\n"
-            f"Run: superdialog flow generate --output {flow_path}",
+            f"No {flow_path or 'playbook.yaml (or flow.json)'} found.\n"
+            'Create one: superdialog generate "describe your agent" '
+            "--output playbook.yaml",
             file=sys.stderr,
         )
         return 1
@@ -670,9 +707,10 @@ def _build_parser() -> argparse.ArgumentParser:
     chat = sub.add_parser("chat", help="Interactive REPL against a flow or playbook")
     chat.add_argument(
         "--flow",
-        default="flow.json",
-        help="Path to flow JSON (default: ./flow.json); a YAML/JSON file with "
-        "a top-level 'journeys' key is auto-detected as a playbook",
+        default=None,
+        help="Path to a playbook or flow file (default: ./playbook.yaml, "
+        "then ./flow.json); any format is auto-detected and runs on the "
+        "Playbook engine",
     )
     chat.add_argument(
         "--playbook",
@@ -701,6 +739,31 @@ def _build_parser() -> argparse.ArgumentParser:
         "1 LLM call/turn, mirrors production) or 'llm' (2 LLM calls/turn)",
     )
     chat.set_defaults(fn=_cmd_chat)
+
+    gen = sub.add_parser(
+        "generate",
+        help="Generate a playbook (simple format) from a natural-language "
+        "prompt — the default creation path (legacy: flow generate)",
+    )
+    gen.add_argument(
+        "prompt",
+        nargs="?",
+        default=None,
+        help="Inline agent description (omit if using --from)",
+    )
+    gen.add_argument(
+        "--from",
+        dest="from_file",
+        metavar="FILE",
+        help="Path to a description file (alternative to positional prompt)",
+    )
+    gen.add_argument(
+        "--output",
+        default="playbook.yaml",
+        help="Output path (default: playbook.yaml)",
+    )
+    gen.add_argument("--llm", default="openai/gpt-4.1-mini")
+    gen.set_defaults(fn=_cmd_generate_playbook)
 
     flow = sub.add_parser("flow", help="Inspect / manipulate flow files")
     flow_sub = flow.add_subparsers(dest="subcmd", required=True)

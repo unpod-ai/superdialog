@@ -20,9 +20,29 @@ SuperDialog ships **two engines** behind the same `Agent` protocol:
 
 ## Construction
 
-### `async create_dialog_flow(prompt, llm, **kwargs) -> Flow`
+### `async generate_simple_playbook(prompt, llm, *, max_attempts=3) -> str`
 
-Bootstrap a flow graph from a prompt using a one-shot LLM call.
+**The default creation path**: bootstrap a simple-format playbook from a
+natural-language description. The output is validated (parsed and compiled
+through `simple_to_playbook`) before being returned, so a successful return
+is always loadable. CLI equivalent: `superdialog generate "<prompt>"
+--output playbook.yaml`.
+
+```python
+from superdialog.playbook import generate_simple_playbook
+
+yaml_text = await generate_simple_playbook(
+    "An agent that books demo calls and captures a day and time.",
+    director,                       # any CompletesLLM
+)
+open("playbook.yaml", "w").write(yaml_text)
+```
+
+### `async create_dialog_flow(prompt, llm, **kwargs) -> Flow` (legacy)
+
+Bootstrap a legacy flow graph from a prompt using a one-shot LLM call.
+Prefer `generate_simple_playbook` for new agents; generated flows still run
+on the Playbook engine by default via the unified loader.
 
 ```python
 import asyncio
@@ -350,10 +370,11 @@ See `docs/03-embedding-guides.md` for working snippets per host.
 
 | Command | Purpose | Status |
 |---|---|---|
-| `superdialog chat <flow.json>` | Interactive REPL chat | shipped |
-| `superdialog flow lint <flow.json>` | Validate graph | shipped |
-| `superdialog flow draw <flow.json>` | Render Mermaid diagram | shipped |
-| `superdialog flow generate "<prompt>" --llm openai/gpt-5.1` | Bootstrap flow.json from a prompt | shipped |
+| `superdialog generate "<prompt>" --output playbook.yaml` | Bootstrap a playbook from a prompt (default creation path) | shipped |
+| `superdialog chat <playbook or flow>` | Interactive REPL chat (Playbook engine by default; `--mode flow` for legacy) | shipped |
+| `superdialog flow lint <flow.json>` | Validate graph (legacy) | shipped |
+| `superdialog flow draw <flow.json>` | Render Mermaid diagram (legacy) | shipped |
+| `superdialog flow generate "<prompt>" --llm openai/gpt-5.1` | Bootstrap flow.json from a prompt (legacy) | shipped |
 | `superdialog eval <flow.json> <corpus.jsonl>` | Run eval harness | planned (v0.3) |
 
 ---

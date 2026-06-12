@@ -159,7 +159,8 @@ works with all existing adapters.
 
 | Capability | Status |
 |---|---|
-| Prompt → flow: `await create_dialog_flow(prompt=..., llm=...)` | shipped (v0.1) |
+| Prompt → playbook: `superdialog generate` / `generate_simple_playbook` (default creation path) | shipped |
+| Prompt → flow: `await create_dialog_flow(prompt=..., llm=...)` (legacy) | shipped (v0.1) |
 | Turn execution: `await dialog_machine.turn(text)` | shipped (v0.1) |
 | LLM provider abstraction (model URIs) | shipped (v0.1) |
 | Tools: Python callables, HTTP endpoints, MCP servers | shipped (v0.1) |

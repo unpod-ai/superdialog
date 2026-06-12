@@ -84,7 +84,9 @@ each with an instruction or static text), edges (transitions with
 natural-language conditions), `global_edges`, and `actions` (declarative HTTP
 calls). The public `Flow` facade loads/saves it as version-controllable JSON;
 `create_dialog_flow(prompt=..., llm=...)` bootstraps one from a prompt (the
-LLM is used at construction time only, never at runtime).
+LLM is used at construction time only, never at runtime). For new agents,
+prefer the default creation path — `superdialog generate` /
+`generate_simple_playbook` — which produces a playbook directly.
 
 ```python
 dialog_machine = DialogMachine(flow=flow, llm="anthropic/claude-opus-4-7")

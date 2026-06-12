@@ -84,6 +84,7 @@ def test_package_exports() -> None:
         "make_editable",
         "load_personas",
         "generate_personas",
+        "generate_simple_playbook",
     ):
         assert hasattr(pb, name), name
         assert name in pb.__all__, name
