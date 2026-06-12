@@ -142,16 +142,15 @@ pipelines:
         on: {ok: continue, failed: {retry: 1, on_exhaust: booking.collect}}
 ```
 
+`DialogMachine` is the recommended entry point: one class, one model URI. It
+runs the Playbook engine by default; pass `engine="flow"` for the legacy graph
+runtime.
+
 ```python
 import asyncio
-from superdialog.playbook import Playbook, PlaybookAgent, httpx_http
+from superdialog import DialogMachine
 
-agent = PlaybookAgent(
-    playbook=Playbook.load("booking.yaml"),
-    talker_llm=talker,      # StreamsLLM: stream(messages) -> AsyncIterator[str]
-    director_llm=director,  # CompletesLLM: async complete(messages) -> str
-    http=httpx_http,        # HTTP executor for declared tools (templates render in a Jinja sandbox)
-)
+agent = DialogMachine("booking.yaml", llm="openai/gpt-4.1-mini")
 
 async def chat():
     reply = await agent.turn("Hi, I'd like to book something.")
@@ -160,17 +159,32 @@ async def chat():
 asyncio.run(chat())
 ```
 
+The single `llm=` is the Talker, and the Director too unless you split them
+with `director_llm=` (the cheap-Talker / strong-Director latency split). Pass
+any `Tool` via `tools=` - each runs its own `execute()`, both engines.
+
 Streaming is real, not cosmetic: `await agent.turn(text, stream=True)` yields
 `StreamChunk`s as the Talker produces tokens, and barge-in (aborting the
 stream) interrupts speech without losing the Director's decision. The event
 log replays offline - `superdialog.playbook.replay` re-runs the Director over
 a recorded session and diffs every decision.
 
-Adapting providers is two lambdas - or use the bundled
+**Advanced: explicit Talker/Director.** Drop to `PlaybookAgent` when you need
+to supply scripted LLMs, a custom HTTP executor, or inspect the runtime
+directly. Adapting providers is two lambdas - or use the bundled
 `superdialog.playbook.provider_adapters(provider)`, which returns the
-`(director, talker)` pair for any `LLMProvider`. (By hand: the Director wants
-plain text, `(await provider.complete(messages)).text`; the Talker wants raw
-tokens, `chunk.text` from `provider.stream(messages)`.)
+`(director, talker)` pair for any `LLMProvider`:
+
+```python
+from superdialog.playbook import Playbook, PlaybookAgent, httpx_http
+
+agent = PlaybookAgent(
+    playbook=Playbook.load("booking.yaml"),
+    talker_llm=talker,      # StreamsLLM: stream(messages) -> AsyncIterator[str]
+    director_llm=director,  # CompletesLLM: async complete(messages) -> str
+    http=httpx_http,        # HTTP executor for declared tools (Jinja-sandboxed templates)
+)
+```
 
 Or skip the Python entirely - generate a playbook from a description and
 chat against it. The Playbook engine is the default for every format
@@ -185,10 +199,11 @@ superdialog chat --flow appointment.json --mode flow   # legacy DialogMachine
 superdialog optimize --playbook playbook.yaml  # reflective prose optimizer
 ```
 
-## Quickstart B - DialogMachine (flow graphs, legacy)
+## Quickstart B - the legacy graph engine
 
 The original engine: a flow graph executed as a deterministic state machine.
-Opt in with `--mode flow`; new agents should start with Quickstart A.
+Still driven through `DialogMachine` - pass `engine="flow"` (or `--mode flow`
+on the CLI) to select it. New agents should start with Quickstart A.
 
 ```python
 import asyncio
@@ -206,9 +221,11 @@ async def build():
 asyncio.run(build())
 
 # 2. Build the runtime machine (runtime model can differ from the build model).
+#    engine="flow" selects the legacy graph runtime; the default is Playbook.
 dialog_machine = DialogMachine(
-    flow=Flow.load("appointment.json"),
+    Flow.load("appointment.json"),
     llm="anthropic/claude-haiku-4-5",
+    engine="flow",
 )
 
 # 3. Run a conversation.
@@ -254,7 +271,7 @@ report = coverage_report(flow, pb)    # proves every node/edge/action mapped
 
 ## Deploy anywhere
 
-`PlaybookAgent` and `DialogMachine` implement the same
+`DialogMachine` (and the lower-level `PlaybookAgent`) implement the same
 `superdialog.agent.Agent` protocol (`turn` / `assist` / `chat_ctx`), so the
 same object drops into every host. The host varies; the SuperDialog code is
 identical.

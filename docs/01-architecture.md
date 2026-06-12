@@ -76,9 +76,11 @@ Shared substrate - `SessionWorker` (one agent per session, pluggable
 `SessionStore`), the model URI resolver (`openai/gpt-5.1`,
 `anthropic/claude-opus-4-7`, `custom/...`), tools, adapters, and the CLI -
 is documented in [02-api-reference.md](02-api-reference.md) and
-[03-embedding-guides.md](03-embedding-guides.md). Note one seam difference:
-`DialogMachine` takes a model URI; `PlaybookAgent` takes two small LLM
-protocols (`StreamsLLM` for the Talker, `CompletesLLM` for the Director),
+[03-embedding-guides.md](03-embedding-guides.md). Two engines, one entry
+point: `DialogMachine(source, llm, *, engine=...)` is the recommended way in
+and drives either engine - the Playbook engine by default, the legacy graph
+runtime with `engine="flow"`. The lower-level `PlaybookAgent` takes two small
+LLM protocols (`StreamsLLM` for the Talker, `CompletesLLM` for the Director),
 so any provider - or a scripted fake in tests - plugs in directly.
 
 ## 2. Engine A - DialogMachine (legacy, graph-railed)
@@ -93,7 +95,8 @@ prefer the default creation path - `superdialog generate` /
 `generate_simple_playbook` - which produces a playbook directly.
 
 ```python
-dialog_machine = DialogMachine(flow=flow, llm="anthropic/claude-opus-4-7")
+# engine="flow" selects this legacy graph runtime; the default is Playbook.
+dialog_machine = DialogMachine(flow, llm="anthropic/claude-opus-4-7", engine="flow")
 reply = await dialog_machine.turn("hello")           # complete Turn
 stream = await dialog_machine.turn("hello", stream=True)  # StreamChunk iter
 ```

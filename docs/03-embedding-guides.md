@@ -10,25 +10,26 @@
 
 In every host, three things stay the same:
 
-1. **Construct an engine** - a `PlaybookAgent` (the default engine:
-   playbook + Talker/Director LLMs). `Playbook.load` accepts full
-   playbooks, simple-format playbooks, *and* legacy flow JSON
-   (auto-compiled), so you don't pick a format - you just point it at your
-   artifact. The legacy `DialogMachine` (flow + LLM URI + tools) remains
-   for hosts that explicitly want the original graph runtime
-   (`--mode flow` in the CLI).
+1. **Construct an entry point** - a `DialogMachine(source, llm=...)`. It runs
+   the Playbook engine by default; pass `engine="flow"` for the legacy graph
+   runtime. `source` accepts full playbooks, simple-format playbooks, *and*
+   legacy flow JSON (auto-compiled), so you don't pick a format - you just
+   point it at your artifact. The lower-level `PlaybookAgent` (playbook +
+   Talker/Director LLMs) stays available for explicit LLM seams or a custom
+   HTTP executor.
 2. **Route inbound text** to `engine.turn(text)`.
 3. **Send the reply text** back to the host's output channel.
 
 Both engines implement the same `superdialog.agent.Agent` protocol
 (`turn` / `assist` / `chat_ctx` / `load_chat_ctx`), so every adapter below
 accepts either one. The host varies; the SuperDialog code is identical.
-The `DialogMachine` examples below apply to the opt-in legacy mode.
 
-### Provider adapters for the Playbook engine
+### Advanced: provider adapters for `PlaybookAgent`
 
-`DialogMachine` takes a model URI string. `PlaybookAgent` instead takes two
-small LLM seams, defined in `superdialog.playbook`:
+`DialogMachine` takes a model URI string (`llm=`, plus an optional
+`director_llm=` to split the Talker/Director). Drop to `PlaybookAgent` when
+you need to supply the two small LLM seams directly, defined in
+`superdialog.playbook`:
 
 - **Director** (`CompletesLLM`): `async complete(messages) -> str` - one
   structured call per user utterance (extract, judge, steer).
@@ -79,19 +80,13 @@ The default loop is the bundled CLI: `superdialog generate "Confirm KYC."`
 writes a validated simple-format `playbook.yaml`, and `superdialog chat`
 picks it up (then `./flow.json`), auto-detects any format, and runs it on
 the Playbook engine (default `--llm openai/gpt-4.1-mini`). In code, the
-same loop is a `PlaybookAgent` driven from `input()` (with `talker` and
-`director` from the provider-adapter section above):
+same loop is a `DialogMachine` driven from `input()`:
 
 ```python
 import asyncio
-from superdialog.playbook import Playbook, PlaybookAgent, httpx_http
+from superdialog import DialogMachine
 
-agent = PlaybookAgent(
-    playbook=Playbook.load("playbook.yaml"),  # full, simple, or flow JSON
-    talker_llm=talker,
-    director_llm=director,
-    http=httpx_http,
-)
+agent = DialogMachine("playbook.yaml", llm="openai/gpt-4.1-mini")  # any format
 
 async def main():
     while True:
@@ -104,17 +99,26 @@ async def main():
 asyncio.run(main())
 ```
 
-The event log (`agent.event_log.to_jsonl()`) is the audit artifact: every
-utterance, slot write, advance, and tool call, replayable offline - useful
-for inspecting behaviour, building eval datasets, and auditing production
-conversations.
+> **Advanced (explicit LLM seams):** drop to `PlaybookAgent` to inspect the
+> event log or supply scripted LLMs. `agent.event_log.to_jsonl()` is the
+> audit artifact: every utterance, slot write, advance, and tool call,
+> replayable offline.
+>
+> ```python
+> from superdialog.playbook import Playbook, PlaybookAgent, httpx_http
+>
+> agent = PlaybookAgent(
+>     playbook=Playbook.load("playbook.yaml"),
+>     talker_llm=talker, director_llm=director, http=httpx_http,
+> )
+> ```
 
-> **Legacy DialogMachine:** `superdialog chat kyc.json --mode flow` runs
-> the original graph engine. In code, construct
-> `DialogMachine(flow=..., llm=..., traversal_dir="./traversal_history")`
-> and drive the same loop; `traversal_dir` writes a timestamped JSON per
-> completed session (full node path, every turn, collected slots) - the
-> DialogMachine equivalent of the event log, accepted by any host.
+> **Legacy graph engine:** `superdialog chat kyc.json --mode flow` runs the
+> original graph engine. In code, construct
+> `DialogMachine(Flow.load("kyc.json"), llm=..., engine="flow",
+> traversal_dir="./traversal_history")` and drive the same loop;
+> `traversal_dir` writes a timestamped JSON per completed session (full node
+> path, every turn, collected slots).
 
 **When to use:** during initial playbook (or legacy flow) design, before any voice infrastructure is set up.
 
@@ -129,33 +133,28 @@ but it accepts any superdialog `Agent`) that wires an agent into a LiveKit
 
 ```python
 from livekit.agents import Agent, AgentSession
+from superdialog import DialogMachine
 from superdialog.adapters.livekit import DialogMachineLLM
-from superdialog.playbook import Playbook, PlaybookAgent, httpx_http
 
-playbook_agent = PlaybookAgent(
-    playbook=Playbook.load("kyc.yaml"),   # full, simple, or legacy flow JSON
-    talker_llm=talker,                    # see provider adapters above
-    director_llm=director,
-    http=httpx_http,
-)
+dm = DialogMachine("kyc.yaml", llm="anthropic/claude-haiku-4-5")  # any format
 
 async def entrypoint(ctx):
-    agent = Agent(llm=DialogMachineLLM(playbook_agent))
+    agent = Agent(llm=DialogMachineLLM(dm))
     await AgentSession().start(agent=agent, room=ctx.room)
 ```
 
 LiveKit's `AgentSession` drives the conversation; `DialogMachineLLM`
 translates between LiveKit's `ChatContext` and SuperDialog's `turn()` API.
-With a `PlaybookAgent`, streaming is real: the Talker's tokens reach TTS
+On the Playbook engine, streaming is real: the Talker's tokens reach TTS
 as they are generated, and a barge-in (the host aborting the stream
 mid-utterance) interrupts speech, never the state machine - the Director's
 decision still lands. Voice-event plumbing (feeding silence timeouts into
 `agent.runtime.on_external`) is roadmap; today the adapter covers the text
 path.
 
-> **Legacy DialogMachine:** pass a
-> `DialogMachine(flow=Flow.load("kyc.json"), llm="anthropic/claude-opus-4-7")`
-> in place of the `PlaybookAgent` - same adapter, same wiring.
+> **Advanced / legacy:** pass a `PlaybookAgent` for explicit Talker/Director
+> LLMs, or `DialogMachine(Flow.load("kyc.json"), llm="anthropic/claude-opus-4-7",
+> engine="flow")` for the legacy graph engine - same adapter, same wiring.
 
 **When to use:** you're already on LiveKit for media routing and want SuperDialog to manage turn-by-turn logic.
 
@@ -169,9 +168,10 @@ synthesises a concrete `FrameProcessor` against whichever PipeCat is
 installed. It accepts any superdialog `Agent`:
 
 ```python
+from superdialog import DialogMachine
 from superdialog.adapters.pipecat import make_processor
 
-processor = make_processor(playbook_agent)   # built as in §2
+processor = make_processor(DialogMachine("kyc.yaml", llm="anthropic/claude-haiku-4-5"))
 
 # Compose into a PipeCat pipeline
 pipeline = Pipeline([
@@ -181,9 +181,9 @@ pipeline = Pipeline([
 ])
 ```
 
-> **Legacy DialogMachine:**
-> `make_processor(DialogMachine(flow=Flow.load("kyc.json"), llm=...))` -
-> same factory, same pipeline position.
+> **Legacy / advanced:**
+> `make_processor(DialogMachine(Flow.load("kyc.json"), llm=..., engine="flow"))`
+> or a hand-built `PlaybookAgent` - same factory, same pipeline position.
 
 **When to use:** PipeCat-based voice stack; SuperDialog replaces hand-written LLM logic between STT and TTS.
 
@@ -191,20 +191,15 @@ pipeline = Pipeline([
 
 ## 4. FastAPI (text chatbot / REST endpoint)
 
-For single-user or stateless `/turn` endpoints, use an agent directly
-(with `talker` and `director` from the provider-adapter section above):
+For single-user or stateless `/turn` endpoints, use a `DialogMachine`
+directly:
 
 ```python
 from fastapi import FastAPI
-from superdialog.playbook import Playbook, PlaybookAgent, httpx_http
+from superdialog import DialogMachine
 
 app = FastAPI()
-agent = PlaybookAgent(
-    playbook=Playbook.load("kyc.yaml"),   # full, simple, or legacy flow JSON
-    talker_llm=talker,
-    director_llm=director,
-    http=httpx_http,
-)
+agent = DialogMachine("kyc.yaml", llm="openai/gpt-4.1-mini")  # any format
 
 @app.post("/turn")
 async def turn(payload: dict):
@@ -220,19 +215,12 @@ serialise via a per-session lock:
 
 ```python
 from fastapi import FastAPI
-from superdialog import InMemorySessionStore, SessionWorker
-from superdialog.playbook import Playbook, PlaybookAgent, httpx_http
+from superdialog import DialogMachine, InMemorySessionStore, SessionWorker
 
 app = FastAPI()
-playbook = Playbook.load("booking.yaml")
 
 worker = SessionWorker(
-    agent_factory=lambda: PlaybookAgent(
-        playbook=playbook,
-        talker_llm=talker,        # StreamsLLM - see provider adapters above
-        director_llm=director,    # CompletesLLM
-        http=httpx_http,          # sandboxed HTTP executor for playbook tools
-    ),
+    agent_factory=lambda: DialogMachine("booking.yaml", llm="openai/gpt-4.1-mini"),
     store=InMemorySessionStore(),  # swap in a distributed SessionStore in
                                    # production (RedisSessionStore is planned;
                                    # implement the SessionStore protocol today)
@@ -245,10 +233,10 @@ async def turn(payload: dict):
     return {"reply": result.text}
 ```
 
-> **Legacy DialogMachine:** identical wiring - swap the factory for
-> `lambda: DialogMachine(flow=flow, llm="openai/gpt-5.1")` with a shared
-> `flow = Flow.load("kyc.json")`; the store and lock semantics are
-> unchanged.
+> **Advanced / legacy:** for explicit LLM seams return a `PlaybookAgent` from
+> the factory; for the legacy graph engine return
+> `DialogMachine(Flow.load("kyc.json"), llm="openai/gpt-5.1", engine="flow")`.
+> The store and lock semantics are unchanged.
 
 `result.metadata` carries `checkpoint`, `version`, `ended`, and (on terminal
 checkpoints) `outcome`. External events - webhooks, timers, silence - go to
@@ -295,9 +283,11 @@ Then on Unpod side, the Identity binds the inbound number to this agent. When a 
 
 ## 6. Unit tests
 
-`turn` is async; tests use `pytest-asyncio` (or `anyio`). Construct a
-`PlaybookAgent` with stub LLMs (no network) and assert on
-`agent.runtime.state` - slots, checkpoint, ended/outcome:
+`turn` is async; tests use `pytest-asyncio` (or `anyio`). To run offline you
+supply scripted LLMs, which is the `PlaybookAgent` path - construct it with
+stub LLMs (no network) and assert on `agent.runtime.state` - slots,
+checkpoint, ended/outcome. (For an end-to-end smoke test through the public
+entry point, `DialogMachine("kyc.yaml", llm=...)` works against a live model.)
 
 ```python
 import pytest
@@ -320,10 +310,11 @@ Playbooks additionally support LLM-free replay regression and
 persona-driven evals over the event log; see
 [04-playbook-guide.md](04-playbook-guide.md) Part 2 §9.
 
-> **Legacy DialogMachine:** same pattern -
-> `DialogMachine(flow=Flow.load("kyc.json"), llm=...)`, then assert on
-> `machine.state["slots"]` (its `state` property returns
-> `{"node_id": ..., "slots": ...}`).
+> **Legacy graph engine:** same pattern -
+> `DialogMachine(Flow.load("kyc.json"), llm=..., engine="flow")`, then assert
+> on `machine.state["slots"]` (its `state` property returns
+> `{"node_id": ..., "slots": ...}`). In Playbook mode, `state` returns
+> `{"checkpoint": ..., "slots": ..., "ended": ...}`.
 
 **When to use:** always. Because SuperDialog is text-only, every dialog is a unit-testable function. This is the killer feature vs voice-coupled frameworks where tests need audio fixtures.
 

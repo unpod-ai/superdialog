@@ -7,16 +7,17 @@
 
 ---
 
-SuperDialog ships **two engines** behind the same `Agent` protocol:
+SuperDialog ships **two engines, one entry point**. `DialogMachine` is the
+recommended way in; it drives either engine behind the same `Agent` protocol:
 
 - **Playbook engine** - the **default** runtime: checkpoint-compound
   journeys for fluid conversations. Full playbooks, the simple authoring
   format, and legacy flow JSON all auto-detect and run here via the unified
   loader - callers never route by format. See
   [Playbook engine](#playbook-engine).
-- **DialogMachine** - the supported **legacy** graph-railed state machine,
-  explicit opt-in via `superdialog chat --mode flow`. Documented in
-  the sections below; flows keep working unchanged.
+- **Graph engine** - the supported **legacy** graph-railed state machine.
+  Select it with `DialogMachine(..., engine="flow")` (or `superdialog chat
+  --mode flow`); flows keep working unchanged.
 
   
 
@@ -80,25 +81,43 @@ flowset = FlowSet({
 
 ---
 
-## DialogMachine (legacy engine)
+## DialogMachine (unified entry point)
+
+`DialogMachine` is the recommended way in: one class, one model URI. It runs
+the Playbook engine by default; pass `engine="flow"` for the legacy graph
+runtime. The lower-level `PlaybookAgent` (below) stays available for explicit
+Talker/Director LLMs or a custom HTTP executor.
 
 ### Construction
 
 ```python
 DialogMachine(
-    flow: Flow | FlowSet,
-    llm: str,                           # model URI
-    tools: list[Tool] | None = None,
-    memory: ContextStore | None = None, # default: in-memory
-                                        # (superdialog.machine.store.ContextStore)
-    config: dict | None = None,         # max_tokens, temperature, etc.
-    traversal_dir: str | Path | None = None,  # auto-save traversal JSON here on session end
-    adapter: str = "toolcall",          # "toolcall" (function-calling); any other
-                                        # value selects the prompt-based LLMAdapter
+    source: Flow | FlowSet | Playbook | str | dict,  # was: flow=
+    llm: str | None = None,             # model URI (Talker, and Director unless split)
+    tools: list[Tool] | None = None,    # any Tool; both engines
+    memory: ContextStore | None = None, # graph-only; default in-memory
+    config: dict | None = None,         # graph-only: max_tokens, temperature, etc.
+    traversal_dir: str | Path | None = None,  # graph-only: auto-save traversal JSON
+    adapter: str = "toolcall",          # graph-only adapter selection
+    *,
+    engine: str = "auto",               # "auto" | "playbook" | "flow"
+    director_llm: str | None = None,    # Playbook: strong-Director override
 )
 ```
 
-Set `traversal_dir` to a directory path and the machine will write a timestamped JSON file recording every node visited, every turn, and slot values collected - automatically when `is_complete` becomes `True`. Useful for debugging flows, building eval datasets, and auditing production conversations.
+Engine selection (`engine="auto"`, the default): a `Flow`/`FlowSet` object
+keeps the legacy graph engine (back-compat); a `Playbook` object, a path
+string, or a parsed dict runs the Playbook engine. Override with
+`engine="flow"` (force the graph runtime; `ValueError` on a `Playbook`) or
+`engine="playbook"` (force the Playbook engine, compiling a flow if needed).
+A missing `llm` in Playbook mode raises a clear `ValueError`.
+
+In Playbook mode, `llm` is the Talker and the Director unless `director_llm`
+splits them; `tools=` bridges each `Tool` through its own `execute()`. Graph-only
+methods (`switch_flow`, `seed`, `load_flow_state`) raise `NotImplementedError`
+in Playbook mode, and `flow_state` returns `None`.
+
+Set `traversal_dir` (graph engine) to a directory path and the machine will write a timestamped JSON file recording every node visited, every turn, and slot values collected - automatically when `is_complete` becomes `True`. Useful for debugging flows, building eval datasets, and auditing production conversations.
 
 ### `async turn(text, context=None, stream=False) -> Turn | AsyncIterator[StreamChunk]`
 

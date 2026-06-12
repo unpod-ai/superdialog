@@ -132,20 +132,21 @@ keeps the framework's authority where it belongs: on outcomes.
 | State | Snapshot context | Event-sourced log (replay, audit, eval) |
 | Best for | Deterministic compliance flows | Conversations that must feel human |
 
-Both engines sit behind the existing `superdialog.agent.Agent` protocol, so
-`SessionWorker` and the host adapters run either one unchanged:
+Two engines, one entry point: `DialogMachine` is the recommended way in. It
+runs the Playbook engine by default; pass `engine="flow"` for the legacy graph
+runtime. Both engines sit behind the existing `superdialog.agent.Agent`
+protocol, so `SessionWorker` and the host adapters run either one unchanged:
 
 ```python
-from superdialog.playbook import Playbook, PlaybookAgent, httpx_http
+from superdialog import DialogMachine
 
-agent = PlaybookAgent(
-    playbook=Playbook.load("booking.yaml"),
-    talker_llm=talker,      # StreamsLLM: stream(messages) -> AsyncIterator[str]
-    director_llm=director,  # CompletesLLM: await complete(messages) -> str
-    http=httpx_http,
-)
+agent = DialogMachine("booking.yaml", llm="openai/gpt-4.1-mini")
 result = await agent.turn("hello")
 ```
+
+The lower-level `PlaybookAgent` stays available when you need explicit
+Talker/Director LLMs or a custom HTTP executor (see the Advanced note in the
+README quickstart).
 
 **Migration, not replacement.** Existing flows keep working - by default
 they now run **compiled on the Playbook engine**: `Playbook.load` detects
