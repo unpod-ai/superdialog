@@ -1,0 +1,3 @@
+# Local playbook drafts overlay — unvalidated working copies the editor saves.
+# Published changes go to the canonical examples/ files; drafts stay local.
+.drafts/
