@@ -86,13 +86,59 @@ class DialogMachine:
 
     def __init__(
         self,
-        flow: Flow | FlowSet,
-        llm: str,
+        source: Flow | FlowSet | Any = None,
+        llm: str | None = None,
         tools: list[Tool] | None = None,
         memory: ContextStore | None = None,
         config: dict[str, Any] | None = None,
         traversal_dir: str | Path | None = None,
         adapter: str = "toolcall",
+        *,
+        flow: Flow | FlowSet | None = None,
+        engine: str = "auto",
+        director_llm: str | None = None,
+    ) -> None:
+        # Back-compat: the first param used to be `flow`; accept it by keyword.
+        if source is None and flow is not None:
+            source = flow
+        self._engine: Literal["graph", "playbook"] = _select_engine(source, engine)
+        if self._engine == "playbook":
+            self._init_playbook(source, llm, tools, director_llm)
+            return
+        # graph engine: a path string under engine="flow" loads via Flow.load.
+        flow = Flow.load(source) if isinstance(source, str) else source
+        if llm is None:
+            raise ValueError("DialogMachine needs an llm= for the graph engine")
+        self._init_graph(flow, llm, tools, memory, config, traversal_dir, adapter)
+
+    def _init_playbook(
+        self,
+        source: Any,
+        llm: str | None,
+        tools: list[Tool] | None,
+        director_llm: str | None,
+    ) -> None:
+        """Wire the Playbook backend lazily; build it on first turn/start."""
+        if not (llm or director_llm):
+            raise ValueError("DialogMachine needs an llm= for the Playbook engine")
+        self._pb_source = source
+        self._llm_uri = llm
+        self._director_uri = director_llm
+        self._pb_tools = tools
+        self._pb: Any = None
+        # Test seams: inject scripted Talker/Director so tests stay offline.
+        self._talker_override: Any = None
+        self._director_override: Any = None
+
+    def _init_graph(
+        self,
+        flow: Flow | FlowSet,
+        llm: str,
+        tools: list[Tool] | None,
+        memory: ContextStore | None,
+        config: dict[str, Any] | None,
+        traversal_dir: str | Path | None,
+        adapter: str,
     ) -> None:
         self._flowset: FlowSet = (
             flow if isinstance(flow, FlowSet) else FlowSet({"main": flow})
@@ -123,6 +169,30 @@ class DialogMachine:
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
+
+    def _ensure_backend(self) -> Any:
+        """Build the wrapped PlaybookAgent lazily on first use."""
+        if self._pb is not None:
+            return self._pb
+        from .playbook import Playbook, PlaybookAgent, httpx_http, provider_adapters
+
+        if isinstance(self._pb_source, Playbook):
+            pb = self._pb_source
+        elif isinstance(self._pb_source, str):
+            pb = Playbook.load(self._pb_source)
+        else:
+            pb = Playbook._from_doc(self._pb_source)
+        director, talker = provider_adapters(resolve_llm(self._llm_uri or ""))
+        if self._director_uri:
+            director, _ = provider_adapters(resolve_llm(self._director_uri))
+        self._pb = PlaybookAgent(
+            playbook=pb,
+            talker_llm=self._talker_override or talker,
+            director_llm=self._director_override or director,
+            http=httpx_http,
+            python_tools=_python_tools_from(self._pb_tools),
+        )
+        return self._pb
 
     async def _ensure_machine(self) -> DialogStateMachine:
         if self._machine is not None:
@@ -181,6 +251,9 @@ class DialogMachine:
         Fires on_enter actions for the initial node (auth, data-preload, etc.)
         before generating the greeting.
         """
+        if self._engine == "playbook":
+            lines = await self._ensure_backend().runtime.start()
+            return Turn(text=" ".join(lines).strip(), tool_calls=[], metadata={})
         machine = await self._ensure_machine()
         # Fire on_enter actions for the initial node (auth, preloads, etc.)
         # Mirrors SimpleFlowAgent.on_enter() for the voice path.
@@ -227,6 +300,8 @@ class DialogMachine:
         iterator of :class:`StreamChunk` items; the final chunk carries
         the assembled :class:`Turn` on ``chunk.turn``.
         """
+        if self._engine == "playbook":
+            return await self._ensure_backend().turn(text, stream=bool(stream))
         if stream:
             return self._stream_turn(text, context)
         return await self._run_turn(text, context)
@@ -305,6 +380,9 @@ class DialogMachine:
 
     def assist(self, text: str) -> None:
         """Queue a system-level instruction for the next turn."""
+        if self._engine == "playbook":
+            self._ensure_backend().assist(text)
+            return
         if not text:
             return
         self._pending_system_messages.append(text)
@@ -329,6 +407,8 @@ class DialogMachine:
         """Conversation history view (LiveKit-aligned ChatContext)."""
         from .chat_context import ChatContext, ChatMessage
 
+        if self._engine == "playbook":
+            return self._ensure_backend().chat_ctx
         if self._machine is None:
             # Pre-construction: synthesise from any queued system messages.
             items = [
@@ -344,6 +424,9 @@ class DialogMachine:
         If the underlying engine hasn't been built yet, the chat context is
         queued and applied on the first turn (the lazy bootstrap honours it).
         """
+        if self._engine == "playbook":
+            self._ensure_backend().load_chat_ctx(ctx)
+            return
         self._pending_chat_ctx = ctx
         if self._machine is not None:
             self._machine.load_chat_ctx(ctx)
