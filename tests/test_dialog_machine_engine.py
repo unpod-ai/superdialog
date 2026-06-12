@@ -94,3 +94,26 @@ def test_playbook_mode_requires_llm(tmp_path) -> None:
     p.write_text(MINIMAL_YAML)
     with pytest.raises(ValueError, match="needs an llm"):
         DialogMachine(str(p))  # no llm, no director_llm
+
+
+async def test_playbook_state_and_is_complete(tmp_path) -> None:
+    p = tmp_path / "play.yaml"
+    p.write_text(MINIMAL_YAML)
+    dm = DialogMachine(str(p), llm="openai/gpt-4o-mini")
+    dm._talker_override = StreamLLM(["hi"])
+    dm._director_override = CannedLLM({"slots": {}, "advance": None, "note": None})
+    await dm.turn("hello")
+    assert "checkpoint" in dm.state
+    assert dm.is_complete in (True, False)
+
+
+def test_graph_only_methods_raise_in_playbook_mode(tmp_path) -> None:
+    p = tmp_path / "play.yaml"
+    p.write_text(MINIMAL_YAML)
+    dm = DialogMachine(str(p), llm="openai/gpt-4o-mini")
+    for call in (
+        lambda: dm.switch_flow("x"),
+        lambda: dm.load_flow_state({}),
+    ):
+        with pytest.raises(NotImplementedError, match="PlaybookAgent"):
+            call()

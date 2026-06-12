@@ -241,6 +241,11 @@ class DialogMachine:
         so Jinja2 templates in node instructions resolve without asking the caller.
         Must be called before start().
         """
+        if self._engine == "playbook":
+            raise NotImplementedError(
+                "seed is a flow-graph concept; use PlaybookAgent / the "
+                "playbook's journeys for the Playbook engine"
+            )
         machine = await self._ensure_machine()
         machine.context.userdata.update(userdata)
 
@@ -436,6 +441,8 @@ class DialogMachine:
         """DM-specific runtime state (current node + slots)."""
         from .flow_state import FlowState
 
+        if self._engine == "playbook":
+            return None  # no flow-graph state in the Playbook engine
         if self._machine is None:
             return FlowState(
                 current_node_id=self._flowset[self._active_flow_name].initial_node,
@@ -447,12 +454,20 @@ class DialogMachine:
 
         Like ``load_chat_ctx``, queued if the engine is not yet built.
         """
+        if self._engine == "playbook":
+            raise NotImplementedError(
+                "load_flow_state is a flow-graph concept; use PlaybookAgent / "
+                "the playbook's journeys for the Playbook engine"
+            )
         self._pending_flow_state = state
         if self._machine is not None:
             self._machine.load_flow_state(state)
 
     def reset(self) -> None:
         """Drop the machine + memory; the next turn re-bootstraps."""
+        if self._engine == "playbook":
+            self._pb = None
+            return
         self._machine = None
         self._adapter = None
         self._memory = InMemoryContextStore()
@@ -463,6 +478,10 @@ class DialogMachine:
 
     def set_llm(self, uri: str) -> None:
         """Hot-swap the runtime model URI."""
+        if self._engine == "playbook":
+            self._llm_uri = uri
+            self._pb = None  # rebuild the backend on the next turn
+            return
         self._llm_uri = uri
         self._llm = resolve_llm(uri)
         if self._adapter is not None:
@@ -473,6 +492,11 @@ class DialogMachine:
 
     def switch_flow(self, name: str, preserve_memory: bool = False) -> None:
         """Switch to a named flow in the bound :class:`FlowSet`."""
+        if self._engine == "playbook":
+            raise NotImplementedError(
+                "switch_flow is a flow-graph concept; use PlaybookAgent / the "
+                "playbook's journeys for the Playbook engine"
+            )
         if name not in self._flowset:
             raise KeyError(f"Flow {name!r} not in FlowSet")
         self._active_flow_name = name
@@ -484,6 +508,13 @@ class DialogMachine:
     @property
     def state(self) -> dict[str, Any]:
         """Read-only view of the current node id and slot dictionary."""
+        if self._engine == "playbook":
+            st = self._ensure_backend().runtime.state
+            return {
+                "checkpoint": st.checkpoint_id,
+                "slots": {k: v.value for k, v in st.slots.items()},
+                "ended": st.ended,
+            }
         if self._machine is None:
             initial = self._flowset[self._active_flow_name].initial_node
             return {"node_id": initial, "slots": {}}
@@ -495,6 +526,8 @@ class DialogMachine:
     @property
     def is_complete(self) -> bool:
         """True if the machine is at a final node."""
+        if self._engine == "playbook":
+            return self._ensure_backend().runtime.state.ended
         if self._machine is None:
             return False
         return self._machine.is_complete
