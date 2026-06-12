@@ -73,8 +73,7 @@ def is_simple_playbook(doc: Any) -> bool:
     )
 
 
-# ISO 639-1 -> readable name; the Soniox translation set
-# (https://soniox.com/docs/translation/supported-languages).
+# ISO 639-1 -> readable name for 59 common languages.
 # NOTE: in YAML, quote the Norwegian code ("no") — unquoted it parses as a
 # boolean under yaml.safe_load, which the simple format uses.
 _LANG_NAMES = {

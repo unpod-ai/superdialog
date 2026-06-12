@@ -305,8 +305,7 @@ def test_empty_language_list_folds_nothing() -> None:
     assert "Default conversation language" not in simple_to_playbook(doc).persona
 
 
-def test_language_map_covers_soniox_translation_set() -> None:
-    # https://soniox.com/docs/translation/supported-languages
+def test_language_map_covers_common_languages() -> None:
     from superdialog.playbook.simple import _LANG_NAMES
 
     spot = {
@@ -321,7 +320,7 @@ def test_language_map_covers_soniox_translation_set() -> None:
     }
     for code, name in spot.items():
         assert _LANG_NAMES.get(code) == name, code
-    assert len(_LANG_NAMES) >= 59  # full Soniox translation set
+    assert len(_LANG_NAMES) >= 59  # the documented common-language set
 
 
 def test_interrupts_compile_to_interrupt_specs() -> None:

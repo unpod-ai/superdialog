@@ -101,10 +101,9 @@ the Talker sees every turn:
   doesn't already mention it.
 - `language` — a name (`English`), an ISO 639-1 code (`hi`), or a list of
   either (`["en", "hi"]`): first entry is the default, the rest fold as
-  `Also speaks: …`. The code map covers the
-  [Soniox translation set](https://soniox.com/docs/translation/supported-languages)
-  (59 languages); unmapped values pass through as written. Quote the
-  Norwegian code (`"no"`) — unquoted YAML parses it as a boolean.
+  `Also speaks: …`. The code map covers 59 common languages; unmapped
+  values pass through as written. Quote the Norwegian code (`"no"`) —
+  unquoted YAML parses it as a boolean.
 - `voice_style` — folded as `Voice & manner: …`: tone, pacing, sentence
   length, language-switching rules.
 
