@@ -272,3 +272,34 @@ def test_blank_name_and_language_fold_nothing() -> None:
     pb = simple_to_playbook(doc)
     assert "Your name is" not in pb.persona
     assert "Default conversation language" not in pb.persona
+
+
+def test_language_accepts_codes_and_lists() -> None:
+    import yaml
+
+    doc = yaml.safe_load(SIMPLE)
+    doc["persona"]["language"] = ["en", "hi"]
+    persona = simple_to_playbook(doc).persona
+    assert "Default conversation language: English." in persona
+    assert "Also speaks: Hindi." in persona
+
+    doc["persona"]["language"] = "hi"
+    assert "Default conversation language: Hindi." in simple_to_playbook(doc).persona
+
+
+def test_language_names_pass_through_unmapped() -> None:
+    import yaml
+
+    doc = yaml.safe_load(SIMPLE)
+    doc["persona"]["language"] = ["en", "Marathi"]
+    persona = simple_to_playbook(doc).persona
+    assert "Default conversation language: English." in persona
+    assert "Also speaks: Marathi." in persona
+
+
+def test_empty_language_list_folds_nothing() -> None:
+    import yaml
+
+    doc = yaml.safe_load(SIMPLE)
+    doc["persona"]["language"] = []
+    assert "Default conversation language" not in simple_to_playbook(doc).persona

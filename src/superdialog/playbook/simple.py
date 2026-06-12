@@ -24,7 +24,9 @@ from .models import AdvanceRule, Checkpoint, Journey, Playbook, SlotSpec
 
 class SimplePersona(BaseModel):
     name: str = ""
-    language: str = ""
+    # A language name ("English"), an ISO 639-1 code ("hi"), or a list of
+    # either — first entry is the default, the rest are also spoken.
+    language: str | list[str] = ""
     voice_style: str = ""
     identity: str = ""
 
@@ -64,6 +66,35 @@ def is_simple_playbook(doc: Any) -> bool:
     )
 
 
+_LANG_NAMES = {
+    "en": "English",
+    "hi": "Hindi",
+    "mr": "Marathi",
+    "ta": "Tamil",
+    "te": "Telugu",
+    "kn": "Kannada",
+    "bn": "Bengali",
+    "gu": "Gujarati",
+    "pa": "Punjabi",
+    "ur": "Urdu",
+    "es": "Spanish",
+    "fr": "French",
+    "de": "German",
+}
+
+
+def _language_line(language: str | list[str]) -> str:
+    """Fold language(s) into one persona line; codes map to readable names."""
+    raw = [language] if isinstance(language, str) else list(language)
+    names = [_LANG_NAMES.get(s.strip().lower(), s.strip()) for s in raw if s.strip()]
+    if not names:
+        return ""
+    line = f"Default conversation language: {names[0]}."
+    if len(names) > 1:
+        line += " Also speaks: " + ", ".join(names[1:]) + "."
+    return line
+
+
 def _build_persona(sp: SimplePlaybook) -> str:
     parts: list[str] = []
     if sp.persona.identity.strip():
@@ -71,8 +102,9 @@ def _build_persona(sp: SimplePlaybook) -> str:
     name = sp.persona.name.strip()
     if name and name.lower() not in sp.persona.identity.lower():
         parts.append(f"Your name is {name}.")
-    if sp.persona.language.strip():
-        parts.append(f"Default conversation language: {sp.persona.language.strip()}.")
+    language_line = _language_line(sp.persona.language)
+    if language_line:
+        parts.append(language_line)
     if sp.persona.voice_style.strip():
         parts.append(f"Voice & manner: {sp.persona.voice_style.strip()}")
     if sp.goal.strip():
