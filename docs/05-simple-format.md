@@ -70,7 +70,11 @@ turn. Four fields:
 - **`language`** — a language name (`English`), an ISO 639-1 code (`hi`),
   or a list of either (`["en", "hi"]`). The first entry is the default,
   the rest are also spoken; codes map to readable names. Folds as
-  `Default conversation language: English. Also speaks: Hindi.`
+  `Default conversation language: English. Also speaks: Hindi.` The code
+  map covers the [Soniox translation
+  set](https://soniox.com/docs/translation/supported-languages) (59
+  languages); unmapped values pass through as written. In YAML, quote the
+  Norwegian code (`"no"`) — unquoted it parses as a boolean.
 - **`voice_style`** — folded as `Voice & manner: …`. Tone, pacing,
   sentence length, language-switching rules.
 

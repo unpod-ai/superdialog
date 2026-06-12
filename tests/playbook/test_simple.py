@@ -303,3 +303,22 @@ def test_empty_language_list_folds_nothing() -> None:
     doc = yaml.safe_load(SIMPLE)
     doc["persona"]["language"] = []
     assert "Default conversation language" not in simple_to_playbook(doc).persona
+
+
+def test_language_map_covers_soniox_translation_set() -> None:
+    # https://soniox.com/docs/translation/supported-languages
+    from superdialog.playbook.simple import _LANG_NAMES
+
+    spot = {
+        "ja": "Japanese",
+        "zh": "Chinese",
+        "ar": "Arabic",
+        "pt": "Portuguese",
+        "sw": "Swahili",
+        "cy": "Welsh",
+        "no": "Norwegian",
+        "ml": "Malayalam",
+    }
+    for code, name in spot.items():
+        assert _LANG_NAMES.get(code) == name, code
+    assert len(_LANG_NAMES) >= 59  # full Soniox translation set
