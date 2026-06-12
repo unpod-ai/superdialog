@@ -4,13 +4,24 @@ from __future__ import annotations
 
 import json
 from statistics import mean
+from typing import Callable
 
 from jinja2 import Environment, TemplateSyntaxError
 from pydantic import BaseModel, Field
 
+from .agent import PlaybookAgent
 from .director import CompletesLLM
 from .editable import Edit, EditableDoc
-from .eval_bridge import EvalReport, SessionMetrics
+from .eval_bridge import (
+    EvalReport,
+    PersonaSpec,
+    SessionMetrics,
+    SpeaksUser,
+    run_eval,
+)
+from .models import Playbook
+
+AgentFactory = Callable[[Playbook], PlaybookAgent]
 
 W_COMPLETION = 0.4
 W_SLOT = 0.3
@@ -218,3 +229,90 @@ async def propose_edits(
             continue
         return candidate, edits
     return None
+
+
+class OptimizeReport(BaseModel):
+    """The optimize run's result: final artifact plus the full metric trace."""
+
+    final_yaml: str
+    initial_breakdown: ObjectiveBreakdown
+    final_breakdown: ObjectiveBreakdown
+    trace: list[RoundTrace]
+    frontier: list[RoundTrace]
+
+
+async def optimize(
+    doc: EditableDoc,
+    *,
+    personas: list[PersonaSpec],
+    candidate_llm: CompletesLLM,
+    user_llm: SpeaksUser,
+    agent_factory: AgentFactory,
+    rounds: int = 3,
+    n: int = 1,
+    patience: int = 2,
+    reflect_attempts: int = 3,
+) -> OptimizeReport:
+    """Paired-round reflective optimization. Returns the final incumbent.
+
+    Acceptance compares only same-round scores: each round evaluates the
+    incumbent AND the candidate fresh, so both face the same sampling noise.
+    The Pareto frontier is reported but never picks the output.
+    """
+
+    async def _eval(d: EditableDoc) -> EvalReport:
+        playbook = d.compile()
+        return await run_eval(lambda: agent_factory(playbook), personas, user_llm, n)
+
+    incumbent = doc
+    last_report = await _eval(incumbent)
+    initial_b = score_report(last_report)
+    final_b = initial_b
+    frontier = ParetoFrontier()
+    trace: list[RoundTrace] = []
+    stale = 0
+    for round_no in range(1, rounds + 1):
+        proposal = await propose_edits(
+            incumbent, last_report, candidate_llm, max_attempts=reflect_attempts
+        )
+        if proposal is None:
+            trace.append(
+                RoundTrace(
+                    round_no=round_no,
+                    accepted=False,
+                    incumbent_breakdown=final_b,
+                    detail="no valid candidate",
+                )
+            )
+            stale += 1
+        else:
+            candidate, edits = proposal
+            inc_report = await _eval(incumbent)
+            cand_report = await _eval(candidate)
+            inc_b = score_report(inc_report)
+            cand_b = score_report(cand_report)
+            accepted = cand_b.objective > inc_b.objective
+            t = RoundTrace(
+                round_no=round_no,
+                accepted=accepted,
+                incumbent_breakdown=inc_b,
+                candidate_breakdown=cand_b,
+                edits=edits,
+            )
+            trace.append(t)
+            frontier.consider(t)
+            if accepted:
+                incumbent, last_report, final_b = candidate, cand_report, cand_b
+                stale = 0
+            else:
+                last_report, final_b = inc_report, inc_b
+                stale += 1
+        if stale >= patience:
+            break
+    return OptimizeReport(
+        final_yaml=incumbent.emit(),
+        initial_breakdown=initial_b,
+        final_breakdown=final_b,
+        trace=trace,
+        frontier=frontier.members,
+    )

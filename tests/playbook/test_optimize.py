@@ -1,17 +1,28 @@
 """Tests for the optimize loop: scoring, reflection, paired rounds."""
 
 import json
+import textwrap
 
-from superdialog.playbook.editable import FullDoc
-from superdialog.playbook.eval_bridge import EvalReport, SessionMetrics
+import yaml as _yaml
+
+from superdialog.playbook.agent import PlaybookAgent
+from superdialog.playbook.editable import FullDoc, SimpleDoc
+from superdialog.playbook.eval_bridge import EvalReport, PersonaSpec, SessionMetrics
+from superdialog.playbook.models import Playbook
 from superdialog.playbook.optimize import (
     ObjectiveBreakdown,
+    OptimizeReport,
     ParetoFrontier,
     RoundTrace,
+    optimize,
     propose_edits,
     score_report,
 )
+from tests.playbook.test_director import CannedLLM
+from tests.playbook.test_eval_bridge import ScriptedUser
 from tests.playbook.test_models import MINIMAL_YAML
+from tests.playbook.test_talker import StreamLLM
+from tests.playbook.test_toolexec import FakeHttp
 
 _GUIDANCE = "journeys.booking.checkpoints.collect.guidance"
 
@@ -230,3 +241,155 @@ def test_frontier_ignores_rounds_without_a_candidate() -> None:
         )
     )
     assert f.members == []
+
+
+_IDLE = {"slots": {}, "advance": None, "note": None}
+_ADVANCE = {
+    "slots": {"city": "Pune", "date": "2026-06-12"},
+    "advance": "booking.confirm",
+    "note": None,
+}
+_HOLD_OK = (200, {"data": {"hold_id": "h1"}})
+
+_PERSONAS = [
+    PersonaSpec(
+        name="closer",
+        traits="direct",
+        goal="book in Pune",
+        ground_truth_slots={"city": "Pune", "date": "2026-06-12"},
+    )
+]
+
+
+def _improving_agent_factory(playbook: Playbook) -> PlaybookAgent:
+    """Director completes the booking only after the 'warmly' mutation."""
+    improved = "warmly" in playbook.checkpoint("booking.collect").guidance
+    return PlaybookAgent(
+        playbook=playbook,
+        talker_llm=StreamLLM(["Which", " city?"]),
+        director_llm=CannedLLM(_ADVANCE if improved else _IDLE),
+        http=FakeHttp([_HOLD_OK] * 4),
+    )
+
+
+async def test_optimize_improves_and_emits_final_incumbent() -> None:
+    doc = FullDoc.from_text(MINIMAL_YAML)
+    llm = CannedEditsLLM([_edit_json(new_text="Collect warmly.")])
+    report = await optimize(
+        doc,
+        personas=_PERSONAS,
+        candidate_llm=llm,
+        user_llm=ScriptedUser(["Pune on 2026-06-12 please", "ok"]),
+        agent_factory=_improving_agent_factory,
+        rounds=2,
+        n=1,
+    )
+    assert isinstance(report, OptimizeReport)
+    assert "Collect warmly." in report.final_yaml
+    assert report.final_breakdown.objective > report.initial_breakdown.objective
+    accepted = [t for t in report.trace if t.accepted]
+    assert accepted and accepted[0].edits[0].address == _GUIDANCE
+    assert accepted[0].candidate_breakdown is not None
+
+
+async def test_no_valid_candidate_keeps_the_input() -> None:
+    doc = FullDoc.from_text(MINIMAL_YAML)
+    report = await optimize(
+        doc,
+        personas=_PERSONAS,
+        candidate_llm=CannedEditsLLM(["not json"]),
+        user_llm=ScriptedUser(["x"]),
+        agent_factory=_improving_agent_factory,
+        rounds=1,
+        n=1,
+    )
+    assert report.final_yaml == doc.emit()
+    assert report.trace[0].accepted is False
+    assert report.trace[0].detail == "no valid candidate"
+
+
+async def test_noop_edit_is_never_accepted_and_round_cap_holds() -> None:
+    doc = FullDoc.from_text(MINIMAL_YAML)
+    noop = _edit_json(new_text="Collect naturally.")  # identical prose
+    report = await optimize(
+        doc,
+        personas=_PERSONAS,
+        candidate_llm=CannedEditsLLM([noop]),
+        user_llm=ScriptedUser(["x"]),
+        agent_factory=_improving_agent_factory,
+        rounds=3,
+        n=1,
+        patience=99,
+    )
+    assert len(report.trace) == 3
+    assert not any(t.accepted for t in report.trace)
+
+
+async def test_patience_stops_early() -> None:
+    doc = FullDoc.from_text(MINIMAL_YAML)
+    noop = _edit_json(new_text="Collect naturally.")
+    report = await optimize(
+        doc,
+        personas=_PERSONAS,
+        candidate_llm=CannedEditsLLM([noop]),
+        user_llm=ScriptedUser(["x"]),
+        agent_factory=_improving_agent_factory,
+        rounds=5,
+        n=1,
+        patience=2,
+    )
+    assert len(report.trace) == 2  # stopped after `patience` stale rounds
+
+
+_SIMPLE_TWO_STEP = textwrap.dedent("""
+    name: "Mini"
+    goal: "Say hello and close."
+    persona:
+      identity: "You are a tiny demo agent."
+    opening: "Greet the caller."
+    playbook:
+      - id: hello
+        purpose: "Open the call."
+        say: "Greet and ask how to help."
+        done_when: "Caller responded."
+      - id: done
+        purpose: "Close."
+        say: "Wrap up."
+        done_when: "Closed."
+""")
+
+
+def _simple_improving_factory(playbook: Playbook) -> PlaybookAgent:
+    improved = "warmly" in playbook.checkpoint("main.hello").guidance
+    verdict = {"slots": {}, "advance": "main.done", "note": None} if improved else _IDLE
+    return PlaybookAgent(
+        playbook=playbook,
+        talker_llm=StreamLLM(["Hi", " there"]),
+        director_llm=CannedLLM(verdict),
+        http=FakeHttp([]),
+    )
+
+
+async def test_simple_doc_optimizes_and_stays_simple() -> None:
+    doc = SimpleDoc.from_text(_SIMPLE_TWO_STEP)
+    edit = json.dumps(
+        [
+            {
+                "address": "steps.hello.say",
+                "new_text": "Greet warmly and ask how to help.",
+            }
+        ]
+    )
+    report = await optimize(
+        doc,
+        personas=[PersonaSpec(name="p", traits="brief", goal="say hi")],
+        candidate_llm=CannedEditsLLM([edit]),
+        user_llm=ScriptedUser(["hello", "bye"]),
+        agent_factory=_simple_improving_factory,
+        rounds=1,
+        n=1,
+    )
+    assert any(t.accepted for t in report.trace)
+    out = _yaml.safe_load(report.final_yaml)
+    assert "playbook" in out and "journeys" not in out  # still simple format
+    assert "warmly" in out["playbook"][0]["say"]
