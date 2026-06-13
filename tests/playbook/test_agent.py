@@ -145,6 +145,46 @@ async def test_barge_in_aborts_cleanly() -> None:
     assert agent.runtime.log.version > version_after_abort
 
 
+async def test_barge_in_from_foreign_task() -> None:
+    """aclose() driven from a DIFFERENT task than drove the stream must not
+    raise.
+
+    Regression: the production barge-in path (the asyncgen finalizer /
+    host teardown) closes the generator from a foreign task. An anyio task
+    group / cancel scope is task-affine — exiting it from a foreign task
+    raises ``RuntimeError: Attempted to exit cancel scope in a different
+    task than it was entered in``. The same-task test above never exercised
+    this. The Director's shielded decision must still land.
+    """
+    agent = _agent(
+        verdict={"slots": {"city": "Pune"}, "advance": None, "note": None},
+        talker_llm=SlowStreamLLM(["Where", " to", " today?"]),
+    )
+    gen = await agent.turn("hello", stream=True)
+    assert not isinstance(gen, TurnResult)
+    first = await gen.__anext__()  # consume one live chunk; gen suspends mid-stream
+    assert first.text == "Where"
+
+    # Close from a separate task — the production failure mode. (aclose()
+    # returns an async_generator_athrow, not a coroutine, so wrap it.)
+    async def _close() -> None:
+        await gen.aclose()
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(_close)
+    # Nothing escaped, and the shielded Director decision still landed.
+    assert agent.runtime.state.slots["city"].value == "Pune"
+    partial = [
+        e
+        for e in agent.runtime.log.events
+        if isinstance(e, UtteranceEvent) and e.role == "assistant" and e.text == "Where"
+    ]
+    assert len(partial) == 1  # partial talker speech logged exactly once
+    # The runtime is still usable afterward.
+    result = await agent.turn("Pune please")
+    assert isinstance(result, TurnResult)
+
+
 async def test_load_event_log_via_public_seam() -> None:
     """load_log swaps equal-length distinct logs without cache poison."""
     agent = _agent()
