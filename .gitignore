@@ -24,3 +24,5 @@ dist/
 docs/plans/
 docs/superpowers/
 bank_agent.yaml
+.claude
+openspec

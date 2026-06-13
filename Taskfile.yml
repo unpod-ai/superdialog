@@ -1,0 +1,142 @@
+version: "3"
+
+vars:
+  UV:
+    sh: command -v uv 2>/dev/null || echo "${HOME}/.local/bin/uv"
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  # --- Setup ---
+
+  install:
+    desc: Alias for sync (install all deps)
+    deps: [sync]
+
+  sync:
+    desc: Sync all deps via uv
+    cmds:
+      - "{{.UV}} sync"
+
+  # --- Code Quality ---
+
+  lint:
+    desc: Run ruff linter
+    cmds:
+      - "{{.UV}} run --extra dev ruff check ."
+
+  lint-fix:
+    desc: Run ruff linter with auto-fix
+    cmds:
+      - "{{.UV}} run --extra dev ruff check . --fix"
+
+  format:
+    desc: Run ruff formatter
+    cmds:
+      - "{{.UV}} run --extra dev ruff format ."
+
+  format-check:
+    desc: Check formatting without applying changes
+    cmds:
+      - "{{.UV}} run --extra dev ruff format . --check"
+
+  typecheck:
+    desc: Run pyrefly type checker
+    cmds:
+      - "{{.UV}} run --extra dev pyrefly check"
+
+  check:
+    desc: Run lint + format-check + typecheck
+    cmds:
+      - task: lint
+      - task: format-check
+      - task: typecheck
+
+  # --- Tests ---
+
+  test:
+    desc: "Run the core suite (playground tests skip cleanly without --extra playground)"
+    cmds:
+      - "{{.UV}} run --extra dev pytest tests/ -v"
+
+  test-playground:
+    desc: "Run the voice playground harness tests (needs the playground extra)"
+    cmds:
+      - "{{.UV}} run --extra dev --extra playground pytest tests/playground -v"
+
+  test-cov:
+    desc: Run tests with coverage report
+    cmds:
+      - "{{.UV}} run --extra dev pytest tests/ -v --cov=src/superdialog --cov-report=term-missing"
+
+  # --- Voice Agent Playground (playground/) ---
+
+  supervoice-dev:
+    desc: "Start a LOCAL supervoice dev SPEECH app on :9000 (needs ../supervoice; only for fully-local dev)"
+    dir: "../supervoice"
+    vars:
+      PORT: '{{.PORT | default "9000"}}'
+    cmds:
+      - "{{.UV}} run uvicorn supervoice.dev.app:create_dev_app --factory --env-file .env --port {{.PORT}} --reload"
+
+  pg-ui-build:
+    desc: "Build the voice playground web UI (playground/web → dist)"
+    dir: playground/web
+    cmds:
+      - npm install
+      - npm run build
+
+  pg-ui-dev:
+    desc: "Vite dev server for the playground UI on :5173 (proxies /playground to :9100)"
+    dir: playground/web
+    cmds:
+      - npm install
+      - npm run dev
+
+  pg:
+    desc: "Run the voice playground on :9100 (speech via SUPERVOICE_URL/UNPOD_BASE_URL hosted, else local supervoice-dev :9000)"
+    deps: [pg-ui-build]
+    cmds:
+      - "{{.UV}} run --extra playground python -m playground.run"
+
+  pg-local:
+    desc: "Like 'pg' but overlays an editable ../unpod-sdk (for unpod SDK co-development)"
+    deps: [pg-ui-build]
+    cmds:
+      - "{{.UV}} run --extra playground --with-editable ../unpod-sdk python -m playground.run"
+
+  pg-stop:
+    desc: "Stop the voice playground harness (matches the playground.run process; never kills by bare port)"
+    cmds:
+      - 'pkill -f "playground.run" 2>/dev/null || true'
+      - echo "[playground] stopped"
+
+  pg-stack:
+    desc: "Run the playground; boots a LOCAL supervoice-dev only if ../supervoice exists and no hosted speech URL is set"
+    deps: [pg-ui-build]
+    cmds:
+      - |
+        set -u
+        SV_PID=""
+        cleanup() { [ -n "$SV_PID" ] && kill "$SV_PID" 2>/dev/null || true; }
+        # go-task's embedded shell (mvdan.cc/sh) only supports trap on EXIT,
+        # not INT/TERM by name/number — and EXIT covers the normal teardown.
+        # On Ctrl-C the SIGINT reaches the whole process group, so the
+        # backgrounded supervoice gets it directly anyway.
+        trap cleanup EXIT
+        if [ -n "${SUPERVOICE_URL:-}" ] || [ -n "${UNPOD_BASE_URL:-}" ]; then
+          echo "[pg-stack] hosted/explicit speech configured — not booting a local supervoice"
+        elif [ -d ../supervoice ]; then
+          echo "[pg-stack] booting local supervoice-dev on :9000 (../supervoice)…"
+          ( cd ../supervoice && {{.UV}} run uvicorn supervoice.dev.app:create_dev_app --factory --env-file .env --port 9000 ) &
+          SV_PID=$!
+          sleep 2
+        else
+          echo "[pg-stack] no ../supervoice and no SUPERVOICE_URL/UNPOD_BASE_URL set."
+          echo "           Set UNPOD_BASE_URL=api.unpod.ai (hosted) or SUPERVOICE_URL=ws://host:port,"
+          echo "           or clone supervoice to ../supervoice. Voice 'Connect' will fail until then."
+        fi
+        {{.UV}} run --extra playground python -m playground.run

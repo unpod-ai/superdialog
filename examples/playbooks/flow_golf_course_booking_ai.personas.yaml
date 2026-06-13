@@ -1,0 +1,36 @@
+- name: Cooperative Clara
+  traits: Friendly, open, and willing to share information.
+  goal: Schedule a callback for a course inquiry.
+  max_turns: 12
+  opening: Hello
+  ground_truth_slots:
+    course_name: Yoga Basics
+    location: Los Angeles
+    callback_time: Tomorrow at 10 AM
+- name: Impatient Ian
+  traits: Brief and somewhat abrupt, prefers fast exchanges.
+  goal: Check booking status quickly.
+  max_turns: 12
+  opening: Hello
+  ground_truth_slots:
+    reference_number: '12345'
+    course_name: Advanced Pilates
+    location: New York
+- name: Tangent Tina
+  traits: Loves to share stories, often goes off-topic.
+  goal: List all course locations while reminiscing about a recent vacation.
+  max_turns: 12
+  opening: Hello
+  ground_truth_slots:
+    course_name: Dance Fitness
+    location: Miami
+    callback_time: Next Wednesday
+- name: Mistaken Mike
+  traits: Occasionally confuses information, but corrects upon questioning.
+  goal: Check booking with a reference number.
+  max_turns: 12
+  opening: Hello
+  ground_truth_slots:
+    reference_number: ABCDE
+    course_name: Cooking Class
+    location: Chicago
