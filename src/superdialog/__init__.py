@@ -1,6 +1,6 @@
 """SuperDialog -- standalone dialog state machine framework."""
 
-__version__ = "0.2.5"
+__version__ = "0.2.6"
 
 from .agent import Agent, TurnResult
 from .agents import LLMAgent
