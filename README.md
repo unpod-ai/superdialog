@@ -11,9 +11,11 @@ executes flow graphs deterministically. Both manage turn-by-turn
 logic, tool calls, transitions, and conversation memory; both speak the same
 `Agent` protocol, so every host adapter runs either one unchanged.
 
-```
-User text → agent.turn() → reply text
-```
+<p align="center">
+  <img src="docs/diagrams/superdialog-text-loop.svg" alt="SuperDialog text loop: user text enters the Agent protocol, agent.turn() runs tools and state, and reply text comes back." width="760">
+</p>
+
+<p align="center"><em><code>User text → agent.turn() → reply text</code> — so every dialog is a plain, unit-testable function: no audio fixtures, no phone number, no API keys to test a conversation.</em></p>
 
 Audio, STT, TTS, telephony, and media servers are out of scope - those belong to
 voice infrastructure like LiveKit, PipeCat, or the Unpod Voice Platform.
@@ -275,6 +277,10 @@ report = coverage_report(flow, pb)    # proves every node/edge/action mapped
 `superdialog.agent.Agent` protocol (`turn` / `assist` / `chat_ctx`), so the
 same object drops into every host. The host varies; the SuperDialog code is
 identical.
+
+<p align="center">
+  <img src="docs/diagrams/superdialog-engines-contract.svg" alt="SuperDialog engine contract: host platforms (LiveKit, PipeCat, FastAPI, WebSocket, CLI) connect through superdialog.adapters and SessionWorker to one Agent protocol, behind which sit two interchangeable engines — PlaybookAgent (default) and DialogMachine (legacy)." width="820">
+</p>
 
 | Host | Adapter | Approx. LoC |
 |---|---|---|
