@@ -82,12 +82,23 @@ def _looks_like_simple_playbook(path: str) -> bool:
     return is_simple_playbook(doc)
 
 
-def _drive_agent(agent: Any) -> None:
-    """Run the shared async REPL loop over a PlaybookAgent."""
+def _drive_agent(agent: Any, speak_first: bool = False) -> None:
+    """Run the shared async REPL loop over a PlaybookAgent.
+
+    ``speak_first=True`` simulates outbound-call UX where the agent speaks
+    the opening greeting before waiting for user input.
+    """
 
     async def _loop() -> None:
-        for line in await agent.runtime.start():
+        lines = await agent.runtime.start()
+        for line in lines:
             print(line)
+        if speak_first and not lines:
+            # Agent greets before the user speaks (outbound call connect).
+            async for chunk in agent.greet():
+                if chunk.text:
+                    print(chunk.text, end="", flush=True)
+            print()
         while True:
             try:
                 user = input("> ")
@@ -116,7 +127,12 @@ def _drive_agent(agent: Any) -> None:
     asyncio.run(_loop())
 
 
-def _build_playbook_agent(playbook: Any, llm: str) -> Any:
+def _build_playbook_agent(
+    playbook: Any,
+    llm: str,
+    barrier_timeout: float = 0.4,
+    token_budget: int = 4000,
+) -> Any:
     """Build a PlaybookAgent for ``playbook`` using a single resolved model."""
     from ..llm.resolver import resolve_llm
     from ..playbook import PlaybookAgent, httpx_http, provider_adapters
@@ -128,6 +144,8 @@ def _build_playbook_agent(playbook: Any, llm: str) -> Any:
         talker_llm=talker,
         director_llm=director,
         http=httpx_http,
+        barrier_timeout=barrier_timeout,
+        token_budget=token_budget,
     )
 
 
@@ -148,8 +166,14 @@ def _run_simple_repl(simple_path: str, llm: str) -> None:
     """Blocking interactive REPL driving a compiled simple playbook."""
     from ..playbook.simple import load_simple
 
-    agent = _build_playbook_agent(load_simple(simple_path), llm)
-    _drive_agent(agent)
+    # barrier_timeout=2.0: gives Director enough time to complete before
+    # Talker plays filler (default 0.4 s is too short for typical LLM latency).
+    # token_budget=8000: large personas can exceed 4 k tokens, leaving no room
+    # for transcript; 8 k keeps both the system block and conversation visible.
+    agent = _build_playbook_agent(
+        load_simple(simple_path), llm, barrier_timeout=2.0, token_budget=8000
+    )
+    _drive_agent(agent, speak_first=True)
 
 
 def _cmd_chat(args: argparse.Namespace) -> int:
