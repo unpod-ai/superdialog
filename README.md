@@ -2,6 +2,10 @@
 
 **Standalone dialog framework. Pure text in, pure text out.**
 
+<p align="center">
+  <img src="docs/diagrams/superdialog-engines-contract.svg" alt="SuperDialog engine contract: host platforms (LiveKit, PipeCat, FastAPI, WebSocket, CLI) connect through superdialog.adapters and SessionWorker to one Agent protocol, behind which sit two interchangeable engines — PlaybookAgent (default) and DialogMachine (legacy)." width="820">
+</p>
+
 SuperDialog is the **brain** layer for conversational systems. It ships two
 engines behind one text interface: **Playbook**, the default - a
 checkpoint-based compound runtime (a fast streaming Talker plus an async
@@ -277,10 +281,6 @@ report = coverage_report(flow, pb)    # proves every node/edge/action mapped
 `superdialog.agent.Agent` protocol (`turn` / `assist` / `chat_ctx`), so the
 same object drops into every host. The host varies; the SuperDialog code is
 identical.
-
-<p align="center">
-  <img src="docs/diagrams/superdialog-engines-contract.svg" alt="SuperDialog engine contract: host platforms (LiveKit, PipeCat, FastAPI, WebSocket, CLI) connect through superdialog.adapters and SessionWorker to one Agent protocol, behind which sit two interchangeable engines — PlaybookAgent (default) and DialogMachine (legacy)." width="820">
-</p>
 
 | Host | Adapter | Approx. LoC |
 |---|---|---|
