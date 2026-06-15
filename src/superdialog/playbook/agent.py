@@ -233,6 +233,32 @@ class PlaybookAgent:
                 full = (talker_text + " " + " ".join(pass_through)).strip()
         yield StreamChunk(done=True, turn=Turn(text=full, metadata=self._metadata()))
 
+    async def greet(self) -> AsyncIterator[StreamChunk]:
+        """Speak and log the opening greeting (outbound-call: agent speaks first).
+
+        Streams speech chunks from the initial checkpoint state, then logs the
+        full text as an assistant utterance so the Director sees it next turn.
+        """
+        await self._ensure_started()
+        state = self.runtime.state
+        talker_chunks: list[SpeechChunk] = []
+        async for chunk in self._talker.speak(state):
+            talker_chunks.append(chunk)
+            if chunk.text:
+                yield StreamChunk(text=chunk.text)
+        text = "".join(c.text for c in talker_chunks).strip()
+        if text:
+            self.runtime.log.append(
+                UtteranceEvent(
+                    role="assistant",
+                    text=text,
+                    spoke_from_version=(
+                        talker_chunks[-1].spoke_from_version if talker_chunks else 0
+                    ),
+                )
+            )
+        yield StreamChunk(done=True, turn=Turn(text=text, metadata=self._metadata()))
+
     async def _ensure_started(self) -> list[str]:
         """Start a never-started runtime; return its pass-through speech."""
         state = self.runtime.state
