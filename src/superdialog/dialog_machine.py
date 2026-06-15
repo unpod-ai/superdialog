@@ -97,13 +97,17 @@ class DialogMachine:
         flow: Flow | FlowSet | None = None,
         engine: str = "auto",
         director_llm: str | None = None,
+        barrier_timeout: float = 0.4,
+        hold_timeout: float | None = None,
     ) -> None:
         # Back-compat: the first param used to be `flow`; accept it by keyword.
         if source is None and flow is not None:
             source = flow
         self._engine: Literal["graph", "playbook"] = _select_engine(source, engine)
         if self._engine == "playbook":
-            self._init_playbook(source, llm, tools, director_llm)
+            self._init_playbook(
+                source, llm, tools, director_llm, barrier_timeout, hold_timeout
+            )
             return
         # graph engine: a path string under engine="flow" loads via Flow.load.
         flow = Flow.load(source) if isinstance(source, str) else source
@@ -117,6 +121,8 @@ class DialogMachine:
         llm: str | None,
         tools: list[Tool] | None,
         director_llm: str | None,
+        barrier_timeout: float = 0.4,
+        hold_timeout: float | None = None,
     ) -> None:
         """Wire the Playbook backend lazily; build it on first turn/start."""
         if not (llm or director_llm):
@@ -126,6 +132,9 @@ class DialogMachine:
         self._director_uri = director_llm
         self._pb_tools = tools
         self._pb: Any = None
+        # Director/Talker timing overrides forwarded to the PlaybookAgent backend.
+        self._barrier_timeout = barrier_timeout
+        self._hold_timeout = hold_timeout
         # Test seams: inject scripted Talker/Director so tests stay offline.
         self._talker_override: Any = None
         self._director_override: Any = None
@@ -185,13 +194,17 @@ class DialogMachine:
         director, talker = provider_adapters(resolve_llm(self._llm_uri or ""))
         if self._director_uri:
             director, _ = provider_adapters(resolve_llm(self._director_uri))
-        self._pb = PlaybookAgent(
-            playbook=pb,
-            talker_llm=self._talker_override or talker,
-            director_llm=self._director_override or director,
-            http=httpx_http,
-            python_tools=_python_tools_from(self._pb_tools),
-        )
+        pb_kwargs: dict[str, Any] = {
+            "playbook": pb,
+            "talker_llm": self._talker_override or talker,
+            "director_llm": self._director_override or director,
+            "http": httpx_http,
+            "python_tools": _python_tools_from(self._pb_tools),
+            "barrier_timeout": self._barrier_timeout,
+        }
+        if self._hold_timeout is not None:
+            pb_kwargs["hold_timeout"] = self._hold_timeout
+        self._pb = PlaybookAgent(**pb_kwargs)
         return self._pb
 
     async def _ensure_machine(self) -> DialogStateMachine:
