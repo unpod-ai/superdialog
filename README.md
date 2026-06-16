@@ -15,10 +15,6 @@ executes flow graphs deterministically. Both manage turn-by-turn
 logic, tool calls, transitions, and conversation memory; both speak the same
 `Agent` protocol, so every host adapter runs either one unchanged.
 
-<p align="center">
-  <img src="docs/diagrams/superdialog-text-loop.svg" alt="SuperDialog text loop: user text enters the Agent protocol, agent.turn() runs tools and state, and reply text comes back." width="760">
-</p>
-
 <p align="center"><em><code>User text → agent.turn() → reply text</code> — so every dialog is a plain, unit-testable function: no audio fixtures, no phone number, no API keys to test a conversation.</em></p>
 
 Audio, STT, TTS, telephony, and media servers are out of scope - those belong to
