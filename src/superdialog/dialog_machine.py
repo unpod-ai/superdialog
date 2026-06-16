@@ -206,6 +206,9 @@ class DialogMachine:
                     getattr(active_flow, "environment_variables", {}) or {}
                 ),
             )
+            # Share the machine's single resolved provider (the source of truth
+            # for set_llm and test injection) instead of re-resolving model_id.
+            self._adapter.set_provider(self._llm)
         else:
             self._adapter = LLMAdapter(
                 provider=self._llm,
@@ -487,8 +490,7 @@ class DialogMachine:
         if self._adapter is not None:
             if isinstance(self._adapter, ToolCallAdapter):
                 self._adapter._model_id = uri
-            else:
-                self._adapter.set_provider(self._llm)
+            self._adapter.set_provider(self._llm)
 
     def switch_flow(self, name: str, preserve_memory: bool = False) -> None:
         """Switch to a named flow in the bound :class:`FlowSet`."""

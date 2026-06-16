@@ -35,6 +35,13 @@ class SlotSpec(BaseModel):
     authoritative: bool = False
     invalidates: list[str] = Field(default_factory=list)
     description: str = ""
+    # Per-slot confirmation gate (risk class). ``None`` inherits the
+    # checkpoint's ``gate`` (backward compatible — unannotated slots behave as
+    # today). ``"hard"`` marks an intrinsically risky slot (phone/email/payment/
+    # routing) that must be Director-confirmed before it gates advance or is
+    # spoken; ``"soft"`` lets it advance on a provisional fill even inside a
+    # hard-gated checkpoint. See capability ``dialogue-gate-policy``.
+    gate: Literal["soft", "hard"] | None = None
 
 
 class AdvanceRule(BaseModel):

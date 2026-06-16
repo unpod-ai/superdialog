@@ -71,6 +71,8 @@ from superdialog.machine.composer import get_time_context as _get_time_context
 from superdialog.machine.composer import process_text as _process_text
 from superdialog.machine.composer import resolve_language as _resolve_lang
 from superdialog.machine.models import CriteriaResult, ToolDescriptor
+from superdialog.llm.provider import LLMProvider
+from superdialog.llm.resolver import resolve_llm
 
 if TYPE_CHECKING:
     from superdialog.flow.models import CustomAction, FlowNode
@@ -125,6 +127,19 @@ def _make_openai_client():
             logger.warning("[ToolCallAdapter] livekit-agents not installed — falling back to OpenAI")
 
     return AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
+
+def _ensure_non_system(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Guarantee at least one non-system message.
+
+    OpenAI tolerates system-only message lists; Anthropic (and other strict
+    providers) reject them ("requires at least one non-system message"). At
+    silent router nodes the routing state lives in the system prompt, so append
+    a minimal user turn when no user/assistant message is present.
+    """
+    if not any(m.get("role") != "system" for m in messages):
+        messages.append({"role": "user", "content": "(continue)"})
+    return messages
 
 
 def _is_zero_speech_step(rendered_instruction: str) -> bool:
@@ -355,6 +370,28 @@ class ToolCallAdapter:
         # firing twice when chain visits list_courses_in_city then ask_course_preference).
         # Cache key includes the full URL so a city change (different URL) bypasses cache.
         self._get_cache: dict[str, dict] = {}
+        # Provider-agnostic LLM access (resolved lazily from model_id).
+        self._provider: LLMProvider | None = None
+
+    def _resolve_provider(self) -> LLMProvider:
+        """Resolve (and cache) the LLM provider from the model URI.
+
+        Routes through ``resolve_llm`` so the flow engine is provider-agnostic
+        (OpenAI / any-llm / LiteLLM) instead of bound to ``AsyncOpenAI``. An
+        injected provider (``set_provider``) takes precedence over self-resolution.
+        """
+        if self._provider is None:
+            self._provider = resolve_llm(self._model_id)
+        return self._provider
+
+    def set_provider(self, provider: LLMProvider) -> None:
+        """Inject the LLM provider (symmetric with ``LLMAdapter``).
+
+        Lets the owning ``DialogMachine`` share its single resolved provider —
+        and hot-swap it via ``set_llm`` — instead of the adapter independently
+        re-resolving from ``model_id`` (which left a stale cached provider).
+        """
+        self._provider = provider
 
     # ------------------------------------------------------------------
     # Template helpers (mirrors LLMAdapter)
@@ -629,43 +666,26 @@ class ToolCallAdapter:
             }
         ]
         messages.extend(history[-6:])
+        _ensure_non_system(messages)
 
-        client = _make_openai_client()
-        _backend = os.environ.get("LLM_BACKEND", "openai")
-        logger.info(
-            "[LLM] backend=%s  endpoint=%s  model=%s",
-            _backend,
-            str(client.base_url),
-            _strip_provider_prefix(self._model_id),
-        )
         _t0 = time.perf_counter()
         try:
-            response = await client.chat.completions.create(
-                model=_strip_provider_prefix(self._model_id),
-                messages=messages,
-                temperature=0.3,
-            )
+            result = await self._resolve_provider().complete(messages, temperature=0.3)
         except Exception as exc:
             logger.error("[ToolCallAdapter] generate_reply LLM call failed: %s", exc)
             return instruction
 
         latency_ms = (time.perf_counter() - _t0) * 1000
-        usage = getattr(response, "usage", None)
-        print(
-            f"[LLM] {latency_ms:.0f}ms  "
-            f"in={getattr(usage, 'prompt_tokens', 0)} "
-            f"out={getattr(usage, 'completion_tokens', 0)} tok  "
-            f"model={self._model_id}"
-        )
-        text = response.choices[0].message.content or ""
+        meta = result.metadata or {}
+        text = result.text or ""
         if self._on_llm_complete is not None:
             await self._on_llm_complete(LLMCallData(
                 node_id=node_id,
                 model=_strip_provider_prefix(self._model_id),
                 call_type="generate_reply",
                 latency_ms=latency_ms,
-                tokens_in=getattr(usage, "prompt_tokens", 0) or 0,
-                tokens_out=getattr(usage, "completion_tokens", 0) or 0,
+                tokens_in=meta.get("prompt_tokens", 0) or 0,
+                tokens_out=meta.get("completion_tokens", 0) or 0,
                 prompt_messages=messages,
                 response_json={"text": text},
                 edge_id=None,
@@ -842,83 +862,39 @@ class ToolCallAdapter:
             instructions = f"{instructions}\n\n[CURRENT DATA]\n{_slot_lines}"
 
         messages: list[dict[str, Any]] = [{"role": "system", "content": instructions}]
-        for msg in history[-10:]:
-            messages.append(msg)
+        messages.extend(history[-10:])
+        _ensure_non_system(messages)
 
-        client = _make_openai_client()
-        _backend = os.environ.get("LLM_BACKEND", "openai")
-        logger.info(
-            "[LLM] backend=%s  endpoint=%s  model=%s",
-            _backend,
-            str(client.base_url),
-            _strip_provider_prefix(self._model_id),
-        )
         _t0 = time.perf_counter()
         try:
-            stream = await client.chat.completions.create(
-                model=_strip_provider_prefix(self._model_id),
-                messages=messages,
-                tools=tools,
-                tool_choice="required",
-                temperature=0,
-                stream=True,
-                stream_options={"include_usage": True},
+            result = await self._resolve_provider().complete(
+                messages, tools=tools, tool_choice="required", temperature=0
             )
         except Exception as exc:
             logger.error("[ToolCallAdapter] LLM call failed: %s", exc)
             return CriteriaResult(node_id=node.id)
 
+        latency_ms = (time.perf_counter() - _t0) * 1000
+        meta = result.metadata or {}
+        prompt_tokens = meta.get("prompt_tokens", 0) or 0
+        completion_tokens = meta.get("completion_tokens", 0) or 0
+
         function_name = ""
         function_args = ""
-        edge_id_fired = False
+        if result.tool_calls:
+            fn = result.tool_calls[0].get("function", {}) or {}
+            function_name = fn.get("name", "") or ""
+            function_args = fn.get("arguments", "") or ""
+
+        # Start the target node's TTS now that the edge is known (early response).
         valid_edge_ids = {e.id for e in (node.edges or [])}
-        prompt_tokens = 0
-        completion_tokens = 0
+        if (
+            function_name
+            and function_name in valid_edge_ids
+            and self._edge_id_callback
+        ):
+            await self._fire_early_response(function_name, node)
 
-        try:
-            async for chunk in stream:
-                # Usage arrives in a trailing chunk with no choices
-                if not chunk.choices:
-                    usage = getattr(chunk, "usage", None)
-                    if usage:
-                        prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
-                        completion_tokens = getattr(usage, "completion_tokens", 0) or 0
-                    continue
-
-                choice = chunk.choices[0]
-                delta = choice.delta
-
-                if delta.tool_calls:
-                    tc = delta.tool_calls[0]
-                    fn = getattr(tc, "function", None)
-                    if fn:
-                        function_name += getattr(fn, "name", None) or ""
-                        function_args += getattr(fn, "arguments", None) or ""
-
-                # Fire early-response callback as soon as a valid edge_id is complete.
-                # Verified against node.edges so partial/hallucinated names are skipped.
-                if (
-                    not edge_id_fired
-                    and function_name
-                    and function_name in valid_edge_ids
-                    and self._edge_id_callback
-                ):
-                    edge_id_fired = True
-                    await self._fire_early_response(function_name, node)
-
-                if choice.finish_reason == "tool_calls":
-                    continue  # keep reading — usage chunk arrives after finish_reason
-        except Exception as exc:
-            logger.error("[ToolCallAdapter] streaming error: %s", exc)
-            if not function_name:
-                return CriteriaResult(node_id=node.id)
-
-        latency_ms = (time.perf_counter() - _t0) * 1000
-        print(
-            f"[LLM] {latency_ms:.0f}ms  "
-            f"in={prompt_tokens} out={completion_tokens} tok  "
-            f"model={self._model_id}"
-        )
         if self._on_llm_complete is not None:
             await self._on_llm_complete(LLMCallData(
                 node_id=node.id,
@@ -1040,7 +1016,6 @@ class ToolCallAdapter:
         userdata: dict[str, Any],
     ) -> dict[str, Any] | None:
         """Execute an HTTP action — identical logic to LLMAdapter.execute_action."""
-        import re as _re
 
         import httpx
 

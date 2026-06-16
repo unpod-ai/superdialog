@@ -1,92 +1,34 @@
 """Tests for the ``DialogMachine`` facade.
 
 We exercise the spec-aligned API surface (``turn``, ``inject_system``,
-``reset``, ``set_llm``, ``switch_flow``, ``state``) with a stub
+``reset``, ``set_llm``, ``switch_flow``, ``state``) with a scripted tool-calling
 ``LLMProvider`` so the tests run hermetically without network calls.
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from superdialog import DialogMachine, Flow, FlowSet, Turn
-from superdialog.llm.provider import CompletionResult
-from superdialog.llm.provider import StreamChunk as _PSChunk
+from tests.scripted_toolcall import ScriptedToolProvider, route
 
 FIXTURE = Path(__file__).parent / "fixtures" / "flow" / "kyc.json"
-
-
-class StubProvider:
-    """Scripted ``LLMProvider`` for hermetic tests.
-
-    Returns successive responses from ``responses`` for each ``complete``
-    call. CriteriaJudge expects valid JSON, so each entry is a JSON
-    string that drives the desired transition.
-    """
-
-    def __init__(self, responses: list[str]) -> None:
-        self._responses = list(responses)
-        self.calls: list[list[dict[str, Any]]] = []
-
-    async def complete(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        **opts: Any,
-    ) -> CompletionResult:
-        self.calls.append(messages)
-        if self._responses:
-            text = self._responses.pop(0)
-        else:
-            text = "{}"
-        return CompletionResult(text=text, tool_calls=[], metadata={})
-
-    async def stream(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        **opts: Any,
-    ) -> AsyncIterator[_PSChunk]:
-        result = await self.complete(messages, tools, **opts)
-        yield _PSChunk(text=result.text, tool_call_delta=None, done=True)
-
-
-def _criteria_json(
-    *,
-    edge_id: str | None,
-    response: str = "ok",
-    extracted: dict[str, Any] | None = None,
-    all_met: bool = True,
-) -> str:
-    import json
-
-    return json.dumps(
-        {
-            "criteria_met": {},
-            "extracted_slots": extracted or {},
-            "all_required_met": all_met,
-            "user_insisting": False,
-            "recommended_edge_id": edge_id,
-            "reason": "stub",
-            "response": response,
-        }
-    )
 
 
 def _load_flow() -> Flow:
     return Flow.load(FIXTURE)
 
 
-def _machine_with(responses: list[str]) -> tuple[DialogMachine, StubProvider]:
-    """Return a DialogMachine wired to a StubProvider.
+def _machine_with(
+    provider: ScriptedToolProvider,
+) -> tuple[DialogMachine, ScriptedToolProvider]:
+    """Return a DialogMachine wired to a scripted provider.
 
-    We bypass ``resolve_llm`` by overwriting ``_llm`` after construction.
+    ``machine._llm`` is injected before the first turn; the ToolCallAdapter
+    picks it up via ``set_provider`` when the machine is built.
     """
-    provider = StubProvider(responses)
     machine = DialogMachine(flow=_load_flow(), llm="openai/gpt-4o-mini")
     machine._llm = provider  # type: ignore[assignment]
     return machine, provider
@@ -98,9 +40,7 @@ def _machine_with(responses: list[str]) -> tuple[DialogMachine, StubProvider]:
 
 
 async def test_turn_returns_turn_and_advances_state() -> None:
-    machine, _ = _machine_with(
-        [_criteria_json(edge_id="greet_to_name", response="Hi Alice")]
-    )
+    machine, _ = _machine_with(ScriptedToolProvider(routes=[route("greet_to_name")]))
     result = await machine.turn("Hello, my name is Alice")
     assert isinstance(result, Turn)
     assert result.text  # non-empty (response or generated_reply)
@@ -112,7 +52,7 @@ async def test_turn_returns_turn_and_advances_state() -> None:
 
 async def test_turn_stays_when_no_edge_recommended() -> None:
     machine, _ = _machine_with(
-        [_criteria_json(edge_id=None, response="Could you repeat that?", all_met=False)]
+        ScriptedToolProvider(routes=[route(None, brief="Could you repeat that?")])
     )
     result = await machine.turn("uh")
     assert result.metadata["outcome"] == "stay"
@@ -127,19 +67,19 @@ async def test_turn_stays_when_no_edge_recommended() -> None:
 
 async def test_assist_flushes_into_history_on_next_turn() -> None:
     machine, provider = _machine_with(
-        [_criteria_json(edge_id="greet_to_name", response="Hi")]
+        ScriptedToolProvider(routes=[route("greet_to_name")])
     )
     machine.assist("Caller is upset. Be empathetic.")
     await machine.turn("hi")
-    history = provider.calls[0]
+    routing = provider.routing_messages[0]
     assert any(
         m.get("role") == "system" and "empathetic" in m.get("content", "")
-        for m in history
+        for m in routing
     )
 
 
 async def test_reset_clears_machine_and_memory() -> None:
-    machine, _ = _machine_with([_criteria_json(edge_id="greet_to_name", response="Hi")])
+    machine, _ = _machine_with(ScriptedToolProvider(routes=[route("greet_to_name")]))
     await machine.turn("hello")
     assert machine.state["node_id"] == "collect_name"
     machine.reset()
@@ -153,19 +93,13 @@ async def test_reset_clears_machine_and_memory() -> None:
 
 
 async def test_set_llm_swaps_provider_on_active_adapter() -> None:
-    machine, first = _machine_with(
-        [_criteria_json(edge_id="greet_to_name", response="Hi")]
-    )
+    machine, _ = _machine_with(ScriptedToolProvider(routes=[route("greet_to_name")]))
     await machine.turn("hello")  # build the adapter
-    second = StubProvider(
-        [
-            _criteria_json(
-                edge_id="name_to_dob", response="ok", extracted={"name": "Alice"}
-            )
-        ]
+    second = ScriptedToolProvider(
+        routes=[route("name_to_dob", slots={"name": "Alice"})]
     )
     machine.set_llm("openai/gpt-4o-mini")
-    # set_llm just rebuilt _llm via resolve; overwrite for hermetic test
+    # set_llm rebuilt _llm via resolve; overwrite + re-inject for the hermetic test
     machine._llm = second  # type: ignore[assignment]
     assert machine._adapter is not None
     machine._adapter.set_provider(second)
@@ -181,9 +115,7 @@ async def test_switch_flow_routes_to_named_flow() -> None:
         flow=FlowSet({"main": flow_a, "alt": flow_b}),
         llm="openai/gpt-4o-mini",
     )
-    machine._llm = StubProvider(  # type: ignore[assignment]
-        [_criteria_json(edge_id="greet_to_name", response="Hi")]
-    )
+    machine._llm = ScriptedToolProvider(routes=[route("greet_to_name")])  # type: ignore[assignment]
     await machine.turn("hello")
     assert machine.state["node_id"] == "collect_name"
     machine.switch_flow("alt")

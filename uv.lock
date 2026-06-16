@@ -141,6 +141,43 @@ wheels = [
 ]
 
 [[package]]
+name = "anthropic"
+version = "0.109.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "distro" },
+    { name = "docstring-parser" },
+    { name = "httpx" },
+    { name = "jiter" },
+    { name = "pydantic" },
+    { name = "sniffio" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1b/b7/9a8e2f79011e89dd6eeb599c27332aed765dac9d6fbee3a55e68e4e3ec25/anthropic-0.109.2.tar.gz", hash = "sha256:d37db299597c7bc124b49b767ff135f1e6456b64af2b2fad4b63b2a1df333cf0", size = 927559, upload-time = "2026-06-15T17:30:25.024Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d1/f2/bee5de8a2699fc8a3cce34d61c7a2626a2c310ddde7ea5611327eb0ddbe9/anthropic-0.109.2-py3-none-any.whl", hash = "sha256:e0fb4ca5df0ed983248c9c6c3242adc81d9cfddb8725902da53698554117abac", size = 923800, upload-time = "2026-06-15T17:30:23.124Z" },
+]
+
+[[package]]
+name = "any-llm-sdk"
+version = "1.17.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anthropic" },
+    { name = "httpx" },
+    { name = "openai" },
+    { name = "openresponses-types" },
+    { name = "pydantic" },
+    { name = "rich" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/31/19/1fd535059dbb55b68251586be8d8aa7253f3abb3b4d4aa4a9fa9784334da/any_llm_sdk-1.17.0.tar.gz", hash = "sha256:429d59eac71e2dcdeff3848cf55a5ae71dfde012496f0c932d6c302b6ea11ca1", size = 149396, upload-time = "2026-06-05T09:34:00.451Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/42/ed/e2891f42247892e3358db9327bf2bb3fb7a0f046c4fb891c4d22dbdc26a1/any_llm_sdk-1.17.0-py3-none-any.whl", hash = "sha256:634d1e1413bdd2c593aa8eec0d32c4cad868c681b31da4f78e36e239833e9c76", size = 198742, upload-time = "2026-06-05T09:33:59.052Z" },
+]
+
+[[package]]
 name = "anyio"
 version = "4.13.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1630,6 +1667,18 @@ wheels = [
 ]
 
 [[package]]
+name = "openresponses-types"
+version = "2.3.0.post1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d9/26/b612c3215f5599714fa94d63eb5ee59b4eb66dbdeeaf86bb4d848359484d/openresponses_types-2.3.0.post1.tar.gz", hash = "sha256:11b8896d3621d2ac2439f6ff106f34ddcb1bbd517c317a6c852a9df2e98a0753", size = 19254, upload-time = "2026-01-22T20:02:03.933Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b2/5f/e16dad89ed24f586da5b01b9b206d3adbf21fe1af8e4dc55d5b93158fde6/openresponses_types-2.3.0.post1-py3-none-any.whl", hash = "sha256:88f6abcef9cad839203abff420dd080978bf6eb33cc06ddc5d78da4ccdba7613", size = 13847, upload-time = "2026-01-22T20:02:02.582Z" },
+]
+
+[[package]]
 name = "opentelemetry-api"
 version = "1.39.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2783,6 +2832,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+anyllm = [
+    { name = "any-llm-sdk" },
+]
 dev = [
     { name = "anyio" },
     { name = "pyrefly" },
@@ -2822,6 +2874,7 @@ ws = [
 
 [package.metadata]
 requires-dist = [
+    { name = "any-llm-sdk", extras = ["anthropic", "openai"], marker = "extra == 'anyllm'", specifier = ">=1.17.0" },
     { name = "anyio", specifier = ">=4.13.0" },
     { name = "anyio", marker = "extra == 'dev'", specifier = ">=4" },
     { name = "fastapi", marker = "extra == 'fastapi'", specifier = ">=0.110" },
@@ -2850,7 +2903,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'playground'", specifier = ">=0.32" },
     { name = "websockets", marker = "extra == 'ws'", specifier = ">=12" },
 ]
-provides-extras = ["livekit", "pipecat", "fastapi", "ws", "mcp", "langchain", "dev", "evals", "playground"]
+provides-extras = ["livekit", "pipecat", "fastapi", "ws", "mcp", "langchain", "dev", "evals", "playground", "anyllm"]
 
 [[package]]
 name = "sympy"

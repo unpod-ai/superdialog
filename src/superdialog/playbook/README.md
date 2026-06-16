@@ -64,6 +64,43 @@ Provider adapters: the Director wants plain text — wrap a real provider with
 `(await provider.complete(messages)).text`; the Talker wants raw tokens —
 yield `chunk.text` from `provider.stream(messages)`.
 
+## Per-slot gate policy
+
+Confirmation gating is decided **per slot**, not per whole turn. A checkpoint's
+`gate` (`soft` | `hard`) is the default for its slots; a slot may override it
+with its own `gate`:
+
+```yaml
+- id: collect
+  slots:
+    name:  {type: str}                 # inherits the checkpoint gate (soft)
+    phone: {type: str, gate: hard}     # risky slot: confirm-then-speak
+  advance_when:
+    - {when: "both given", judge: llm, to: intake.done, requires: [name, phone]}
+```
+
+* **Hard** slots must be `confirmed` before they gate advancement or are spoken;
+  a single Director verdict only marks them `provisional` (it cannot self-attest
+  through a hard gate). Confirmation comes from a tool, an expr `set:`, a later
+  turn, or a high-confidence fast verdict (below).
+* **Soft** slots advance on a `filled` (provisional) value.
+* Unannotated slots/playbooks behave exactly as before (default-soft).
+
+**Split-utterance streaming.** At a gated turn the Talker streams a
+commitment-free *onset* (a value-independent template — never an interpolated
+slot value) as its first token(s), then barriers only the committal payload on
+the Director. This keeps time-to-first-token off the barrier path while
+guaranteeing nothing unconfirmed is asserted. Set `Talker(split_utterance=False)`
+to restore barrier-before-first-token (filler-on-expiry) behavior.
+
+**Fast-classifier release.** When `Director(fast_release=True)`, the verdict
+carries a per-slot `confidence`; a hard slot with confidence ≥ threshold
+(default `0.85`) is confirmed in one shot (releasing the barrier), falling
+through to the normal re-confirmation loop when uncertain. Known hard gates
+(phone/email/payment/card/cvv/otp/ssn/account/routing/iban, by name) are always
+denied fast release; tune with `fast_release_allow` / `fast_release_deny`.
+Disabled by default — hard slots stay provisional until separately confirmed.
+
 ## Compiling legacy flows
 
 ```python
