@@ -201,18 +201,27 @@ def _step_to_checkpoint(
             terminal=True,
             outcome="closed",
         )
+    # No requires: Director advances based solely on done_when condition.
+    # Requiring slots blocks advance until the Director's previous-turn note
+    # ("still need: X") is cleared, which bleeds into the next Talker turn
+    # and causes re-asking. Slots are still extracted independently.
     rule = AdvanceRule(
         when=step.done_when.strip() or "step complete",
         judge="llm",
         to=next_id,
-        requires=list(step.collect),
+        requires=[],
     )
+    # Hard gate on ALL steps: Talker barriers on the Director so it always
+    # speaks from post-advance state.  The opening greeting is spoken via
+    # PlaybookAgent.greet() which passes director_done=None, bypassing the
+    # barrier; the first user utterance then barriers and advances normally.
     return Checkpoint(
         id=step.id,
         goal=step.purpose,
         guidance=guidance,
         slots=slots,
         advance_when=[rule],
+        gate="hard",
     )
 
 

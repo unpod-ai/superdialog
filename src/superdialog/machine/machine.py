@@ -1771,6 +1771,14 @@ class DialogStateMachine:
             is_instruction = node_type == "instruction" and bool(node.edges)
             is_silent = is_instruction and not last_result.response
             is_auto = is_instruction and _is_auto_proceed(node)
+            # A node that just asked the caller a question must WAIT for the answer,
+            # even if classified auto-proceed. _is_auto_proceed regex-scans the whole
+            # instruction and false-matches unrelated prose (e.g. present_available_slot
+            # contains "proceed directly to FRESHNESS GUARD" — internal routing, not an
+            # auto-advance signal). Without this, the chain continues past "Shall I hold
+            # that?" and merges the next node's "What is your name?" into one turn.
+            if is_auto and (last_result.response or "").rstrip().endswith("?"):
+                is_auto = False
 
             # Data-prefilled check runs FIRST — if any edge's required slots are
             # already in userdata, is_prefilled wins over smart-skip so we don't
@@ -1778,11 +1786,18 @@ class DialogStateMachine:
             is_prefilled = False
             if is_instruction:
                 for _edge in node.edges:
-                    # Self-loop edges (e.g. list_refresh_city → list_courses_in_city,
-                    # required=[city]) are always "satisfied" by ambient data and would
-                    # make a presentation/collection node look data-ready, barreling past
-                    # its wait point. They never represent forward progress — skip them.
-                    if _edge.target_node_id == node.id:
+                    # Skip edges that don't represent FORWARD progress — their required
+                    # slots are satisfied by ambient data and would make a presentation/
+                    # collection node look "data-ready", discarding its speech and
+                    # barreling past its wait point:
+                    #   • self-loops (list_refresh_city → list_courses_in_city, req=[city])
+                    #   • backward/retry edges to an already-visited node
+                    #     (present_available_slot.slot_to_recheck → check_course_availability,
+                    #      req=[date,course_id,preferred_time,...] — all already set).
+                    if (
+                        _edge.target_node_id == node.id
+                        or _edge.target_node_id in visited_chain_nodes
+                    ):
                         continue
                     _schema = _edge.input_schema if isinstance(_edge.input_schema, dict) else None
                     if _schema:

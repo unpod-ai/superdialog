@@ -11,6 +11,8 @@ state once ``on_user_text`` returns.
 from __future__ import annotations
 
 import asyncio
+import logging
+from pathlib import Path
 from typing import Any, AsyncIterator, cast
 
 import anyio
@@ -25,6 +27,8 @@ from .runtime import PlaybookRuntime
 from .state import ConversationState
 from .talker import SpeechChunk, StreamsLLM, Talker
 from .toolexec import HttpFn, PythonToolFn
+
+logger = logging.getLogger(__name__)
 
 
 class PlaybookAgent:
@@ -45,6 +49,9 @@ class PlaybookAgent:
         token_budget: int = 4000,
         barrier_timeout: float = 0.4,
         hold_timeout: float | None = None,
+        traversal_dir: str | Path | None = None,
+        traversal_source: str = "",
+        traversal_model: str = "",
     ) -> None:
         self.runtime = PlaybookRuntime(
             playbook,
@@ -64,6 +71,13 @@ class PlaybookAgent:
                 else playbook.policies.hold_timeout
             ),
         )
+        self._traversal_dir: Path | None = Path(traversal_dir) if traversal_dir else None
+        self._traversal_source = traversal_source or (
+            playbook.source_path and Path(playbook.source_path).name or ""
+        )
+        self._traversal_model = traversal_model or getattr(director_llm, "model_id", "")
+        self._traversal_saved: bool = False
+        self._playbook = playbook
 
     # ---- Agent Protocol -----------------------------------------------------
 
@@ -73,7 +87,12 @@ class PlaybookAgent:
         *,
         stream: bool = False,
     ) -> TurnResult | AsyncIterator[StreamChunk]:
-        """Process one user turn; stream chunks live when ``stream=True``."""
+        """Process one user turn; stream chunks live when ``stream=True``.
+
+        When stream=True the coroutine returns an AsyncIterator — callers must
+        ``await`` before iterating: ``async for chunk in await agent.turn(t, stream=True)``.
+        Prefer ``agent.stream_turn(text)`` which requires no ``await``.
+        """
         if stream:
             return self._stream_turn(text)
         final = Turn(text="")
@@ -81,6 +100,13 @@ class PlaybookAgent:
             if chunk.done and chunk.turn is not None:
                 final = chunk.turn
         return TurnResult(text=final.text, metadata=final.metadata)
+
+    def stream_turn(self, text: str) -> AsyncIterator[StreamChunk]:
+        """Stream one user turn — use as: ``async for chunk in agent.stream_turn(text)``.
+
+        No ``await`` needed: returns the async iterator directly.
+        """
+        return self._stream_turn(text)
 
     def assist(self, text: str) -> None:
         """Push a system-level note into the log; takes effect next turn."""
@@ -117,6 +143,7 @@ class PlaybookAgent:
     def load_event_log(self, log: EventLog) -> None:
         """Replace the runtime's event log wholesale (lossless restore)."""
         self.runtime.load_log(log)
+        self._traversal_saved = False
 
     # ---- internals ------------------------------------------------------------
 
@@ -220,6 +247,13 @@ class PlaybookAgent:
                         )
                     )
                 await self.runtime.check_repairs()
+                if (
+                    self._traversal_dir
+                    and self.runtime.state.ended
+                    and not self._traversal_saved
+                ):
+                    self._traversal_saved = True
+                    await self._auto_save_traversal()
         # Reached only on normal completion — a GeneratorExit raised at the
         # yield above propagates out of the finally, so the host's aclose()
         # stays clean and the pass-through below is skipped on abort.
@@ -233,12 +267,57 @@ class PlaybookAgent:
                 full = (talker_text + " " + " ".join(pass_through)).strip()
         yield StreamChunk(done=True, turn=Turn(text=full, metadata=self._metadata()))
 
+    async def greet(self) -> AsyncIterator[StreamChunk]:
+        """Speak and log the opening greeting (outbound-call: agent speaks first).
+
+        Streams speech chunks from the initial checkpoint state, then logs the
+        full text as an assistant utterance so the Director sees it next turn.
+        """
+        await self._ensure_started()
+        state = self.runtime.state
+        talker_chunks: list[SpeechChunk] = []
+        async for chunk in self._talker.speak(state):
+            talker_chunks.append(chunk)
+            if chunk.text:
+                yield StreamChunk(text=chunk.text)
+        text = "".join(c.text for c in talker_chunks).strip()
+        if text:
+            self.runtime.log.append(
+                UtteranceEvent(
+                    role="assistant",
+                    text=text,
+                    spoke_from_version=(
+                        talker_chunks[-1].spoke_from_version if talker_chunks else 0
+                    ),
+                )
+            )
+        yield StreamChunk(done=True, turn=Turn(text=text, metadata=self._metadata()))
+
     async def _ensure_started(self) -> list[str]:
         """Start a never-started runtime; return its pass-through speech."""
         state = self.runtime.state
         if state.checkpoint_id is None and not state.ended:
             return await self.runtime.start()
         return []
+
+    async def _auto_save_traversal(self) -> None:
+        """Save traversal JSON to _traversal_dir without blocking the event loop."""
+        try:
+            from .traversal import build_playbook_traversal, save_playbook_traversal
+
+            traversal = build_playbook_traversal(
+                self.runtime.log,
+                self._playbook,
+                source=self._traversal_source,
+                model=self._traversal_model,
+            )
+            # File write is sync — offload to a thread so we don't block the loop.
+            path = await anyio.to_thread.run_sync(
+                lambda: save_playbook_traversal(traversal, self._traversal_dir)
+            )
+            logger.info("[PlaybookAgent] traversal saved: %s", path)
+        except Exception:
+            logger.warning("[PlaybookAgent] traversal save failed", exc_info=True)
 
     def _metadata(self) -> dict[str, Any]:
         state = self.runtime.state

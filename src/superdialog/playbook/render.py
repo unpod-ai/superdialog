@@ -91,6 +91,13 @@ def _system_block(pb: Playbook, state: ConversationState) -> str:
     ns = template_namespace(pb, state)
     cp = pb.checkpoint(state.checkpoint_id) if state.checkpoint_id else None
     parts: list[str] = [pb.persona.strip()]
+    # "Direction" (steer) notes appear before step guidance so the guidance
+    # text — which is more specific and may explicitly override the note —
+    # lands later in the context and takes precedence with the LLM.
+    # "Correction" (repair) notes appear after guidance: they are high-priority
+    # fixes (e.g. "you already have name=X; acknowledge it") that must override.
+    if state.steering_note and state.steering_kind == "steer":
+        parts.append(f"## Direction from supervisor\n{state.steering_note}")
     if cp:
         guidance = render_template(cp.guidance, pb, state, ns=ns)
         parts.append(f"## Current step: {cp.id}\nGoal: {cp.goal}\n{guidance}".strip())
@@ -101,7 +108,7 @@ def _system_block(pb: Playbook, state: ConversationState) -> str:
             parts.append("Still needed: " + ", ".join(missing))
         if cp.never_say:
             parts.append("Never say: " + "; ".join(cp.never_say))
-    if state.steering_note:
+    if state.steering_note and state.steering_kind != "steer":
         label = "Correction" if state.steering_kind == "repair" else "Direction"
         parts.append(f"## {label} from supervisor\n{state.steering_note}")
     if state.slots:

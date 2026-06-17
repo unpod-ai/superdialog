@@ -21,6 +21,10 @@ class ProviderDirector:
     def __init__(self, provider: LLMProvider) -> None:
         self._p = provider
 
+    @property
+    def model_id(self) -> str:
+        return getattr(self._p, "model", "")
+
     async def complete(self, messages: list[dict[str, str]], **kw: Any) -> str:
         """Return the provider completion's text for ``messages``."""
         return (await self._p.complete(list(messages), **kw)).text
@@ -31,6 +35,10 @@ class ProviderTalker:
 
     def __init__(self, provider: LLMProvider) -> None:
         self._p = provider
+
+    @property
+    def model_id(self) -> str:
+        return getattr(self._p, "model", "")
 
     async def stream(
         self, messages: list[dict[str, str]], **kw: Any
