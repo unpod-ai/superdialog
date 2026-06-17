@@ -41,13 +41,8 @@ collect_ignore_glob = [
 
 import pytest
 
-
-def pytest_addoption(parser: pytest.Parser) -> None:
-    parser.addoption(
-        "--flow",
-        default=None,
-        help="Path to a flow JSON file for real-flow eval tests.",
-    )
+# --flow is registered once in the root tests/conftest.py (a sub-package
+# conftest must not re-register it, or collecting the whole tree collides).
 
 
 @pytest.fixture

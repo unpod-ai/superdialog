@@ -19,7 +19,8 @@ for _mod in [
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
-    parser.addoption("--flow", default=None, help="Path to flow JSON file")
+    # --flow is registered once in the root tests/conftest.py (shared with
+    # tests/dialog_machine); registering it again here collides at collection.
     parser.addoption("--traversal", default=None, help="Path to traversal JSON file")
     parser.addoption("--model", default="gpt-4.1-mini", help="OpenAI model for eval LLM")
 
