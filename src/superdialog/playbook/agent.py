@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from pathlib import Path
 from typing import Any, AsyncIterator, cast
 
@@ -29,6 +30,59 @@ from .talker import SpeechChunk, StreamsLLM, Talker
 from .toolexec import HttpFn, PythonToolFn
 
 logger = logging.getLogger(__name__)
+
+
+class _LLMTimer:
+    """Wraps director/talker LLM, records latency per call and per user turn.
+
+    Call begin_turn() / end_turn() around each user turn so per-turn totals
+    can be reported alongside the overall mean/p95.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self.latencies_ms: list[float] = []          # every call, flat
+        self._turn_buckets: list[list[float]] = []   # per turn, list of call durations
+        self._current_bucket: list[float] | None = None
+
+    def begin_turn(self) -> None:
+        self._current_bucket = []
+        self._turn_buckets.append(self._current_bucket)
+
+    def end_turn(self) -> None:
+        self._current_bucket = None
+
+    def _record(self, elapsed_ms: float) -> None:
+        self.latencies_ms.append(elapsed_ms)
+        if self._current_bucket is not None:
+            self._current_bucket.append(elapsed_ms)
+
+    async def complete(self, messages: list[dict[str, str]], **kw: Any) -> str:
+        t0 = time.perf_counter()
+        result = await self._inner.complete(messages, **kw)
+        self._record((time.perf_counter() - t0) * 1000)
+        return result
+
+    async def stream(self, messages: list[dict[str, str]], **kw: Any) -> AsyncIterator[str]:
+        t0 = time.perf_counter()
+        try:
+            async for chunk in self._inner.stream(messages, **kw):
+                yield chunk
+        finally:
+            self._record((time.perf_counter() - t0) * 1000)
+
+    @property
+    def stats(self) -> dict[str, Any]:
+        if not self.latencies_ms:
+            return {"calls": 0, "mean_ms": 0.0, "p95_ms": 0.0, "per_turn_ms": []}
+        s = sorted(self.latencies_ms)
+        per_turn = [round(sum(b), 1) for b in self._turn_buckets]
+        return {
+            "calls": len(s),
+            "mean_ms": round(sum(s) / len(s), 1),
+            "p95_ms": round(s[int(len(s) * 0.95)], 1),
+            "per_turn_ms": per_turn,   # index 0 = turn 1; total LLM ms per user turn
+        }
 
 
 class PlaybookAgent:
@@ -49,19 +103,22 @@ class PlaybookAgent:
         token_budget: int = 4000,
         barrier_timeout: float = 0.4,
         hold_timeout: float | None = None,
+        split_utterance: bool = True,
         traversal_dir: str | Path | None = None,
         traversal_source: str = "",
         traversal_model: str = "",
     ) -> None:
+        self._director_timer = _LLMTimer(director_llm)
+        self._talker_timer = _LLMTimer(talker_llm)
         self.runtime = PlaybookRuntime(
             playbook,
-            director_llm=director_llm,
+            director_llm=self._director_timer,
             http=http,
             python_tools=python_tools,
         )
         self._talker = Talker(
             playbook,
-            talker_llm,
+            self._talker_timer,
             token_budget=token_budget,
             barrier_timeout=barrier_timeout,
             # explicit arg wins; else the playbook's policies decide
@@ -70,6 +127,7 @@ class PlaybookAgent:
                 if hold_timeout is not None
                 else playbook.policies.hold_timeout
             ),
+            split_utterance=split_utterance,
         )
         self._traversal_dir: Path | None = Path(traversal_dir) if traversal_dir else None
         self._traversal_source = traversal_source or (
@@ -168,6 +226,8 @@ class PlaybookAgent:
         task group / cancel scope; the background task sidesteps that.
         """
         pass_through = await self._ensure_started()
+        self._director_timer.begin_turn()
+        self._talker_timer.begin_turn()
         quiescent = anyio.Event()
 
         async def run_director() -> None:
@@ -218,6 +278,8 @@ class PlaybookAgent:
             # one finally, in whatever task drives the close — never spanning
             # a yield — so the cancel scope is task-consistent.
             with anyio.CancelScope(shield=True):
+                self._director_timer.end_turn()
+                self._talker_timer.end_turn()
                 await speech.aclose()  # close the Talker's LLM stream now
                 # Let the Director's decision land. It is shielded, so the only
                 # cancellation that can reach it is loop teardown — tolerate
@@ -310,6 +372,10 @@ class PlaybookAgent:
                 self._playbook,
                 source=self._traversal_source,
                 model=self._traversal_model,
+                latency={
+                    "director": self._director_timer.stats,
+                    "talker": self._talker_timer.stats,
+                },
             )
             # File write is sync — offload to a thread so we don't block the loop.
             path = await anyio.to_thread.run_sync(

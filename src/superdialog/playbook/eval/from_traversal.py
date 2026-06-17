@@ -120,6 +120,14 @@ class TimingLLM:
         self.latencies_ms.append((time.perf_counter() - t0) * 1000)
         return result
 
+    async def stream(self, messages: list[dict[str, str]], **kw: Any) -> Any:
+        t0 = time.perf_counter()
+        try:
+            async for chunk in self._inner.stream(messages, **kw):
+                yield chunk
+        finally:
+            self.latencies_ms.append((time.perf_counter() - t0) * 1000)
+
     @property
     def mean_ms(self) -> float:
         return sum(self.latencies_ms) / len(self.latencies_ms) if self.latencies_ms else 0.0

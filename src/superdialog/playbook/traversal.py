@@ -33,6 +33,7 @@ def build_playbook_traversal(
     source: str = "",
     model: str = "",
     started_at: datetime | None = None,
+    latency: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a traversal JSON from a completed playbook EventLog.
 
@@ -233,6 +234,7 @@ def build_playbook_traversal(
         "ended_at": ended_at.isoformat(),
         "is_complete": is_complete,
         "outcome": outcome,
+        "latency": latency or {},
         "checkpoints": checkpoint_nodes,
         "traversal": traversal_steps,
         "final_slots": final_slots,
