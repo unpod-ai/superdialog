@@ -38,6 +38,9 @@ playground = [
   "loguru>=0.7",
   "livekit-agents>=1.0,<2",
 ]
+anyllm = [
+    "any-llm-sdk[anthropic,openai]>=1.17.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/geneffic/superdialog"

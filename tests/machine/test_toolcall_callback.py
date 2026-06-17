@@ -1,11 +1,11 @@
 """Tests for _on_llm_complete callback and token capture."""
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
+from superdialog.llm.provider import CompletionResult
 from superdialog.machine.adapters.toolcall_adapter import LLMCallData, ToolCallAdapter
 
 
@@ -39,23 +39,21 @@ async def test_on_llm_complete_callback_fires_on_generate_via_llm():
 
     adapter._on_llm_complete = _cb
 
-    fake_response = MagicMock()
-    fake_response.choices = [MagicMock()]
-    fake_response.choices[0].message.content = "Hello!"
-    fake_response.usage = MagicMock()
-    fake_response.usage.prompt_tokens = 100
-    fake_response.usage.completion_tokens = 20
+    # The cutover (task 2.1) routes generation through the resolved
+    # ``LLMProvider`` rather than ``_make_openai_client``. Stub that seam so the
+    # callback sees the provider's reported usage without a live API call.
+    class _StubProvider:
+        async def complete(self, messages, tools=None, **opts):
+            return CompletionResult(
+                text="Hello!",
+                tool_calls=[],
+                metadata={"prompt_tokens": 100, "completion_tokens": 20},
+            )
 
-    with patch(
-        "superdialog.machine.adapters.toolcall_adapter._make_openai_client"
-    ) as mock_client_fn:
-        mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(return_value=fake_response)
-        mock_client.base_url = "https://api.openai.com"
-        mock_client_fn.return_value = mock_client
-
+    with patch.object(adapter, "_resolve_provider", return_value=_StubProvider()):
         result = await adapter._generate_via_llm("Say hello", [], node_id="greet")
 
+    assert result == "Hello!"
     assert len(received) == 1
     assert received[0].call_type == "generate_reply"
     assert received[0].tokens_in == 100

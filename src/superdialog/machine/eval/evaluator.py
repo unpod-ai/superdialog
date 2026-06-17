@@ -13,6 +13,9 @@ from superdialog.machine.eval.models import (
     EvalReport,
     ModelScore,
     NegativeEdgeResult,
+    PathResult,
+    PathStepResult,
+    PathTest,
     PersonaResult,
     TestCorpus,
 )
@@ -216,6 +219,58 @@ class FlowEvaluator:
             expected_edge=expected_fallback_edge,
         )
 
+    async def eval_path(
+        self,
+        path_test: PathTest,
+        model_id: str,
+    ) -> PathResult:
+        """Drive the flow from its initial node through each scripted step.
+
+        Each step passes when the model takes the expected edge AND lands on the
+        expected node; ``completed`` is true when the run ends on a final node.
+        """
+        llm_fn = self._make_llm(model_id)
+        judge = CriteriaJudge(llm_fn=llm_fn)
+        current_id = self._flow.initial_node
+        current = self._node_map.get(current_id)
+        history: list[dict[str, Any]] = []
+        steps: list[PathStepResult] = []
+
+        for step in path_test.steps:
+            actual_edge: str | None = None
+            if current is not None and not current.is_final:
+                history.append({"role": "user", "content": step.utterance})
+                result = await judge.evaluate(
+                    node=current,
+                    history=history,
+                    userdata={},
+                    system_prompt=self._flow.system_prompt or "",
+                )
+                actual_edge = result.recommended_edge_id
+                edge = next(
+                    (e for e in current.edges if e.id == actual_edge),
+                    None,
+                )
+                if edge and edge.target_node_id:
+                    current_id = edge.target_node_id
+                    current = self._node_map.get(current_id)
+            steps.append(
+                PathStepResult(
+                    utterance=step.utterance,
+                    expected_edge=step.expected_edge,
+                    actual_edge=actual_edge,
+                    expected_node=step.expected_node,
+                    actual_node=current_id,
+                    passed=(
+                        actual_edge == step.expected_edge
+                        and current_id == step.expected_node
+                    ),
+                )
+            )
+
+        completed = current is not None and current.is_final
+        return PathResult(name=path_test.name, completed=completed, steps=steps)
+
     async def eval_corpus(
         self,
         corpus: TestCorpus,
@@ -251,6 +306,22 @@ class FlowEvaluator:
         if score.edge_results:
             correct = sum(1 for r in score.edge_results if r.passed)
             score.edge_accuracy = correct / len(score.edge_results)
+
+        for edge_test in corpus.edge_tests:
+            for utterance in edge_test.negative_utterances:
+                neg = await self.eval_negative_edge(edge_test, utterance, model_id)
+                score.negative_results.append(neg)
+                if not neg.passed:
+                    score.negative_failures.append(
+                        f"negative '{edge_test.edge_id}' on '{edge_test.node_id}': "
+                        f"utterance='{utterance}' → actual='{neg.actual_edge}'"
+                    )
+
+        for path_test in corpus.path_tests:
+            score.path_results.append(await self.eval_path(path_test, model_id))
+        if score.path_results:
+            done = sum(1 for r in score.path_results if r.completed)
+            score.path_accuracy = done / len(score.path_results)
 
         persona_results: list[PersonaResult] = []
         for persona_config in corpus.persona_tests:

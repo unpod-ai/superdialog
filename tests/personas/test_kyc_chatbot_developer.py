@@ -11,70 +11,25 @@ A fintech developer building a Know-Your-Customer bot. They:
 7. Switch between flows in a FlowSet.
 8. Reset and start a fresh conversation on the same instance.
 
-All LLM calls are stubbed via a scripted provider so these tests are
-fully hermetic — no API key needed.
+All LLM calls are stubbed via a scripted tool-calling provider so these tests
+are fully hermetic — no API key, no network, no model nondeterminism.
 """
 
 from __future__ import annotations
 
-import json
-from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
 
 from superdialog import DialogMachine, Flow, FlowSet, StreamChunk, Turn
-from superdialog.llm.provider import CompletionResult
-from superdialog.llm.provider import StreamChunk as ProviderStreamChunk
+from tests.scripted_toolcall import ScriptedToolProvider, route
 
 FIXTURE_DIR = Path(__file__).parents[1] / "fixtures" / "flow"
 
 
-class ScriptedProvider:
-    """LLMProvider that pops responses from a script list."""
-
-    def __init__(self, responses: list[str]) -> None:
-        self._responses = list(responses)
-        self.call_count = 0
-
-    async def complete(
-        self, messages: list[dict[str, Any]], tools: Any = None, **opts: Any
-    ) -> CompletionResult:
-        self.call_count += 1
-        text = self._responses.pop(0) if self._responses else "{}"
-        return CompletionResult(text=text, tool_calls=[], metadata={})
-
-    async def stream(
-        self, messages: list[dict[str, Any]], tools: Any = None, **opts: Any
-    ) -> AsyncIterator[ProviderStreamChunk]:
-        result = await self.complete(messages, tools, **opts)
-        yield ProviderStreamChunk(text=result.text, tool_call_delta=None, done=True)
-
-
-def _criteria(
-    *,
-    edge: str | None,
-    response: str = "ok",
-    slots: dict[str, Any] | None = None,
-    all_met: bool = True,
-) -> str:
-    return json.dumps(
-        {
-            "criteria_met": {},
-            "extracted_slots": slots or {},
-            "all_required_met": all_met,
-            "user_insisting": False,
-            "recommended_edge_id": edge,
-            "reason": "stub",
-            "response": response,
-        }
-    )
-
-
-def _dm(responses: list[str], flow_path: str = "kyc.json") -> DialogMachine:
-    provider = ScriptedProvider(responses)
+def _dm(provider: ScriptedToolProvider, flow_path: str = "kyc.json") -> DialogMachine:
     dm = DialogMachine(
         flow=Flow.load(FIXTURE_DIR / flow_path), llm="openai/gpt-4o-mini"
     )
+    # Injected before the first turn -> the ToolCallAdapter shares this provider.
     dm._llm = provider  # type: ignore[assignment]
     return dm
 
@@ -87,22 +42,14 @@ def _dm(responses: list[str], flow_path: str = "kyc.json") -> DialogMachine:
 async def test_full_kyc_journey_reaches_final_node() -> None:
     """Simulate a 4-turn KYC journey and verify the machine reaches 'done'."""
     dm = _dm(
-        [
-            # Turn 1: greet → collect_name (criteria eval + new-node reply)
-            _criteria(edge="greet_to_name", response="Hi! What is your full name?"),
-            "Please tell me your full name.",
-            # Turn 2: collect_name → collect_dob
-            _criteria(edge="name_to_dob", response="Got it", slots={"name": "Alice"}),
-            "Thanks Alice. What is your date of birth?",
-            # Turn 3: collect_dob → collect_pan
-            _criteria(edge="dob_to_pan", response="Great", slots={"dob": "1990-05-15"}),
-            "Now I need your PAN number.",
-            # Turn 4: collect_pan → done
-            _criteria(
-                edge="pan_to_done", response="Thank you", slots={"pan": "ABCDE1234F"}
-            ),
-            "KYC complete. Thank you!",
-        ]
+        ScriptedToolProvider(
+            routes=[
+                route("greet_to_name"),
+                route("name_to_dob", slots={"name": "Alice"}),
+                route("dob_to_pan", slots={"dob": "1990-05-15"}),
+                route("pan_to_done", slots={"pan": "ABCDE1234F"}),
+            ]
+        )
     )
 
     await dm.turn("Hello")
@@ -110,7 +57,7 @@ async def test_full_kyc_journey_reaches_final_node() -> None:
 
     await dm.turn("My name is Alice")
     assert dm.state["node_id"] == "collect_dob"
-    assert "name" in dm.state["slots"]
+    assert dm.state["slots"].get("name") == "Alice"
 
     await dm.turn("15 May 1990")
     assert dm.state["node_id"] == "collect_pan"
@@ -122,9 +69,9 @@ async def test_full_kyc_journey_reaches_final_node() -> None:
 
 
 async def test_stay_when_criteria_not_met() -> None:
-    """LLM says criteria not met → machine stays at current node."""
+    """LLM stays on the node → machine stays, with the brief reply spoken."""
     dm = _dm(
-        [_criteria(edge=None, response="Could you repeat your name?", all_met=False)]
+        ScriptedToolProvider(routes=[route(None, brief="Could you repeat your name?")])
     )
     result = await dm.turn("hmm")
     assert result.metadata["outcome"] == "stay"
@@ -138,7 +85,7 @@ async def test_stay_when_criteria_not_met() -> None:
 
 
 async def test_assist_injects_system_message_before_next_turn() -> None:
-    dm = _dm([_criteria(edge="greet_to_name", response="ok")])
+    dm = _dm(ScriptedToolProvider(routes=[route("greet_to_name")]))
     dm.assist("Customer is VIP. Be extra polite.")
     assert len(dm._pending_system_messages) == 1
     await dm.turn("hi")
@@ -153,10 +100,9 @@ async def test_assist_injects_system_message_before_next_turn() -> None:
 
 async def test_streaming_turn_yields_chunks_and_final_turn() -> None:
     dm = _dm(
-        [
-            _criteria(edge="greet_to_name", response="Hello Alice"),
-            "Welcome to KYC.",
-        ]
+        ScriptedToolProvider(
+            routes=[route("greet_to_name")], replies=["Welcome to KYC."]
+        )
     )
     stream = await dm.turn("hi", stream=True)
     chunks: list[StreamChunk] = [c async for c in stream]
@@ -179,9 +125,7 @@ async def test_switch_flow_resets_to_new_initial_node() -> None:
         flow=FlowSet({"kyc": kyc, "appointment": appt}),
         llm="openai/gpt-4o-mini",
     )
-    dm._llm = ScriptedProvider(  # type: ignore[assignment]
-        [_criteria(edge="greet_to_name", response="Hi")]
-    )
+    dm._llm = ScriptedToolProvider(routes=[route("greet_to_name")])  # type: ignore[assignment]
 
     await dm.turn("hello")
     assert dm.state["node_id"] == "collect_name"
@@ -197,10 +141,7 @@ async def test_switch_flow_resets_to_new_initial_node() -> None:
 
 async def test_reset_returns_to_initial_node_with_clean_slots() -> None:
     dm = _dm(
-        [
-            _criteria(edge="greet_to_name", response="Hi", slots={"name": "Alice"}),
-            "What is your name?",
-        ]
+        ScriptedToolProvider(routes=[route("greet_to_name", slots={"name": "Alice"})])
     )
     await dm.turn("I'm Alice")
     assert dm.state["node_id"] == "collect_name"
