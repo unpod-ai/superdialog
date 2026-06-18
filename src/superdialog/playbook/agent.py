@@ -137,6 +137,7 @@ class PlaybookAgent:
         self._traversal_model = traversal_model or getattr(director_llm, "model_id", "")
         self._traversal_saved: bool = False
         self._started_at: datetime | None = None
+        self._greeting_checkpoint: str | None = None
         self._playbook = playbook
 
     # ---- Agent Protocol -----------------------------------------------------
@@ -254,18 +255,27 @@ class PlaybookAgent:
         # run_director runs on_user_text with record=False to avoid a
         # double-append.
         self.runtime.log.append(UtteranceEvent(role="user", text=text))
-        # Snapshot AFTER the append (includes the current turn) but BEFORE the
-        # Director mutates state further: the Talker speaks from this snapshot;
-        # hard gates barrier via director_done.
-        speak_state = self.runtime.state
-        entry_cp = speak_state.checkpoint_id
-        talker_chunks: list[SpeechChunk] = []
-        speech = self._talker.speak(speak_state, director_done=director_done)
+        entry_cp = self.runtime.state.checkpoint_id
 
         # Start the Director concurrently so it is (usually) quiescent by the
         # time the Talker barriers at a hard gate. Nothing cancels this task;
         # it is shielded and always awaited in the finally below.
         director = asyncio.ensure_future(run_director())
+
+        # First-turn double-greeting guard: if we are still at the checkpoint
+        # where greet() spoke, wait briefly for the Director to advance before
+        # snapshotting speak_state — otherwise the Talker would re-speak the
+        # opening greeting from the same checkpoint a second time.
+        if self._greeting_checkpoint and entry_cp == self._greeting_checkpoint:
+            self._greeting_checkpoint = None
+            with anyio.move_on_after(self._talker._hold_timeout):
+                await quiescent.wait()
+
+        # Snapshot AFTER the optional barrier: if Director advanced, Talker
+        # speaks from the new checkpoint; if it timed out, speaks from entry_cp.
+        speak_state = self.runtime.state
+        talker_chunks: list[SpeechChunk] = []
+        speech = self._talker.speak(speak_state, director_done=director_done)
         try:
             async for chunk in speech:
                 talker_chunks.append(chunk)
@@ -339,6 +349,7 @@ class PlaybookAgent:
         """
         await self._ensure_started()
         state = self.runtime.state
+        self._greeting_checkpoint = state.checkpoint_id
         talker_chunks: list[SpeechChunk] = []
         async for chunk in self._talker.speak(state):
             talker_chunks.append(chunk)
