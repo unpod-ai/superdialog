@@ -310,3 +310,27 @@ async def test_llm_agent_calls_observer_on_turn():
     mock_gen.end.assert_called_once()
     call_kwargs = client.generation.call_args.kwargs
     assert call_kwargs["trace_id"] == "trace-id-999"
+
+
+# ── DialogMachine + Observer ──────────────────────────────────────────────────
+
+def test_dialog_machine_set_observer_wraps_llm():
+    """set_observer() wraps DialogMachine._llm with TracingProvider."""
+    from superdialog.observability import TracingProvider, NullObserver
+
+    with patch("superdialog.dialog_machine.resolve_llm") as mock_resolve:
+        fake_provider = MagicMock()
+        fake_provider.inner = fake_provider
+        mock_resolve.return_value = fake_provider
+
+        from superdialog import DialogMachine, Flow
+        flow = MagicMock(spec=Flow)
+        flow.name = "test_flow"
+        flow.nodes = {}
+        machine = DialogMachine(flow=flow, llm="openai/gpt-4.1-mini")
+
+    observer = NullObserver()
+    machine.set_observer(observer, "trace-abc")
+    assert isinstance(machine._llm, TracingProvider)
+    assert machine._llm._trace_id == "trace-abc"
+    assert machine._llm._observer is observer

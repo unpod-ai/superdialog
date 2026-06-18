@@ -34,6 +34,7 @@ from .machine.adapters.llm_adapter import LLMAdapter
 from .machine.adapters.toolcall_adapter import ToolCallAdapter
 from .machine.machine import DialogStateMachine
 from .machine.store import ContextStore, InMemoryContextStore
+from .observability.observer import NullObserver, Observer, TracingProvider
 from .stream import StreamChunk, ToolCall, Turn
 from .tools.base import Tool
 
@@ -155,6 +156,8 @@ class DialogMachine:
         self._active_flow_name = next(iter(self._flowset.names()))
         self._llm_uri = llm
         self._llm: LLMProvider = resolve_llm(llm)
+        self._observer: Observer = NullObserver()
+        self._trace_id: str = ""
         self._tools = list(tools or [])
         self._memory: ContextStore = memory or InMemoryContextStore()
         self._config: dict[str, Any] = dict(config or {})
@@ -504,6 +507,15 @@ class DialogMachine:
             if isinstance(self._adapter, ToolCallAdapter):
                 self._adapter._model_id = uri
             self._adapter.set_provider(self._llm)
+
+    def set_observer(self, observer: Observer, trace_id: str) -> None:
+        """Wrap the active LLM provider with TracingProvider for generation tracing."""
+        self._observer = observer
+        self._trace_id = trace_id
+        if self._llm is not None:
+            self._llm = TracingProvider(self._llm, observer, trace_id)
+            if self._adapter is not None:
+                self._adapter.set_provider(self._llm)
 
     def switch_flow(self, name: str, preserve_memory: bool = False) -> None:
         """Switch to a named flow in the bound :class:`FlowSet`."""
