@@ -36,7 +36,7 @@ def test_null_observer_all_methods_dont_raise():
     obs.on_generation_end(obs_id, "hello", [], {})
     obs.on_tool_call(trace_id, "my_tool", {"x": 1}, "result")
     obs.on_flow_node(trace_id, "node-1", {"slot": "value"})
-    obs.on_voice_turn(trace_id, 100.0, 200.0, 50.0)
+    obs.on_voice_turn(trace_id, {"ttfa_ms": 100.0, "asr_final_ms": 200.0, "tts_ttfb_ms": 50.0})
     obs.on_session_end(trace_id, "final output")
 
 

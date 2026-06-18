@@ -44,9 +44,7 @@ class Observer(Protocol):
     def on_voice_turn(
         self,
         trace_id: str,
-        ttfa_ms: float,
-        asr_final_ms: float,
-        tts_ttfb_ms: float,
+        metrics: dict[str, Any],
     ) -> None: ...
 
     def on_session_end(self, trace_id: str, output: str) -> None: ...
@@ -85,9 +83,7 @@ class NullObserver:
     def on_voice_turn(
         self,
         trace_id: str,
-        ttfa_ms: float,
-        asr_final_ms: float,
-        tts_ttfb_ms: float,
+        metrics: dict[str, Any],
     ) -> None:
         return None
 
@@ -101,7 +97,7 @@ class LangfuseObserver:
     def __init__(self, client: Any) -> None:
         self._client = client
         self._traces: dict[str, Any] = {}
-        self._pending: dict[str, Any] = {}
+        self._pending: dict[str, tuple[Any, str]] = {}  # obs_id -> (gen, trace_id)
 
     def on_session_start(self, session_id: str, metadata: dict[str, Any]) -> str:
         try:
@@ -125,7 +121,7 @@ class LangfuseObserver:
                 name=name,
                 input=input_messages,
             )
-            self._pending[gen.id] = gen
+            self._pending[gen.id] = (gen, trace_id)
             return gen.id
         except Exception as exc:
             logger.debug("langfuse on_generation_start skipped: %s", exc)
@@ -138,9 +134,10 @@ class LangfuseObserver:
         tool_calls: list[dict[str, Any]],
         metadata: dict[str, Any],
     ) -> None:
-        gen = self._pending.pop(observation_id, None)
-        if gen is None:
+        entry = self._pending.pop(observation_id, None)
+        if entry is None:
             return
+        gen, trace_id = entry
         try:
             gen.end(
                 output=output,
@@ -152,6 +149,9 @@ class LangfuseObserver:
             )
         except Exception as exc:
             logger.debug("langfuse on_generation_end skipped: %s", exc)
+        for tc in tool_calls or []:
+            name = tc.get("name") or tc.get("function", {}).get("name") or "tool"
+            self.on_tool_call(trace_id, name, tc, tc.get("result"))
 
     def on_tool_call(
         self, trace_id: str, name: str, args: dict[str, Any], result: Any
@@ -182,20 +182,14 @@ class LangfuseObserver:
     def on_voice_turn(
         self,
         trace_id: str,
-        ttfa_ms: float,
-        asr_final_ms: float,
-        tts_ttfb_ms: float,
+        metrics: dict[str, Any],
     ) -> None:
         try:
             span = self._client.span(
                 trace_id=trace_id,
                 name="voice_turn",
                 input={},
-                metadata={
-                    "ttfa_ms": ttfa_ms,
-                    "asr_final_ms": asr_final_ms,
-                    "tts_ttfb_ms": tts_ttfb_ms,
-                },
+                metadata=metrics,
             )
             span.end()
         except Exception as exc:
