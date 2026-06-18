@@ -334,3 +334,29 @@ def test_dialog_machine_set_observer_wraps_llm():
     assert isinstance(machine._llm, TracingProvider)
     assert machine._llm._trace_id == "trace-abc"
     assert machine._llm._observer is observer
+
+
+def test_dialog_machine_set_observer_playbook_engine_guard():
+    """set_observer() on a playbook-engine DialogMachine does not raise."""
+    from superdialog.observability import NullObserver
+
+    # Create a playbook-engine instance (engine="playbook" + non-Flow source)
+    # We need a source that isn't a Flow/FlowSet to trigger playbook mode
+    with patch("superdialog.dialog_machine.resolve_llm") as mock_resolve:
+        fake_provider = MagicMock()
+        fake_provider.inner = fake_provider
+        mock_resolve.return_value = fake_provider
+
+        from superdialog import DialogMachine
+        # Use a dict source with engine="playbook" to trigger playbook backend
+        machine = DialogMachine(
+            source={"tasks": []},
+            llm="openai/gpt-4.1-mini",
+            engine="playbook"
+        )
+
+    observer = NullObserver()
+    # Must not raise; the guard should return early for playbook engine
+    machine.set_observer(observer, "trace-playbook")
+    # Verify the machine is still in playbook mode
+    assert machine._engine == "playbook"

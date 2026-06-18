@@ -510,6 +510,8 @@ class DialogMachine:
 
     def set_observer(self, observer: Observer, trace_id: str) -> None:
         """Wrap the active LLM provider with TracingProvider for generation tracing."""
+        if self._engine == "playbook":
+            return  # playbook backend owns its own LLM provider chain
         self._observer = observer
         self._trace_id = trace_id
         if self._llm is not None:
