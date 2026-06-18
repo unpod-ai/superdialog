@@ -203,12 +203,15 @@ class LangfuseObserver:
 
     def on_session_end(self, trace_id: str, output: str) -> None:
         try:
-            trace = self._traces.get(trace_id)
+            trace = self._traces.pop(trace_id, None)
             if trace is not None:
                 trace.update(output=output)
+        except Exception as exc:
+            logger.debug("langfuse session_end update skipped: %s", exc)
+        try:
             self._client.flush()
         except Exception as exc:
-            logger.debug("langfuse on_session_end skipped: %s", exc)
+            logger.debug("langfuse flush skipped: %s", exc)
 
 
 class TracingProvider:
@@ -230,11 +233,19 @@ class TracingProvider:
         obs_id = self._observer.on_generation_start(
             self._trace_id, "complete", messages
         )
-        result = await self._inner.complete(messages, tools, **opts)
-        self._observer.on_generation_end(
-            obs_id, result.text, result.tool_calls, result.metadata
-        )
-        return result
+        text_out: str = ""
+        tool_calls_out: list[dict[str, Any]] = []
+        metadata_out: dict[str, Any] = {}
+        try:
+            result = await self._inner.complete(messages, tools, **opts)
+            text_out = result.text
+            tool_calls_out = result.tool_calls
+            metadata_out = result.metadata
+            return result
+        finally:
+            self._observer.on_generation_end(
+                obs_id, text_out, tool_calls_out, metadata_out
+            )
 
     async def stream(
         self,
@@ -249,18 +260,20 @@ class TracingProvider:
         buffer: list[str] = []
         final_metadata: dict[str, Any] = {}
         t0 = time.perf_counter()
-        async for chunk in self._inner.stream(messages, tools, **opts):
-            if chunk.text:
-                buffer.append(chunk.text)
-            # Capture metadata from chunk if available (some providers attach usage on final chunk)
-            if hasattr(chunk, "metadata") and chunk.metadata:
-                final_metadata.update(chunk.metadata)
-            yield chunk
-        latency_ms = (time.perf_counter() - t0) * 1000
-        final_metadata.setdefault("latency_ms", latency_ms)
-        self._observer.on_generation_end(
-            obs_id, "".join(buffer), [], final_metadata
-        )
+        try:
+            async for chunk in self._inner.stream(messages, tools, **opts):
+                if chunk.text:
+                    buffer.append(chunk.text)
+                # Capture metadata from chunk if available (some providers attach usage on final chunk)
+                if hasattr(chunk, "metadata") and chunk.metadata:
+                    final_metadata.update(chunk.metadata)
+                yield chunk
+        finally:
+            latency_ms = (time.perf_counter() - t0) * 1000
+            final_metadata.setdefault("latency_ms", latency_ms)
+            self._observer.on_generation_end(
+                obs_id, "".join(buffer), [], final_metadata
+            )
 
 
 def build_observer(
