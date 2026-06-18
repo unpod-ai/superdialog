@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, cast
 
@@ -135,6 +136,7 @@ class PlaybookAgent:
         )
         self._traversal_model = traversal_model or getattr(director_llm, "model_id", "")
         self._traversal_saved: bool = False
+        self._started_at: datetime | None = None
         self._playbook = playbook
 
     # ---- Agent Protocol -----------------------------------------------------
@@ -359,6 +361,7 @@ class PlaybookAgent:
         """Start a never-started runtime; return its pass-through speech."""
         state = self.runtime.state
         if state.checkpoint_id is None and not state.ended:
+            self._started_at = datetime.now(timezone.utc)
             return await self.runtime.start()
         return []
 
@@ -372,6 +375,7 @@ class PlaybookAgent:
                 self._playbook,
                 source=self._traversal_source,
                 model=self._traversal_model,
+                started_at=self._started_at,
                 latency={
                     "director": self._director_timer.stats,
                     "talker": self._talker_timer.stats,

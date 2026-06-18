@@ -54,6 +54,17 @@ def build_playbook_traversal(
 
     events = log.events
 
+    # --- map each AdvanceEvent version → user turn number (1-indexed) ---
+    # Walk events linearly: each user utterance increments the turn counter;
+    # the next AdvanceEvent(s) until the next user utterance belong to that turn.
+    _turn_for_advance: dict[int, int] = {}
+    _cur_turn = 0
+    for e in events:
+        if isinstance(e, UtteranceEvent) and e.role == "user":
+            _cur_turn += 1
+        elif isinstance(e, AdvanceEvent):
+            _turn_for_advance[e.version] = _cur_turn
+
     # --- walk events: group into checkpoint windows ---
     # Each window: (advance_event_that_entered_this_cp, [all subsequent events
     # until the next AdvanceEvent])
@@ -130,6 +141,14 @@ def build_playbook_traversal(
         except (KeyError, Exception):
             cp_goal, cp_terminal = "", False
 
+        # Per-turn latency: look up which user turn this advance belongs to,
+        # then index into the per_turn_ms arrays (0-indexed, turn 1 = index 0).
+        step_turn = _turn_for_advance.get(adv.version, 0)
+        _dir_turns = (latency or {}).get("director", {}).get("per_turn_ms", [])
+        _tlk_turns = (latency or {}).get("talker", {}).get("per_turn_ms", [])
+        director_ms = _dir_turns[step_turn - 1] if step_turn > 0 and step_turn <= len(_dir_turns) else None
+        talker_ms = _tlk_turns[step_turn - 1] if step_turn > 0 and step_turn <= len(_tlk_turns) else None
+
         traversal_steps.append({
             "step": step_num,
             "from_checkpoint": adv.from_checkpoint,
@@ -143,6 +162,9 @@ def build_playbook_traversal(
             "slots_written": slots_written,
             "tool_calls": tool_calls,
             "degraded": degraded,
+            "turn": step_turn if step_turn > 0 else None,
+            "director_ms": director_ms,
+            "talker_ms": talker_ms,
         })
 
     # --- session outcome ---
