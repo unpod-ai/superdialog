@@ -242,16 +242,24 @@ class TracingProvider:
         tools: list[dict[str, Any]] | None = None,
         **opts: Any,
     ) -> AsyncIterator[StreamChunk]:
+        import time
         obs_id = self._observer.on_generation_start(
             self._trace_id, "stream", messages
         )
         buffer: list[str] = []
+        final_metadata: dict[str, Any] = {}
+        t0 = time.perf_counter()
         async for chunk in self._inner.stream(messages, tools, **opts):
             if chunk.text:
                 buffer.append(chunk.text)
+            # Capture metadata from chunk if available (some providers attach usage on final chunk)
+            if hasattr(chunk, "metadata") and chunk.metadata:
+                final_metadata.update(chunk.metadata)
             yield chunk
+        latency_ms = (time.perf_counter() - t0) * 1000
+        final_metadata.setdefault("latency_ms", latency_ms)
         self._observer.on_generation_end(
-            obs_id, "".join(buffer), [], {}
+            obs_id, "".join(buffer), [], final_metadata
         )
 
 

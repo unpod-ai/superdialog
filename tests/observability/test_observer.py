@@ -240,3 +240,34 @@ def test_build_observer_returns_langfuse_when_keys_set(monkeypatch):
         MockLangfuse.return_value = MagicMock()
         obs = build_observer()
     assert isinstance(obs, LangfuseObserver)
+
+
+@pytest.mark.asyncio
+async def test_tracing_provider_stream_calls_observer_with_metadata():
+    """TracingProvider.stream() calls on_generation_end with latency_ms metadata."""
+    from superdialog.llm.provider import StreamChunk
+
+    async def _fake_stream(messages, tools=None, **opts):
+        yield StreamChunk(text="hel", tool_call_delta=None, done=False)
+        yield StreamChunk(text="lo", tool_call_delta=None, done=True)
+
+    inner = MagicMock()
+    inner.stream = _fake_stream
+
+    end_calls = []
+    observer = NullObserver()
+    original_end = observer.on_generation_end
+    def spy_end(obs_id, output, tool_calls, metadata):
+        end_calls.append({"output": output, "metadata": metadata})
+        return original_end(obs_id, output, tool_calls, metadata)
+    observer.on_generation_end = spy_end
+
+    provider = TracingProvider(inner, observer, "trace-stream-1")
+    chunks = []
+    async for chunk in provider.stream([{"role": "user", "content": "hi"}]):
+        chunks.append(chunk)
+
+    assert "".join(c.text for c in chunks if c.text) == "hello"
+    assert len(end_calls) == 1
+    assert end_calls[0]["output"] == "hello"
+    assert "latency_ms" in end_calls[0]["metadata"]
