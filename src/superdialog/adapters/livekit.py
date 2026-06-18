@@ -100,6 +100,7 @@ class DialogMachineStream:
         self._chat_ctx = chat_ctx
         self._fnc_ctx = fnc_ctx
         self._iter: AsyncIterator[StreamChunk] | None = None
+        self.final_metadata: dict[str, Any] = {}
 
     async def _ensure_iter(self) -> AsyncIterator[StreamChunk]:
         if self._iter is not None:
@@ -121,6 +122,8 @@ class DialogMachineStream:
             chunk: StreamChunk = await iterator.__anext__()
         except StopAsyncIteration:
             raise
+        if chunk.done and chunk.turn is not None:
+            self.final_metadata = chunk.turn.metadata or {}
         return _to_chat_chunk(chunk)
 
     async def aclose(self) -> None:  # pragma: no cover - tested via stop

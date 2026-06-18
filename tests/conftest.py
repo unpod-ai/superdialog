@@ -9,6 +9,18 @@ import pytest
 from superdialog.llm.provider import CompletionResult, StreamChunk
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Shared CLI options, registered once at the root.
+
+    ``--flow`` is consumed by fixtures in several sub-package conftests
+    (``tests/evals`` and ``tests/dialog_machine``). Registering it here — rather
+    than in each sub-conftest — avoids the "option names {'--flow'} already
+    added" collision when the whole tree is collected, since pytest only honors
+    ``pytest_addoption`` from the rootdir conftest.
+    """
+    parser.addoption("--flow", default=None, help="Path to a flow JSON file")
+
+
 class FakeLLMProvider:
     """Scriptable :class:`superdialog.llm.provider.LLMProvider`.
 
