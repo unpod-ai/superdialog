@@ -152,6 +152,11 @@ def test_langfuse_observer_swallows_exceptions():
 
 @pytest.mark.asyncio
 async def test_tracing_provider_complete_calls_observer():
+    """TracingProvider.complete() calls on_generation_start and on_generation_end."""
+    from unittest.mock import AsyncMock, MagicMock, call
+    from superdialog.observability import NullObserver, TracingProvider
+    from superdialog.llm.provider import CompletionResult
+
     inner = MagicMock()
     inner.complete = AsyncMock(
         return_value=CompletionResult(
@@ -161,11 +166,33 @@ async def test_tracing_provider_complete_calls_observer():
         )
     )
 
+    # Spy on NullObserver methods
     observer = NullObserver()
+    original_start = observer.on_generation_start
+    original_end = observer.on_generation_end
+    start_calls = []
+    end_calls = []
+
+    def spy_start(trace_id, name, input_messages):
+        start_calls.append((trace_id, name))
+        return original_start(trace_id, name, input_messages)
+
+    def spy_end(obs_id, output, tool_calls, metadata):
+        end_calls.append((obs_id, output))
+        return original_end(obs_id, output, tool_calls, metadata)
+
+    observer.on_generation_start = spy_start
+    observer.on_generation_end = spy_end
+
     provider = TracingProvider(inner, observer, "trace-id-1")
     messages = [{"role": "user", "content": "hi"}]
     result = await provider.complete(messages)
+
     assert result.text == "hello"
+    assert len(start_calls) == 1
+    assert start_calls[0] == ("trace-id-1", "complete")
+    assert len(end_calls) == 1
+    assert end_calls[0][1] == "hello"
 
 
 @pytest.mark.asyncio
