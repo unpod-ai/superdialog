@@ -271,3 +271,42 @@ async def test_tracing_provider_stream_calls_observer_with_metadata():
     assert len(end_calls) == 1
     assert end_calls[0]["output"] == "hello"
     assert "latency_ms" in end_calls[0]["metadata"]
+
+
+# ── LLMAgent + Observer ───────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_llm_agent_calls_observer_on_turn():
+    """LLMAgent.turn() triggers on_generation_start + on_generation_end."""
+    from superdialog import LLMAgent
+
+    client = MagicMock()
+    mock_trace = _make_mock_trace()
+    mock_gen = _make_mock_generation()
+    client.trace.return_value = mock_trace
+    client.generation.return_value = mock_gen
+
+    # Patch the LLM provider so no real API calls happen
+    with patch("superdialog.agents.llm_agent.resolve_llm") as mock_resolve:
+        fake_provider = MagicMock()
+
+        async def _complete(messages, tools=None, **opts):
+            return CompletionResult(
+                text="hi there", tool_calls=[], metadata={"prompt_tokens": 5, "completion_tokens": 3}
+            )
+
+        fake_provider.complete = _complete
+        fake_provider.inner = fake_provider
+        mock_resolve.return_value = fake_provider
+
+        observer = LangfuseObserver(client)
+        agent = LLMAgent(llm="openai/gpt-4.1-mini", system_prompt="you are helpful")
+        agent.set_observer(observer, "trace-id-999")
+
+        result = await agent.turn("hello")
+
+    assert result.text == "hi there"
+    client.generation.assert_called_once()
+    mock_gen.end.assert_called_once()
+    call_kwargs = client.generation.call_args.kwargs
+    assert call_kwargs["trace_id"] == "trace-id-999"
