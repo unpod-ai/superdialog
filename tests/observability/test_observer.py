@@ -1,0 +1,215 @@
+"""Tests for Observer protocol, NullObserver, LangfuseObserver, TracingProvider."""
+from __future__ import annotations
+
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from superdialog.observability import (
+    LangfuseObserver,
+    NullObserver,
+    TracingProvider,
+    build_observer,
+)
+from superdialog.llm.provider import CompletionResult
+
+
+# ── NullObserver ──────────────────────────────────────────────────────────────
+
+def test_null_observer_on_session_start_returns_session_id():
+    obs = NullObserver()
+    result = obs.on_session_start("session-1", {})
+    assert result == "session-1"
+
+
+def test_null_observer_on_generation_start_returns_string():
+    obs = NullObserver()
+    obs_id = obs.on_generation_start("trace-1", "turn", [{"role": "user", "content": "hi"}])
+    assert isinstance(obs_id, str)
+
+
+def test_null_observer_all_methods_dont_raise():
+    obs = NullObserver()
+    trace_id = obs.on_session_start("s1", {"source": "test"})
+    obs_id = obs.on_generation_start(trace_id, "turn", [])
+    obs.on_generation_end(obs_id, "hello", [], {})
+    obs.on_tool_call(trace_id, "my_tool", {"x": 1}, "result")
+    obs.on_flow_node(trace_id, "node-1", {"slot": "value"})
+    obs.on_voice_turn(trace_id, 100.0, 200.0, 50.0)
+    obs.on_session_end(trace_id, "final output")
+
+
+# ── LangfuseObserver ──────────────────────────────────────────────────────────
+
+def _make_mock_trace():
+    trace = MagicMock()
+    trace.id = "trace-id-123"
+    return trace
+
+
+def _make_mock_generation():
+    gen = MagicMock()
+    gen.id = "gen-id-456"
+    return gen
+
+
+def test_langfuse_observer_on_session_start_calls_trace():
+    client = MagicMock()
+    mock_trace = _make_mock_trace()
+    client.trace.return_value = mock_trace
+
+    obs = LangfuseObserver(client)
+    result = obs.on_session_start("session-abc", {"source": "superdialog"})
+
+    client.trace.assert_called_once_with(
+        id="session-abc",
+        name="dialog-session",
+        metadata={"source": "superdialog"},
+    )
+    assert result == "trace-id-123"
+
+
+def test_langfuse_observer_on_generation_start_creates_generation():
+    client = MagicMock()
+    client.trace.return_value = _make_mock_trace()
+    mock_gen = _make_mock_generation()
+    client.generation.return_value = mock_gen
+
+    obs = LangfuseObserver(client)
+    messages = [{"role": "user", "content": "hi"}]
+    obs_id = obs.on_generation_start("trace-id-123", "turn-1", messages)
+
+    client.generation.assert_called_once_with(
+        trace_id="trace-id-123",
+        name="turn-1",
+        input=messages,
+    )
+    assert obs_id == "gen-id-456"
+
+
+def test_langfuse_observer_on_generation_end_calls_end_on_generation():
+    client = MagicMock()
+    client.trace.return_value = _make_mock_trace()
+    mock_gen = _make_mock_generation()
+    client.generation.return_value = mock_gen
+
+    obs = LangfuseObserver(client)
+    obs_id = obs.on_generation_start("trace-id-123", "turn-1", [])
+    obs.on_generation_end(
+        obs_id,
+        output="hello world",
+        tool_calls=[],
+        metadata={"prompt_tokens": 10, "completion_tokens": 5, "latency_ms": 100.0},
+    )
+
+    mock_gen.end.assert_called_once_with(
+        output="hello world",
+        usage={"input": 10, "output": 5},
+        metadata={"prompt_tokens": 10, "completion_tokens": 5, "latency_ms": 100.0},
+    )
+
+
+def test_langfuse_observer_on_generation_end_unknown_id_is_noop():
+    client = MagicMock()
+    obs = LangfuseObserver(client)
+    obs.on_generation_end("unknown-id", "text", [], {})  # must not raise
+
+
+def test_langfuse_observer_on_tool_call_creates_span():
+    client = MagicMock()
+    obs = LangfuseObserver(client)
+    obs.on_tool_call("trace-1", "search", {"query": "hello"}, "result text")
+
+    client.span.assert_called_once()
+    call_kwargs = client.span.call_args.kwargs
+    assert call_kwargs["trace_id"] == "trace-1"
+    assert call_kwargs["name"] == "tool:search"
+
+
+def test_langfuse_observer_on_session_end_calls_update_and_flush():
+    client = MagicMock()
+    mock_trace = _make_mock_trace()
+    client.trace.return_value = mock_trace
+
+    obs = LangfuseObserver(client)
+    obs.on_session_start("session-x", {})
+    obs.on_session_end("trace-id-123", "final text")
+
+    mock_trace.update.assert_called_once_with(output="final text")
+    client.flush.assert_called_once()
+
+
+def test_langfuse_observer_swallows_exceptions():
+    client = MagicMock()
+    client.trace.side_effect = RuntimeError("network error")
+    obs = LangfuseObserver(client)
+    result = obs.on_session_start("s1", {})  # must not raise
+    assert result == "s1"
+
+
+# ── TracingProvider ───────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_tracing_provider_complete_calls_observer():
+    inner = MagicMock()
+    inner.complete = AsyncMock(
+        return_value=CompletionResult(
+            text="hello",
+            tool_calls=[],
+            metadata={"prompt_tokens": 5, "completion_tokens": 3},
+        )
+    )
+
+    observer = NullObserver()
+    provider = TracingProvider(inner, observer, "trace-id-1")
+    messages = [{"role": "user", "content": "hi"}]
+    result = await provider.complete(messages)
+    assert result.text == "hello"
+
+
+@pytest.mark.asyncio
+async def test_tracing_provider_complete_calls_langfuse_observer():
+    client = MagicMock()
+    mock_gen = _make_mock_generation()
+    client.generation.return_value = mock_gen
+
+    inner = MagicMock()
+
+    async def _fake_complete(messages, tools=None, **opts):
+        return CompletionResult(
+            text="response",
+            tool_calls=[],
+            metadata={"prompt_tokens": 10, "completion_tokens": 7},
+        )
+
+    inner.complete = _fake_complete
+
+    observer = LangfuseObserver(client)
+    provider = TracingProvider(inner, observer, "trace-id-2")
+    await provider.complete([{"role": "user", "content": "hello"}])
+
+    client.generation.assert_called_once()
+    mock_gen.end.assert_called_once_with(
+        output="response",
+        usage={"input": 10, "output": 7},
+        metadata={"prompt_tokens": 10, "completion_tokens": 7},
+    )
+
+
+# ── build_observer ────────────────────────────────────────────────────────────
+
+def test_build_observer_returns_null_when_no_keys(monkeypatch):
+    monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+    obs = build_observer()
+    assert isinstance(obs, NullObserver)
+
+
+def test_build_observer_returns_langfuse_when_keys_set(monkeypatch):
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+    with patch("langfuse.Langfuse") as MockLangfuse:
+        MockLangfuse.return_value = MagicMock()
+        obs = build_observer()
+    assert isinstance(obs, LangfuseObserver)
