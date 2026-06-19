@@ -34,6 +34,7 @@ from .machine.adapters.llm_adapter import LLMAdapter
 from .machine.adapters.toolcall_adapter import ToolCallAdapter
 from .machine.machine import DialogStateMachine
 from .machine.store import ContextStore, InMemoryContextStore
+from .observability.observer import NullObserver, Observer, TracingProvider
 from .stream import StreamChunk, ToolCall, Turn
 from .tools.base import Tool
 
@@ -97,13 +98,17 @@ class DialogMachine:
         flow: Flow | FlowSet | None = None,
         engine: str = "auto",
         director_llm: str | None = None,
+        barrier_timeout: float = 0.4,
+        hold_timeout: float | None = None,
     ) -> None:
         # Back-compat: the first param used to be `flow`; accept it by keyword.
         if source is None and flow is not None:
             source = flow
         self._engine: Literal["graph", "playbook"] = _select_engine(source, engine)
         if self._engine == "playbook":
-            self._init_playbook(source, llm, tools, director_llm)
+            self._init_playbook(
+                source, llm, tools, director_llm, barrier_timeout, hold_timeout
+            )
             return
         # graph engine: a path string under engine="flow" loads via Flow.load.
         flow = Flow.load(source) if isinstance(source, str) else source
@@ -117,6 +122,8 @@ class DialogMachine:
         llm: str | None,
         tools: list[Tool] | None,
         director_llm: str | None,
+        barrier_timeout: float = 0.4,
+        hold_timeout: float | None = None,
     ) -> None:
         """Wire the Playbook backend lazily; build it on first turn/start."""
         if not (llm or director_llm):
@@ -126,6 +133,9 @@ class DialogMachine:
         self._director_uri = director_llm
         self._pb_tools = tools
         self._pb: Any = None
+        # Director/Talker timing overrides forwarded to the PlaybookAgent backend.
+        self._barrier_timeout = barrier_timeout
+        self._hold_timeout = hold_timeout
         # Test seams: inject scripted Talker/Director so tests stay offline.
         self._talker_override: Any = None
         self._director_override: Any = None
@@ -146,6 +156,8 @@ class DialogMachine:
         self._active_flow_name = next(iter(self._flowset.names()))
         self._llm_uri = llm
         self._llm: LLMProvider = resolve_llm(llm)
+        self._observer: Observer = NullObserver()
+        self._trace_id: str = ""
         self._tools = list(tools or [])
         self._memory: ContextStore = memory or InMemoryContextStore()
         self._config: dict[str, Any] = dict(config or {})
@@ -185,13 +197,17 @@ class DialogMachine:
         director, talker = provider_adapters(resolve_llm(self._llm_uri or ""))
         if self._director_uri:
             director, _ = provider_adapters(resolve_llm(self._director_uri))
-        self._pb = PlaybookAgent(
-            playbook=pb,
-            talker_llm=self._talker_override or talker,
-            director_llm=self._director_override or director,
-            http=httpx_http,
-            python_tools=_python_tools_from(self._pb_tools),
-        )
+        pb_kwargs: dict[str, Any] = {
+            "playbook": pb,
+            "talker_llm": self._talker_override or talker,
+            "director_llm": self._director_override or director,
+            "http": httpx_http,
+            "python_tools": _python_tools_from(self._pb_tools),
+            "barrier_timeout": self._barrier_timeout,
+        }
+        if self._hold_timeout is not None:
+            pb_kwargs["hold_timeout"] = self._hold_timeout
+        self._pb = PlaybookAgent(**pb_kwargs)
         return self._pb
 
     async def _ensure_machine(self) -> DialogStateMachine:
@@ -206,6 +222,9 @@ class DialogMachine:
                     getattr(active_flow, "environment_variables", {}) or {}
                 ),
             )
+            # Share the machine's single resolved provider (the source of truth
+            # for set_llm and test injection) instead of re-resolving model_id.
+            self._adapter.set_provider(self._llm)
         else:
             self._adapter = LLMAdapter(
                 provider=self._llm,
@@ -487,7 +506,17 @@ class DialogMachine:
         if self._adapter is not None:
             if isinstance(self._adapter, ToolCallAdapter):
                 self._adapter._model_id = uri
-            else:
+            self._adapter.set_provider(self._llm)
+
+    def set_observer(self, observer: Observer, trace_id: str) -> None:
+        """Wrap the active LLM provider with TracingProvider for generation tracing."""
+        if self._engine == "playbook":
+            return  # playbook backend owns its own LLM provider chain
+        self._observer = observer
+        self._trace_id = trace_id
+        if self._llm is not None:
+            self._llm = TracingProvider(self._llm, observer, trace_id)
+            if self._adapter is not None:
                 self._adapter.set_provider(self._llm)
 
     def switch_flow(self, name: str, preserve_memory: bool = False) -> None:

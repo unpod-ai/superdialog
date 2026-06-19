@@ -2,6 +2,10 @@
 
 **Standalone dialog framework. Pure text in, pure text out.**
 
+<p align="center">
+  <img src="docs/diagrams/superdialog-engines-contract.svg" alt="SuperDialog engine contract: host platforms (LiveKit, PipeCat, FastAPI, WebSocket, CLI) connect through superdialog.adapters and SessionWorker to one Agent protocol, behind which sit two interchangeable engines — PlaybookAgent (default) and DialogMachine (legacy)." width="820">
+</p>
+
 SuperDialog is the **brain** layer for conversational systems. It ships two
 engines behind one text interface: **Playbook**, the default - a
 checkpoint-based compound runtime (a fast streaming Talker plus an async
@@ -10,10 +14,6 @@ the supported legacy engine, a graph-railed dialog state machine that
 executes flow graphs deterministically. Both manage turn-by-turn
 logic, tool calls, transitions, and conversation memory; both speak the same
 `Agent` protocol, so every host adapter runs either one unchanged.
-
-<p align="center">
-  <img src="docs/diagrams/superdialog-text-loop.svg" alt="SuperDialog text loop: user text enters the Agent protocol, agent.turn() runs tools and state, and reply text comes back." width="760">
-</p>
 
 <p align="center"><em><code>User text → agent.turn() → reply text</code> — so every dialog is a plain, unit-testable function: no audio fixtures, no phone number, no API keys to test a conversation.</em></p>
 
@@ -277,10 +277,6 @@ report = coverage_report(flow, pb)    # proves every node/edge/action mapped
 `superdialog.agent.Agent` protocol (`turn` / `assist` / `chat_ctx`), so the
 same object drops into every host. The host varies; the SuperDialog code is
 identical.
-
-<p align="center">
-  <img src="docs/diagrams/superdialog-engines-contract.svg" alt="SuperDialog engine contract: host platforms (LiveKit, PipeCat, FastAPI, WebSocket, CLI) connect through superdialog.adapters and SessionWorker to one Agent protocol, behind which sit two interchangeable engines — PlaybookAgent (default) and DialogMachine (legacy)." width="820">
-</p>
 
 | Host | Adapter | Approx. LoC |
 |---|---|---|

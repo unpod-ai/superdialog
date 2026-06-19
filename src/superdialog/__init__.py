@@ -1,6 +1,6 @@
 """SuperDialog -- standalone dialog state machine framework."""
 
-__version__ = "0.2.8"
+__version__ = "0.2.9"
 
 from .agent import Agent, TurnResult
 from .agents import LLMAgent
@@ -22,6 +22,13 @@ from .session import (
 )
 from .stream import StreamChunk, ToolCall, Turn
 from .tools import HttpTool, MCPTool, PythonTool, Tool, ToolResult
+from .observability import (
+    LangfuseObserver,
+    NullObserver,
+    Observer,
+    TracingProvider,
+    build_observer,
+)
 
 __all__ = [
     "Agent",
@@ -35,9 +42,12 @@ __all__ = [
     "HttpTool",
     "InMemorySessionStore",
     "LLMAgent",
+    "LangfuseObserver",
     "LockBackend",
     "MCPTool",
+    "NullObserver",
     "NullSessionStore",
+    "Observer",
     "PythonTool",
     "Session",
     "SessionHandle",
@@ -48,8 +58,10 @@ __all__ = [
     "Tool",
     "ToolCall",
     "ToolResult",
+    "TracingProvider",
     "Turn",
     "TurnResult",
+    "build_observer",
     "create_dialog_flow",
     "register_llm_provider",
 ]

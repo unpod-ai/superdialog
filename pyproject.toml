@@ -1,6 +1,6 @@
 [project]
 name = "superdialog"
-version = "0.2.8"
+version = "0.2.9"
 description = "Standalone dialog state machine framework — text in, text out."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -25,6 +25,7 @@ fastapi = ["fastapi>=0.110", "uvicorn>=0.27"]
 ws = ["websockets>=12"]
 mcp = ["mcp>=0.9"]
 langchain = ["langchain-core>=0.3"]
+langfuse = ["langfuse>=2.0,<3.0"]
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "anyio>=4", "ruff>=0.4", "pyrefly>=0.1"]
 evals = ["openai>=1.0"]
 # Voice-agent playground (playground/) — drives a live unpod AgentRunner over a
@@ -37,6 +38,9 @@ playground = [
   "uvicorn[standard]>=0.32",
   "loguru>=0.7",
   "livekit-agents>=1.0,<2",
+]
+anyllm = [
+    "any-llm-sdk[anthropic,openai]>=1.17.0",
 ]
 
 [project.urls]

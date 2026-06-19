@@ -11,6 +11,10 @@ state once ``on_user_text`` returns.
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, AsyncIterator, cast
 
 import anyio
@@ -25,6 +29,61 @@ from .runtime import PlaybookRuntime
 from .state import ConversationState
 from .talker import SpeechChunk, StreamsLLM, Talker
 from .toolexec import HttpFn, PythonToolFn
+
+logger = logging.getLogger(__name__)
+
+
+class _LLMTimer:
+    """Wraps director/talker LLM, records latency per call and per user turn.
+
+    Call begin_turn() / end_turn() around each user turn so per-turn totals
+    can be reported alongside the overall mean/p95.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self.latencies_ms: list[float] = []          # every call, flat
+        self._turn_buckets: list[list[float]] = []   # per turn, list of call durations
+        self._current_bucket: list[float] | None = None
+
+    def begin_turn(self) -> None:
+        self._current_bucket = []
+        self._turn_buckets.append(self._current_bucket)
+
+    def end_turn(self) -> None:
+        self._current_bucket = None
+
+    def _record(self, elapsed_ms: float) -> None:
+        self.latencies_ms.append(elapsed_ms)
+        if self._current_bucket is not None:
+            self._current_bucket.append(elapsed_ms)
+
+    async def complete(self, messages: list[dict[str, str]], **kw: Any) -> str:
+        t0 = time.perf_counter()
+        result = await self._inner.complete(messages, **kw)
+        self._record((time.perf_counter() - t0) * 1000)
+        return result
+
+    async def stream(self, messages: list[dict[str, str]], **kw: Any) -> AsyncIterator[str]:
+        t0 = time.perf_counter()
+        try:
+            async for chunk in self._inner.stream(messages, **kw):
+                yield chunk
+        finally:
+            self._record((time.perf_counter() - t0) * 1000)
+
+    @property
+    def stats(self) -> dict[str, Any]:
+        if not self.latencies_ms:
+            return {"calls": 0, "mean_ms": 0.0, "p95_ms": 0.0, "per_turn_ms": []}
+        s = sorted(self.latencies_ms)
+        per_turn = [round(sum(b), 1) for b in self._turn_buckets]
+        return {
+            "calls": len(s),
+            "mean_ms": round(sum(s) / len(s), 1),
+            "p95_ms": round(s[int(len(s) * 0.95)], 1),
+            "per_turn_ms": per_turn,   # index 0 = turn 1; total LLM ms per user turn
+        }
 
 
 class PlaybookAgent:
@@ -45,16 +104,22 @@ class PlaybookAgent:
         token_budget: int = 4000,
         barrier_timeout: float = 0.4,
         hold_timeout: float | None = None,
+        split_utterance: bool = True,
+        traversal_dir: str | Path | None = None,
+        traversal_source: str = "",
+        traversal_model: str = "",
     ) -> None:
+        self._director_timer = _LLMTimer(director_llm)
+        self._talker_timer = _LLMTimer(talker_llm)
         self.runtime = PlaybookRuntime(
             playbook,
-            director_llm=director_llm,
+            director_llm=self._director_timer,
             http=http,
             python_tools=python_tools,
         )
         self._talker = Talker(
             playbook,
-            talker_llm,
+            self._talker_timer,
             token_budget=token_budget,
             barrier_timeout=barrier_timeout,
             # explicit arg wins; else the playbook's policies decide
@@ -63,7 +128,17 @@ class PlaybookAgent:
                 if hold_timeout is not None
                 else playbook.policies.hold_timeout
             ),
+            split_utterance=split_utterance,
         )
+        self._traversal_dir: Path | None = Path(traversal_dir) if traversal_dir else None
+        self._traversal_source = traversal_source or (
+            playbook.source_path and Path(playbook.source_path).name or ""
+        )
+        self._traversal_model = traversal_model or getattr(director_llm, "model_id", "")
+        self._traversal_saved: bool = False
+        self._started_at: datetime | None = None
+        self._greeting_checkpoint: str | None = None
+        self._playbook = playbook
 
     # ---- Agent Protocol -----------------------------------------------------
 
@@ -73,7 +148,12 @@ class PlaybookAgent:
         *,
         stream: bool = False,
     ) -> TurnResult | AsyncIterator[StreamChunk]:
-        """Process one user turn; stream chunks live when ``stream=True``."""
+        """Process one user turn; stream chunks live when ``stream=True``.
+
+        When stream=True the coroutine returns an AsyncIterator — callers must
+        ``await`` before iterating: ``async for chunk in await agent.turn(t, stream=True)``.
+        Prefer ``agent.stream_turn(text)`` which requires no ``await``.
+        """
         if stream:
             return self._stream_turn(text)
         final = Turn(text="")
@@ -81,6 +161,13 @@ class PlaybookAgent:
             if chunk.done and chunk.turn is not None:
                 final = chunk.turn
         return TurnResult(text=final.text, metadata=final.metadata)
+
+    def stream_turn(self, text: str) -> AsyncIterator[StreamChunk]:
+        """Stream one user turn — use as: ``async for chunk in agent.stream_turn(text)``.
+
+        No ``await`` needed: returns the async iterator directly.
+        """
+        return self._stream_turn(text)
 
     def assist(self, text: str) -> None:
         """Push a system-level note into the log; takes effect next turn."""
@@ -117,6 +204,7 @@ class PlaybookAgent:
     def load_event_log(self, log: EventLog) -> None:
         """Replace the runtime's event log wholesale (lossless restore)."""
         self.runtime.load_log(log)
+        self._traversal_saved = False
 
     # ---- internals ------------------------------------------------------------
 
@@ -141,6 +229,8 @@ class PlaybookAgent:
         task group / cancel scope; the background task sidesteps that.
         """
         pass_through = await self._ensure_started()
+        self._director_timer.begin_turn()
+        self._talker_timer.begin_turn()
         quiescent = anyio.Event()
 
         async def run_director() -> None:
@@ -165,18 +255,27 @@ class PlaybookAgent:
         # run_director runs on_user_text with record=False to avoid a
         # double-append.
         self.runtime.log.append(UtteranceEvent(role="user", text=text))
-        # Snapshot AFTER the append (includes the current turn) but BEFORE the
-        # Director mutates state further: the Talker speaks from this snapshot;
-        # hard gates barrier via director_done.
-        speak_state = self.runtime.state
-        entry_cp = speak_state.checkpoint_id
-        talker_chunks: list[SpeechChunk] = []
-        speech = self._talker.speak(speak_state, director_done=director_done)
+        entry_cp = self.runtime.state.checkpoint_id
 
         # Start the Director concurrently so it is (usually) quiescent by the
         # time the Talker barriers at a hard gate. Nothing cancels this task;
         # it is shielded and always awaited in the finally below.
         director = asyncio.ensure_future(run_director())
+
+        # First-turn double-greeting guard: if we are still at the checkpoint
+        # where greet() spoke, wait briefly for the Director to advance before
+        # snapshotting speak_state — otherwise the Talker would re-speak the
+        # opening greeting from the same checkpoint a second time.
+        if self._greeting_checkpoint and entry_cp == self._greeting_checkpoint:
+            self._greeting_checkpoint = None
+            with anyio.move_on_after(self._talker._hold_timeout):
+                await quiescent.wait()
+
+        # Snapshot AFTER the optional barrier: if Director advanced, Talker
+        # speaks from the new checkpoint; if it timed out, speaks from entry_cp.
+        speak_state = self.runtime.state
+        talker_chunks: list[SpeechChunk] = []
+        speech = self._talker.speak(speak_state, director_done=director_done)
         try:
             async for chunk in speech:
                 talker_chunks.append(chunk)
@@ -191,6 +290,8 @@ class PlaybookAgent:
             # one finally, in whatever task drives the close — never spanning
             # a yield — so the cancel scope is task-consistent.
             with anyio.CancelScope(shield=True):
+                self._director_timer.end_turn()
+                self._talker_timer.end_turn()
                 await speech.aclose()  # close the Talker's LLM stream now
                 # Let the Director's decision land. It is shielded, so the only
                 # cancellation that can reach it is loop teardown — tolerate
@@ -220,6 +321,13 @@ class PlaybookAgent:
                         )
                     )
                 await self.runtime.check_repairs()
+                if (
+                    self._traversal_dir
+                    and self.runtime.state.ended
+                    and not self._traversal_saved
+                ):
+                    self._traversal_saved = True
+                    await self._auto_save_traversal()
         # Reached only on normal completion — a GeneratorExit raised at the
         # yield above propagates out of the finally, so the host's aclose()
         # stays clean and the pass-through below is skipped on abort.
@@ -241,6 +349,7 @@ class PlaybookAgent:
         """
         await self._ensure_started()
         state = self.runtime.state
+        self._greeting_checkpoint = state.checkpoint_id
         talker_chunks: list[SpeechChunk] = []
         async for chunk in self._talker.speak(state):
             talker_chunks.append(chunk)
@@ -263,8 +372,33 @@ class PlaybookAgent:
         """Start a never-started runtime; return its pass-through speech."""
         state = self.runtime.state
         if state.checkpoint_id is None and not state.ended:
+            self._started_at = datetime.now(timezone.utc)
             return await self.runtime.start()
         return []
+
+    async def _auto_save_traversal(self) -> None:
+        """Save traversal JSON to _traversal_dir without blocking the event loop."""
+        try:
+            from .traversal import build_playbook_traversal, save_playbook_traversal
+
+            traversal = build_playbook_traversal(
+                self.runtime.log,
+                self._playbook,
+                source=self._traversal_source,
+                model=self._traversal_model,
+                started_at=self._started_at,
+                latency={
+                    "director": self._director_timer.stats,
+                    "talker": self._talker_timer.stats,
+                },
+            )
+            # File write is sync — offload to a thread so we don't block the loop.
+            path = await anyio.to_thread.run_sync(
+                lambda: save_playbook_traversal(traversal, self._traversal_dir)
+            )
+            logger.info("[PlaybookAgent] traversal saved: %s", path)
+        except Exception:
+            logger.warning("[PlaybookAgent] traversal save failed", exc_info=True)
 
     def _metadata(self) -> dict[str, Any]:
         state = self.runtime.state

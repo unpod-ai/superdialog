@@ -39,6 +39,21 @@ class PathTest(BaseModel):
     steps: list[PathStep] = Field(default_factory=list)
 
 
+class PathStepResult(BaseModel):
+    utterance: str
+    expected_edge: str
+    actual_edge: str | None = None
+    expected_node: str
+    actual_node: str | None = None
+    passed: bool = False
+
+
+class PathResult(BaseModel):
+    name: str = ""
+    completed: bool = False
+    steps: list[PathStepResult] = Field(default_factory=list)
+
+
 class PersonaConfig(BaseModel):
     name: str
     traits: str = ""
@@ -73,14 +88,54 @@ class ModelScore(BaseModel):
     path_accuracy: float = 0.0
     persona_completion: float = 0.0
     edge_results: list[EdgeResult] = Field(default_factory=list)
+    negative_results: list[NegativeEdgeResult] = Field(default_factory=list)
+    path_results: list[PathResult] = Field(default_factory=list)
     persona_results: list[PersonaResult] = Field(default_factory=list)
     failures: list[str] = Field(default_factory=list)
+    negative_failures: list[str] = Field(default_factory=list)
+
+    @property
+    def edges_total(self) -> int:
+        return len(self.edge_results)
+
+    @property
+    def edges_passed(self) -> int:
+        return sum(1 for r in self.edge_results if r.passed)
+
+    @property
+    def negatives_total(self) -> int:
+        return len(self.negative_results)
+
+    @property
+    def negatives_passed(self) -> int:
+        return sum(1 for r in self.negative_results if r.passed)
+
+    @property
+    def paths_total(self) -> int:
+        return len(self.path_results)
+
+    @property
+    def paths_passed(self) -> int:
+        return sum(1 for r in self.path_results if r.completed)
 
 
 class EvalReport(BaseModel):
     flow_file: str = ""
     generated_at: str = ""
     models: list[ModelScore] = Field(default_factory=list)
+
+    def summary(self) -> str:
+        """One human-readable line per model: edge/negative/path/persona tallies."""
+        lines = [f"Eval report: {self.flow_file}"]
+        for m in self.models:
+            lines.append(
+                f"  {m.model_id}: "
+                f"edges={m.edges_passed}/{m.edges_total} "
+                f"neg={m.negatives_passed}/{m.negatives_total} "
+                f"paths={m.paths_passed}/{m.paths_total} "
+                f"personas={int(m.persona_completion * 100)}%"
+            )
+        return "\n".join(lines)
 
 
 # ── Audit models (Tool 3 — SessionAuditor) ───────────────────────────────

@@ -14,35 +14,9 @@ from superdialog import DialogMachine, Flow
 from superdialog.flow.models import ActionTriggerType
 from superdialog.machine.actions import ActionExecutor
 from superdialog.machine.models import ActionRecord, FlowContext
+from tests.scripted_toolcall import ScriptedToolProvider, route
 
 FIXTURE_DIR = Path(__file__).parents[1] / "fixtures" / "flow"
-
-
-class _ScriptedProvider:
-    def __init__(self, responses):
-        self._responses = list(responses)
-
-    async def complete(self, messages, tools=None, **opts):
-        from superdialog.llm.provider import CompletionResult
-        text = self._responses.pop(0) if self._responses else "{}"
-        return CompletionResult(text=text, tool_calls=[], metadata={})
-
-    async def stream(self, messages, tools=None, **opts):
-        result = await self.complete(messages)
-        from superdialog.llm.provider import StreamChunk as SC
-        yield SC(text=result.text, tool_call_delta=None, done=True)
-
-
-def _criteria(edge, response="ok", all_met=True):
-    return json.dumps({
-        "criteria_met": {},
-        "extracted_slots": {},
-        "all_required_met": all_met,
-        "user_insisting": False,
-        "recommended_edge_id": edge,
-        "reason": "test",
-        "response": response,
-    })
 
 
 def _make_fake_machine(nodes, transition_log=None, action_log=None, is_complete=True):
@@ -252,17 +226,15 @@ def test_flow_context_action_log_append():
 async def test_dialog_machine_auto_saves_traversal():
     flow = Flow.load(FIXTURE_DIR / "kyc.json")
 
-    responses = [
-        _criteria("greet_to_name", "What's your name?"),       # greet → collect_name
-        "Please tell me your full name.",                        # collect_name entry reply
-        _criteria("name_to_dob", "Date of birth?"),             # collect_name eval
-        "Thanks. What is your date of birth?",                   # collect_dob entry reply
-        _criteria("dob_to_pan", "PAN number?"),                 # collect_dob eval
-        "Now I need your PAN number.",                           # collect_pan entry reply
-        _criteria("pan_to_done", "Thank you!", all_met=True),   # collect_pan eval
-        "KYC complete.",                                         # done entry reply
-    ]
-    provider = _ScriptedProvider(responses)
+    # One scripted routing decision per user turn: greet → … → done.
+    provider = ScriptedToolProvider(
+        routes=[
+            route("greet_to_name"),
+            route("name_to_dob"),
+            route("dob_to_pan"),
+            route("pan_to_done"),
+        ]
+    )
 
     with tempfile.TemporaryDirectory() as tmpdir:
         dm = DialogMachine(

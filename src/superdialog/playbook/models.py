@@ -35,6 +35,13 @@ class SlotSpec(BaseModel):
     authoritative: bool = False
     invalidates: list[str] = Field(default_factory=list)
     description: str = ""
+    # Per-slot confirmation gate (risk class). ``None`` inherits the
+    # checkpoint's ``gate`` (backward compatible — unannotated slots behave as
+    # today). ``"hard"`` marks an intrinsically risky slot (phone/email/payment/
+    # routing) that must be Director-confirmed before it gates advance or is
+    # spoken; ``"soft"`` lets it advance on a provisional fill even inside a
+    # hard-gated checkpoint. See capability ``dialogue-gate-policy``.
+    gate: Literal["soft", "hard"] | None = None
 
 
 class AdvanceRule(BaseModel):
@@ -160,6 +167,7 @@ class Playbook(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     views: dict[str, str] = Field(default_factory=dict)  # name -> expr
     initial: str | None = None  # defaults to first checkpoint of first journey
+    source_path: str = ""  # set by Playbook.load(); empty when built from text
 
     # -- lookups ------------------------------------------------------------
     def checkpoint(self, ref: str) -> Checkpoint:
@@ -327,6 +335,5 @@ class Playbook(BaseModel):
     def load(cls, path: str) -> "Playbook":
         with open(path, encoding="utf-8") as fh:
             text = fh.read()
-        if path.endswith((".yaml", ".yml")):
-            return cls.from_yaml(text)
-        return cls.from_json(text)
+        pb = cls.from_yaml(text) if path.endswith((".yaml", ".yml")) else cls.from_json(text)
+        return pb.model_copy(update={"source_path": path})
