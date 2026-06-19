@@ -128,7 +128,9 @@ class Talker:
 
         if cp is not None and director_done is not None and self._is_gated(cp):
             fresh: ConversationState | None
-            if self._split_utterance:
+            # Per-checkpoint override wins; None means inherit the Talker default.
+            use_split = cp.split_utterance if cp.split_utterance is not None else self._split_utterance
+            if use_split:
                 # Split-utterance (D6): the commitment-free onset is the FIRST
                 # token — emitted before any barrier — so TTFT is off the
                 # Director's critical path. Only the committal payload (below,
@@ -141,13 +143,16 @@ class Talker:
                 fresh = await self._await_director(director_done)
             else:
                 # Rollback path: barrier BEFORE the first token, filler on expiry.
+                # cp.filler overrides Talker default; "" = emit nothing (silent wait).
+                cp_filler = cp.filler if cp.filler is not None else self._filler
                 fresh = None
                 with anyio.move_on_after(self._barrier_timeout):
                     fresh = await director_done()
                 if fresh is None:
-                    yield SpeechChunk(
-                        text=self._filler + " ", spoke_from_version=state.version
-                    )
+                    if cp_filler:
+                        yield SpeechChunk(
+                            text=cp_filler + " ", spoke_from_version=state.version
+                        )
                     with anyio.move_on_after(self._hold_timeout):
                         fresh = await director_done()
             if fresh is None:  # Director is down: degrade politely, never hang
