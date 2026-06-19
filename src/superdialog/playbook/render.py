@@ -8,6 +8,7 @@ Guidance/say_verbatim are Jinja templates over {slots, views, results}.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from jinja2 import ChainableUndefined, TemplateError
@@ -90,7 +91,8 @@ def render_template(
 def _system_block(pb: Playbook, state: ConversationState) -> str:
     ns = template_namespace(pb, state)
     cp = pb.checkpoint(state.checkpoint_id) if state.checkpoint_id else None
-    parts: list[str] = [pb.persona.strip()]
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    parts: list[str] = [pb.persona.strip(), f"Current date and time: {now}"]
     # "Direction" (steer) notes appear before step guidance so the guidance
     # text — which is more specific and may explicitly override the note —
     # lands later in the context and takes precedence with the LLM.
