@@ -117,9 +117,14 @@ class NullObserver:
         return None
 
 
-def _ctx(session_meta: dict[str, Any]) -> dict[str, Any]:
-    """Shared session context block added to every span's metadata."""
+def _ctx(session_meta: dict[str, Any], *, layer: str = "superdialog") -> dict[str, Any]:
+    """Shared session context block added to every span's metadata.
+
+    ``layer`` identifies which part of the stack emitted the span:
+    "superdialog" for dialog/LLM events, "supervoice" for audio pipeline events.
+    """
     return {
+        "layer": layer,
         "call_id": session_meta.get("call_id"),
         "agent_name": session_meta.get("agent"),
         "agent_id": session_meta.get("agent_id"),
@@ -198,14 +203,14 @@ class LangfuseObserver:
             self._session_meta[trace.id] = metadata
             print(f"[LANGFUSE-DEBUG] trace created id={trace.id} agent={agent_name}", flush=True)
             logger.info(
-                "langfuse trace created id={} agent={} mode={} playbook={} llm={} voice={}",
+                "[superdialog] langfuse trace created id={} agent={} mode={} playbook={} llm={} voice={}",
                 trace.id, agent_name, mode,
                 metadata.get("playbook"), metadata.get("llm"), metadata.get("voice_profile"),
             )
             return trace.id
         except Exception as exc:
             print(f"[LANGFUSE-DEBUG] on_session_start EXCEPTION: {exc}", flush=True)
-            logger.warning("langfuse on_session_start FAILED: {}", exc)
+            logger.warning("[superdialog] langfuse on_session_start FAILED: {}", exc)
             return session_id
 
     def on_session_end(self, trace_id: str, output: str) -> None:
@@ -257,7 +262,7 @@ class LangfuseObserver:
                     },
                 )
             except Exception as e:
-                logger.debug("langfuse session_end span failed: {}", e)
+                logger.debug("[superdialog] langfuse session_end span failed: {}", e)
 
             # Update top-level trace output (shown in trace header)
             if trace is not None:
@@ -274,12 +279,12 @@ class LangfuseObserver:
                 )
 
             logger.info(
-                "langfuse session end id={} agent={} user_turns={} agent_turns={} outcome={}",
+                "[superdialog] langfuse session end id={} agent={} user_turns={} agent_turns={} outcome={}",
                 trace_id, session_meta.get("agent"),
                 user_turns, agent_turns, output[:120],
             )
         except Exception as exc:
-            logger.warning("langfuse session_end FAILED: {}", exc)
+            logger.warning("[superdialog] langfuse session_end FAILED: {}", exc)
         self.flush()
 
     # ------------------------------------------------------------------ #
@@ -336,12 +341,12 @@ class LangfuseObserver:
             )
             self._pending[gen.id] = (gen, trace_id, time.perf_counter(), name)
             logger.info(
-                "langfuse gen start id={} name={} model={} msgs={}",
+                "[superdialog] langfuse gen start id={} name={} model={} msgs={}",
                 gen.id, name, resolved_model, len(input_messages),
             )
             return gen.id
         except Exception as exc:
-            logger.warning("langfuse on_generation_start FAILED: {}", exc)
+            logger.warning("[superdialog] langfuse on_generation_start FAILED: {}", exc)
             return ""
 
     def on_generation_end(
@@ -403,11 +408,11 @@ class LangfuseObserver:
                 },
             )
             logger.info(
-                "langfuse gen end id={} name={} in={} out={} latency={}ms",
+                "[superdialog] langfuse gen end id={} name={} in={} out={} latency={}ms",
                 observation_id, gen_name, prompt_tokens, completion_tokens, actual_latency,
             )
         except Exception as exc:
-            logger.debug("langfuse on_generation_end skipped: {}", exc)
+            logger.debug("[superdialog] langfuse on_generation_end skipped: {}", exc)
 
         for tc in tool_calls or []:
             tc_name = tc.get("name") or tc.get("function", {}).get("name") or "tool"
@@ -445,7 +450,7 @@ class LangfuseObserver:
                 },
             )
         except Exception as exc:
-            logger.debug("langfuse on_tool_call skipped: {}", exc)
+            logger.debug("[superdialog] langfuse on_tool_call skipped: {}", exc)
 
     # ------------------------------------------------------------------ #
     # Dialog flow events                                                   #
@@ -608,7 +613,7 @@ class LangfuseObserver:
                 },
             )
         except Exception as exc:
-            logger.debug("langfuse on_flow_node skipped node_id={}: {}", node_id, exc)
+            logger.debug("[superdialog] langfuse on_flow_node skipped node_id={}: {}", node_id, exc)
 
     # ------------------------------------------------------------------ #
     # Voice pipeline metrics                                               #
@@ -687,7 +692,7 @@ class LangfuseObserver:
                 },
             )
         except Exception as exc:
-            logger.debug("langfuse on_voice_turn skipped: {}", exc)
+            logger.debug("[superdialog] langfuse on_voice_turn skipped: {}", exc)
 
     # ------------------------------------------------------------------ #
     # Errors                                                               #
@@ -743,11 +748,11 @@ class LangfuseObserver:
                 },
             )
             logger.warning(
-                "langfuse error logged id={} source={} code={} msg={}",
+                "[superdialog] langfuse error logged id={} source={} code={} msg={}",
                 trace_id, metadata.get("source"), metadata.get("code"), message[:200],
             )
         except Exception as exc:
-            logger.debug("langfuse on_error skipped: {}", exc)
+            logger.debug("[superdialog] langfuse on_error skipped: {}", exc)
 
     # ------------------------------------------------------------------ #
     # Flush                                                                #
@@ -757,11 +762,11 @@ class LangfuseObserver:
         try:
             self._client.flush()
             logger.info(
-                "langfuse flush ok (open_traces={} pending_gens={})",
+                "[superdialog] langfuse flush ok (open_traces={} pending_gens={})",
                 len(self._traces), len(self._pending),
             )
         except Exception as exc:
-            logger.warning("langfuse flush FAILED: {}", exc)
+            logger.warning("[superdialog] langfuse flush FAILED: {}", exc)
 
 
 class TracingProvider:
@@ -863,7 +868,148 @@ def build_observer(
         client = Langfuse(public_key=pk, secret_key=sk, host=lf_host)
         return LangfuseObserver(client)
     except Exception as exc:
-        logger.warning("langfuse unavailable ({}); using NullObserver", exc)
+        logger.warning("[superdialog] langfuse unavailable ({}); using NullObserver", exc)
+        return NullObserver()
+
+
+class SuperdialogObserver(LangfuseObserver):
+    """Standalone Langfuse observer for the superdialog dialog/LLM layer.
+
+    Works independently — no supervoice required. Writes to one Langfuse trace
+    per call and records everything the dialog machine does:
+
+    Span coverage (all tagged ``layer:superdialog``):
+      - Session start / end with full metadata and conversation transcript
+      - ``talker:stream``  — full input messages → spoken output text, tokens, latency
+      - ``director:complete`` — full input messages → routing decision, tokens, latency
+      - ``user_turn``  — exact ASR text the user spoke
+      - ``agent_turn`` — exact text the agent spoke + which user utterance triggered it
+      - ``opening_turn`` — agent greeting text + generation latency
+      - ``checkpoint:<id>`` — which checkpoint reached + all slot values collected
+      - ``tool:<name>`` — tool arguments → result
+      - ``error`` (dialog-layer only: LLM failures, build errors, session crashes)
+
+    Voice-layer events (``voice_turn``, ``interruption``) are silently ignored here;
+    they belong to VoiceObserver in supervoice.
+    """
+
+    _LAYER = "superdialog"
+
+    # error sources that belong to the voice layer — skip them here
+    _VOICE_SOURCES = {"stt", "tts", "pipeline", "audio"}
+
+    def on_session_start(self, session_id: str, metadata: dict[str, Any]) -> str:
+        print(f"[LANGFUSE-SD] on_session_start session_id={session_id}", flush=True)
+        try:
+            agent_name = metadata.get("agent") or "unknown-agent"
+            mode = metadata.get("mode") or "unknown"
+            tags = [
+                "layer:superdialog",
+                f"mode:{mode}",
+                f"agent:{agent_name}",
+            ]
+            if metadata.get("playbook"):
+                tags.append(f"playbook:{metadata['playbook']}")
+            if metadata.get("llm"):
+                tags.append(f"llm:{metadata['llm']}")
+            if metadata.get("voice_profile"):
+                tags.append(f"voice_profile:{metadata['voice_profile']}")
+
+            trace = self._client.trace(
+                id=session_id,
+                name=f"dialog:{agent_name}",
+                user_id=metadata.get("call_id") or session_id,
+                session_id=session_id,
+                tags=tags,
+                input={
+                    "layer": self._LAYER,
+                    "call_id": metadata.get("call_id") or session_id,
+                    "agent_name": agent_name,
+                    "agent_id": metadata.get("agent_id"),
+                    "mode": mode,
+                    "playbook_id": metadata.get("playbook"),
+                    "flow_id": metadata.get("flow"),
+                    "llm_model": metadata.get("llm"),
+                    "voice_profile_id": metadata.get("voice_profile"),
+                    "source": metadata.get("source") or "playground",
+                    "started_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "caller_data": metadata.get("caller_data") or {},
+                },
+                metadata={
+                    "description": (
+                        f"[superdialog] Dialog/LLM session — agent='{agent_name}' "
+                        f"mode='{mode}'"
+                        + (f" playbook='{metadata.get('playbook')}'" if metadata.get("playbook") else "")
+                        + f" llm='{metadata.get('llm')}' voice_profile='{metadata.get('voice_profile')}'. "
+                        "Tracks LLM generations (talker+director), conversation turns, "
+                        "checkpoint transitions, slot collection."
+                    ),
+                },
+            )
+            self._traces[trace.id] = trace
+            self._conversations[trace.id] = []
+            self._session_meta[trace.id] = metadata
+            print(f"[LANGFUSE-SD] trace created id={trace.id} agent={agent_name}", flush=True)
+            logger.info(
+                "[superdialog] langfuse superdialog trace id={} agent={} mode={} playbook={} llm={}",
+                trace.id, agent_name, mode,
+                metadata.get("playbook"), metadata.get("llm"),
+            )
+            return trace.id
+        except Exception as exc:
+            print(f"[LANGFUSE-SD] on_session_start EXCEPTION: {exc}", flush=True)
+            logger.warning("[superdialog] langfuse superdialog on_session_start FAILED: {}", exc)
+            return session_id
+
+    def on_voice_turn(self, trace_id: str, metrics: dict[str, Any]) -> None:
+        # Audio pipeline metrics belong to VoiceObserver — silently ignored here
+        return
+
+    def on_flow_node(self, trace_id: str, node_id: str, slots: dict[str, Any]) -> None:
+        # Interruptions are a supervoice event — VoiceObserver handles them
+        if node_id == "interruption":
+            return
+        super().on_flow_node(trace_id, node_id, slots)
+
+    def on_error(self, trace_id: str, message: str, metadata: dict[str, Any]) -> None:
+        # STT/TTS/pipeline errors belong to VoiceObserver
+        if metadata.get("source", "").lower() in self._VOICE_SOURCES:
+            return
+        super().on_error(trace_id, message, metadata)
+
+
+def build_superdialog_observer(
+    public_key: str | None = None,
+    secret_key: str | None = None,
+    host: str | None = None,
+) -> "SuperdialogObserver | NullObserver":
+    """Return a SuperdialogObserver if keys are available, else NullObserver.
+
+    Key resolution (first non-empty wins):
+      LANGFUSE_DIALOG_PUBLIC_KEY / LANGFUSE_DIALOG_SECRET_KEY
+      → LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY
+    """
+    pk = (
+        public_key
+        or os.environ.get("LANGFUSE_DIALOG_PUBLIC_KEY")
+        or os.environ.get("LANGFUSE_PUBLIC_KEY", "")
+    )
+    sk = (
+        secret_key
+        or os.environ.get("LANGFUSE_DIALOG_SECRET_KEY")
+        or os.environ.get("LANGFUSE_SECRET_KEY", "")
+    )
+    if not pk or not sk:
+        logger.warning("[superdialog] langfuse superdialog observer disabled — no keys found")
+        return NullObserver()
+    lf_host = host or os.environ.get("LANGFUSE_HOST", "https://cloud.langfuse.com")
+    try:
+        from langfuse import Langfuse
+        client = Langfuse(public_key=pk, secret_key=sk, host=lf_host)
+        logger.info("[superdialog] langfuse superdialog observer ready host={}", lf_host)
+        return SuperdialogObserver(client)
+    except Exception as exc:
+        logger.warning("[superdialog] langfuse superdialog observer init failed ({}); using NullObserver", exc)
         return NullObserver()
 
 
@@ -871,6 +1017,8 @@ __all__ = [
     "LangfuseObserver",
     "NullObserver",
     "Observer",
+    "SuperdialogObserver",
     "TracingProvider",
     "build_observer",
+    "build_superdialog_observer",
 ]
