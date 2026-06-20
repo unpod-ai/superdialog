@@ -30,6 +30,25 @@ def _split_uri(uri: str) -> tuple[str | None, str]:
     return None, uri
 
 
+def _extract_usage(u: Any) -> dict[str, int]:
+    """Normalize provider-specific token field names to prompt_tokens/completion_tokens.
+
+    OpenAI:    prompt_tokens / completion_tokens
+    Anthropic: input_tokens  / output_tokens
+    """
+    prompt = (
+        getattr(u, "prompt_tokens", None)
+        or getattr(u, "input_tokens", None)
+        or 0
+    )
+    completion = (
+        getattr(u, "completion_tokens", None)
+        or getattr(u, "output_tokens", None)
+        or 0
+    )
+    return {"prompt_tokens": int(prompt), "completion_tokens": int(completion)}
+
+
 def _normalize_tool_calls(raw_calls: Any) -> list[dict[str, Any]]:
     """Normalize any-llm tool-call objects to plain dicts (OpenAI shape)."""
     return [
@@ -72,8 +91,7 @@ class AnyLlmProvider:
             tool_calls=_normalize_tool_calls(getattr(msg, "tool_calls", None)),
             metadata={
                 "latency_ms": latency_ms,
-                "prompt_tokens": getattr(usage, "prompt_tokens", 0),
-                "completion_tokens": getattr(usage, "completion_tokens", 0),
+                **(_extract_usage(usage) if usage else {}),
                 "model": self.model,
             },
         )
@@ -84,10 +102,14 @@ class AnyLlmProvider:
         tools: list[dict[str, Any]] | None = None,
         **opts: Any,
     ) -> AsyncIterator[StreamChunk]:
-        """Yield streamed text/tool-call deltas; tolerates usage-only chunks."""
+        """Yield streamed text/tool-call deltas; captures usage from usage-only chunks."""
         import any_llm
 
         merged = {**self.default_opts, **opts, "stream": True}
+        # OpenAI streaming suppresses usage by default; request it explicitly.
+        if self._provider in ("openai", None):
+            merged.setdefault("stream_options", {"include_usage": True})
+        print(f"[ANYLLM-DBG] stream provider={self._provider!r} model={self._model!r} stream_options={merged.get('stream_options')}", flush=True)
         resp = await any_llm.acompletion(
             model=self._model,
             provider=self._provider,
@@ -95,10 +117,17 @@ class AnyLlmProvider:
             tools=tools,
             **merged,
         )
+        usage_meta: dict[str, int] = {}
+        pending_done: StreamChunk | None = None
         async for chunk in resp:
             if not getattr(chunk, "choices", None):
-                continue  # usage-only chunk
+                u = getattr(chunk, "usage", None)
+                print(f"[ANYLLM-DBG] usage-only chunk u={u} choices={getattr(chunk,'choices',None)!r}", flush=True)
+                if u:
+                    usage_meta = _extract_usage(u)
+                continue
             delta = chunk.choices[0].delta
+            is_done = chunk.choices[0].finish_reason is not None
             tcs = getattr(delta, "tool_calls", None)
             tc_delta: dict[str, Any] | None = None
             if tcs:
@@ -106,8 +135,24 @@ class AnyLlmProvider:
                 tc_delta = (
                     first.model_dump() if hasattr(first, "model_dump") else dict(first)
                 )
-            yield StreamChunk(
+            sc = StreamChunk(
                 text=getattr(delta, "content", None),
                 tool_call_delta=tc_delta,
-                done=chunk.choices[0].finish_reason is not None,
+                done=is_done,
+                usage=None,
+            )
+            if is_done:
+                # Buffer the done chunk — OpenAI's usage-only chunk follows after
+                # this, so we emit done only once the full stream is exhausted.
+                pending_done = sc
+            else:
+                yield sc
+        # Stream exhausted: usage_meta now contains the final token counts.
+        print(f"[ANYLLM-DBG] stream done. usage_meta={usage_meta} pending_done={pending_done is not None}", flush=True)
+        if pending_done is not None:
+            yield StreamChunk(
+                text=pending_done.text,
+                tool_call_delta=pending_done.tool_call_delta,
+                done=True,
+                usage=usage_meta if usage_meta else None,
             )

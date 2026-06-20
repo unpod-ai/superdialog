@@ -173,7 +173,7 @@ async def test_tracing_provider_complete_calls_observer():
     start_calls = []
     end_calls = []
 
-    def spy_start(trace_id, name, input_messages):
+    def spy_start(trace_id, name, input_messages, **kwargs):
         start_calls.append((trace_id, name))
         return original_start(trace_id, name, input_messages)
 
@@ -190,7 +190,7 @@ async def test_tracing_provider_complete_calls_observer():
 
     assert result.text == "hello"
     assert len(start_calls) == 1
-    assert start_calls[0] == ("trace-id-1", "complete")
+    assert start_calls[0] == ("trace-id-1", "llm:complete")
     assert len(end_calls) == 1
     assert end_calls[0][1] == "hello"
 
