@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import zlib
 from typing import Any, AsyncIterator, Awaitable, Callable, Protocol
 
 import anyio
@@ -15,19 +14,6 @@ from .state import ConversationState
 FILLER = "One moment, let me confirm that…"
 HOLD_LINE = "I'm taking a little longer than usual — bear with me for a moment."
 RECOVERY_LINE = "Sorry, could you say that again?"
-
-# Audited, value-independent commitment-free onsets (capability
-# `dialogue-gate-policy`, D6). At a gated turn the Talker streams one of these
-# as its first token(s) — before the Director completes — so time-to-first-token
-# is off the barrier path. NONE may interpolate a slot value: the onset is a
-# static phrase, and selection is by checkpoint id only (never by slot content).
-ONSET_TEMPLATES = (
-    "Let me check that for you.",
-    "One moment while I look into that.",
-    "Sure — let me take a look.",
-    "Okay, let me confirm that.",
-    "Right, give me just a second.",
-)
 
 
 class StreamsLLM(Protocol):
@@ -59,8 +45,6 @@ class Talker:
         filler: str = FILLER,
         hold_line: str = HOLD_LINE,
         recovery_line: str = RECOVERY_LINE,
-        split_utterance: bool = True,
-        onset_templates: tuple[str, ...] = ONSET_TEMPLATES,
     ) -> None:
         self._pb = playbook
         self._llm = llm
@@ -70,27 +54,12 @@ class Talker:
         self._filler = filler
         self._hold_line = hold_line
         self._recovery_line = recovery_line
-        # Split-utterance (D6): emit a commitment-free onset first, then barrier
-        # only the committal payload. Disable to restore barrier-before-first-
-        # token (filler-on-expiry) behavior — the documented rollback path.
-        self._split_utterance = split_utterance
-        self._onset_templates = onset_templates
 
     def _is_gated(self, cp: Checkpoint) -> bool:
         """A turn is gated when the checkpoint is hard or any slot is hard."""
         if cp.gate == "hard":
             return True
         return any(s.gate == "hard" for s in cp.slots.values())
-
-    def _select_onset(self, state: ConversationState) -> str:
-        """Pick a value-independent onset, deterministic per checkpoint id.
-
-        Uses a stable hash of the checkpoint id only — never any slot value — so
-        the onset can never leak an unconfirmed value.
-        """
-        cp_id = state.checkpoint_id or ""
-        idx = zlib.crc32(cp_id.encode("utf-8")) % len(self._onset_templates)
-        return self._onset_templates[idx]
 
     async def _await_director(
         self, director_done: Callable[[], Awaitable[ConversationState]]
@@ -127,34 +96,15 @@ class Talker:
         cp = self._pb.checkpoint(state.checkpoint_id) if state.checkpoint_id else None
 
         if cp is not None and director_done is not None and self._is_gated(cp):
-            fresh: ConversationState | None
-            # Per-checkpoint override wins; None means inherit the Talker default.
-            use_split = cp.split_utterance if cp.split_utterance is not None else self._split_utterance
-            if use_split:
-                # Split-utterance (D6): the commitment-free onset is the FIRST
-                # token — emitted before any barrier — so TTFT is off the
-                # Director's critical path. Only the committal payload (below,
-                # rendered from the post-Director `fresh` state) waits on the
-                # verdict, so nothing unconfirmed is asserted.
+            fresh: ConversationState | None = None
+            with anyio.move_on_after(self._barrier_timeout):
+                fresh = await director_done()
+            if fresh is None:
                 yield SpeechChunk(
-                    text=self._select_onset(state) + " ",
-                    spoke_from_version=state.version,
+                    text=self._filler + " ", spoke_from_version=state.version
                 )
-                fresh = await self._await_director(director_done)
-            else:
-                # Rollback path: barrier BEFORE the first token, filler on expiry.
-                # cp.filler overrides Talker default; "" = emit nothing (silent wait).
-                cp_filler = cp.filler if cp.filler is not None else self._filler
-                fresh = None
-                with anyio.move_on_after(self._barrier_timeout):
+                with anyio.move_on_after(self._hold_timeout):
                     fresh = await director_done()
-                if fresh is None:
-                    if cp_filler:
-                        yield SpeechChunk(
-                            text=cp_filler + " ", spoke_from_version=state.version
-                        )
-                    with anyio.move_on_after(self._hold_timeout):
-                        fresh = await director_done()
             if fresh is None:  # Director is down: degrade politely, never hang
                 yield SpeechChunk(
                     text=self._hold_line, final=True, spoke_from_version=state.version
