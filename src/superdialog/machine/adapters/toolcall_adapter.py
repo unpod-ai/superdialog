@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 
+
 @dataclass
 class LLMCallData:
     node_id: str
@@ -71,6 +72,7 @@ from superdialog.machine.composer import get_time_context as _get_time_context
 from superdialog.machine.composer import process_text as _process_text
 from superdialog.machine.composer import resolve_language as _resolve_lang
 from superdialog.machine.models import CriteriaResult, ToolDescriptor
+from superdialog.llm.prompt_cache import CACHE_PREFIX_KEY
 from superdialog.llm.provider import LLMProvider
 from superdialog.llm.resolver import resolve_llm
 
@@ -106,8 +108,12 @@ def _make_openai_client():
     """
     from openai import AsyncOpenAI
 
-    lk_api_key = os.environ.get("LIVEKIT_API_KEY") or os.environ.get("LIVEKIT_INFERENCE_API_KEY")
-    lk_api_secret = os.environ.get("LIVEKIT_API_SECRET") or os.environ.get("LIVEKIT_INFERENCE_API_SECRET")
+    lk_api_key = os.environ.get("LIVEKIT_API_KEY") or os.environ.get(
+        "LIVEKIT_INFERENCE_API_KEY"
+    )
+    lk_api_secret = os.environ.get("LIVEKIT_API_SECRET") or os.environ.get(
+        "LIVEKIT_INFERENCE_API_SECRET"
+    )
 
     backend = os.environ.get(
         "LLM_BACKEND",
@@ -116,15 +122,23 @@ def _make_openai_client():
 
     if backend == "livekit" and lk_api_key and lk_api_secret:
         try:
-            from livekit.agents.inference.llm import create_access_token, get_default_inference_url
+            from livekit.agents.inference.llm import (
+                create_access_token,
+                get_default_inference_url,
+            )
+
             token = create_access_token(lk_api_key, lk_api_secret)
             # Use the same gateway URL inference.LLM uses — agent-gateway.livekit.cloud/v1
             # NOT the project LIVEKIT_URL (that's for rooms/WebSocket, not inference HTTP)
             base_url = get_default_inference_url()
-            logger.debug("[ToolCallAdapter] LLM via LiveKit inference gateway: %s", base_url)
+            logger.debug(
+                "[ToolCallAdapter] LLM via LiveKit inference gateway: %s", base_url
+            )
             return AsyncOpenAI(api_key=token, base_url=base_url)
         except ImportError:
-            logger.warning("[ToolCallAdapter] livekit-agents not installed — falling back to OpenAI")
+            logger.warning(
+                "[ToolCallAdapter] livekit-agents not installed — falling back to OpenAI"
+            )
 
     return AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
@@ -180,7 +194,7 @@ def _strip_routing_metadata(text: str) -> str:
     """
     m = _SPEECH_STOP_RE.search(text)
     if m:
-        text = text[:m.start()].strip()
+        text = text[: m.start()].strip()
     return text
 
 
@@ -277,11 +291,10 @@ def _extract_agent_says(instruction: str) -> str | None:
     if not instruction or not instruction.lstrip().startswith("Agent says:"):
         return None
     first_line = instruction.split("\n")[0]
-    text = first_line[len("Agent says:"):].strip()
+    text = first_line[len("Agent says:") :].strip()
     # Strip (stage directions like this) — not meant for caller
     text = re.sub(r"\s*\([^)]*\)", "", text).strip()
     return text if text else None
-
 
 
 def _strip_provider_prefix(model_id: str) -> str:
@@ -401,7 +414,11 @@ class ToolCallAdapter:
         try:
             return self._jinja_env.from_string(template_str).render(**context)
         except Exception as exc:
-            logger.warning("ToolCallAdapter: template render failed for %r: %s", template_str[:60], exc)
+            logger.warning(
+                "ToolCallAdapter: template render failed for %r: %s",
+                template_str[:60],
+                exc,
+            )
             return template_str
 
     def _build_context(self, userdata: dict[str, Any]) -> dict[str, Any]:
@@ -438,7 +455,9 @@ class ToolCallAdapter:
         if m:
             rhs = m.group(3).strip()
             # Literal RHS only — never another variable, which could hide logic.
-            if re.fullmatch(r"(['\"]).*\1|-?\d+(\.\d+)?|true|false", rhs, re.IGNORECASE):
+            if re.fullmatch(
+                r"(['\"]).*\1|-?\d+(\.\d+)?|true|false", rhs, re.IGNORECASE
+            ):
                 return f"({m.group(1)}) {m.group(2)} {rhs}"
         return None
 
@@ -483,9 +502,7 @@ class ToolCallAdapter:
             return False
         return None
 
-    def _eval_condition_bool(
-        self, condition: str, ctx: dict[str, Any]
-    ) -> bool | None:
+    def _eval_condition_bool(self, condition: str, ctx: dict[str, Any]) -> bool | None:
         """Evaluate an edge condition to True/False, or None if indeterminate."""
         expr = self._condition_to_jinja(condition)
         if expr is None:
@@ -555,7 +572,11 @@ class ToolCallAdapter:
             f"IST {time_ctx['current_time_Asia_Kolkata']}"
         )
 
-        base = f"{flow_system_prompt}\n\n{node_instruction}".strip() if flow_system_prompt else node_instruction
+        base = (
+            f"{flow_system_prompt}\n\n{node_instruction}".strip()
+            if flow_system_prompt
+            else node_instruction
+        )
         return f"{time_line}\n\n{base}"
 
     def set_edge_id_callback(self, callback: Any | None) -> None:
@@ -608,7 +629,9 @@ class ToolCallAdapter:
         # the STEP 4 / auto-proceed condition is satisfied), skip the LLM entirely.
         # Relying on the LLM to output an empty string is unreliable.
         if _is_zero_speech_step(rendered_instruction):
-            logger.debug("[ToolCallAdapter] zero-speech gate triggered — skipping entry speech")
+            logger.debug(
+                "[ToolCallAdapter] zero-speech gate triggered — skipping entry speech"
+            )
             return ""
 
         # 1. Try language-specific extraction (EN line: / [EN] / {EN} — all variants).
@@ -622,8 +645,10 @@ class ToolCallAdapter:
 
         # 2. Fallback: classic [EN]/[HI] uppercase block markers via composer.
         _lang_match_count = sum(
-            1 for m in _LANG_MARKER_RE.finditer(rendered_instruction)
-            if m.group(1).lower() == lang or (lang != "en" and m.group(1).lower() == "en")
+            1
+            for m in _LANG_MARKER_RE.finditer(rendered_instruction)
+            if m.group(1).lower() == lang
+            or (lang != "en" and m.group(1).lower() == "en")
         )
         extracted = _extract_speech_text(rendered_instruction, self._machine, lang)
         if extracted and _lang_match_count <= 2:  # allow [EN]+[HI] pair — that's 1 step
@@ -645,9 +670,13 @@ class ToolCallAdapter:
             return quoted_speech
 
         # Complex instruction — call LLM to generate natural reply
-        return await self._generate_via_llm(rendered_instruction, history or [], node_id=getattr(node, 'id', ''))
+        return await self._generate_via_llm(
+            rendered_instruction, history or [], node_id=getattr(node, "id", "")
+        )
 
-    async def _generate_via_llm(self, instruction: str, history: list[dict], node_id: str = "") -> str:
+    async def _generate_via_llm(
+        self, instruction: str, history: list[dict], node_id: str = ""
+    ) -> str:
         """Call LLM to generate entry speech for complex/template instructions."""
         speech_directive = (
             "SPEECH GENERATION MODE: Generate ONLY the agent's natural spoken response. "
@@ -658,7 +687,11 @@ class ToolCallAdapter:
             "'Do NOT speak', 'Silent routing node', or any directive to produce NO speech "
             "— output an EMPTY string. Never ask for information when instructed to be silent."
         )
-        base = f"{self._system_prompt}\n\n{instruction}" if self._system_prompt else instruction
+        base = (
+            f"{self._system_prompt}\n\n{instruction}"
+            if self._system_prompt
+            else instruction
+        )
         messages: list[dict[str, Any]] = [
             {
                 "role": "system",
@@ -679,17 +712,19 @@ class ToolCallAdapter:
         meta = result.metadata or {}
         text = result.text or ""
         if self._on_llm_complete is not None:
-            await self._on_llm_complete(LLMCallData(
-                node_id=node_id,
-                model=_strip_provider_prefix(self._model_id),
-                call_type="generate_reply",
-                latency_ms=latency_ms,
-                tokens_in=meta.get("prompt_tokens", 0) or 0,
-                tokens_out=meta.get("completion_tokens", 0) or 0,
-                prompt_messages=messages,
-                response_json={"text": text},
-                edge_id=None,
-            ))
+            await self._on_llm_complete(
+                LLMCallData(
+                    node_id=node_id,
+                    model=_strip_provider_prefix(self._model_id),
+                    call_type="generate_reply",
+                    latency_ms=latency_ms,
+                    tokens_in=meta.get("prompt_tokens", 0) or 0,
+                    tokens_out=meta.get("completion_tokens", 0) or 0,
+                    prompt_messages=messages,
+                    response_json={"text": text},
+                    edge_id=None,
+                )
+            )
         self.responses.append(text)
         return text
 
@@ -765,27 +800,29 @@ class ToolCallAdapter:
                 "repeat ONLY that info. If caller asked a clarifying question, "
                 "answer briefly. Do NOT repeat the full agent turn."
             )
-        tools.append({
-            "type": "function",
-            "function": {
-                "name": "__stay_on_node__",
-                "description": _stay_description,
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "brief_response": {
-                            "type": "string",
-                            "description": (
-                                "Short contextual reply (1-2 sentences). "
-                                "Repeat ONLY what was asked for — e.g. if caller "
-                                "asked for address, say only the address. "
-                                "Leave empty if no specific reply needed."
-                            ),
-                        }
+        tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": "__stay_on_node__",
+                    "description": _stay_description,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "brief_response": {
+                                "type": "string",
+                                "description": (
+                                    "Short contextual reply (1-2 sentences). "
+                                    "Repeat ONLY what was asked for — e.g. if caller "
+                                    "asked for address, say only the address. "
+                                    "Leave empty if no specific reply needed."
+                                ),
+                            }
+                        },
                     },
                 },
-            },
-        })
+            }
+        )
 
         instructions = (
             self._build_instructions(node, machine) if machine else self._system_prompt
@@ -835,10 +872,15 @@ class ToolCallAdapter:
         # result ≈ 8k tok) drowns the router model and it false-stays. Scope the
         # data to the variables this node actually names (instruction + edge
         # conditions). User-driven turns keep the full dump — unchanged.
-        _slot_ctx = {k: v for k, v in userdata.items() if k != "_flow_meta" and v not in (None, "")}
+        _slot_ctx = {
+            k: v
+            for k, v in userdata.items()
+            if k != "_flow_meta" and v not in (None, "")
+        }
         if silent:
             _ref_text = " ".join(
-                [node.instruction or ""] + [(e.condition or "") for e in (node.edges or [])]
+                [node.instruction or ""]
+                + [(e.condition or "") for e in (node.edges or [])]
             )
             _ref_tokens = set(_re.findall(r"[A-Za-z_]\w*", _ref_text))
             _slot_ctx = {k: v for k, v in _slot_ctx.items() if k in _ref_tokens}
@@ -852,7 +894,8 @@ class ToolCallAdapter:
         _null_vars = {
             v: "null"
             for v in _referenced_vars
-            if v not in _slot_ctx and v not in ("_flow_meta",)
+            if v not in _slot_ctx
+            and v not in ("_flow_meta",)
             and userdata.get(v) in (None, "", [], {})
         }
 
@@ -861,7 +904,13 @@ class ToolCallAdapter:
             _slot_lines = "\n".join(f"  {k}: {v}" for k, v in _all_data.items())
             instructions = f"{instructions}\n\n[CURRENT DATA]\n{_slot_lines}"
 
-        messages: list[dict[str, Any]] = [{"role": "system", "content": instructions}]
+        # Mark the stable routing-rule preamble (the fixed text that LEADS the
+        # system content every turn) as the cacheable prefix. The volatile
+        # time line / [CURRENT DATA] follow it, so `content.startswith(stable)`
+        # holds exactly. The seam (ResilientProvider) reads this private key.
+        _system_msg: dict[str, Any] = {"role": "system", "content": instructions}
+        _system_msg[CACHE_PREFIX_KEY] = _routing_rule
+        messages: list[dict[str, Any]] = [_system_msg]
         messages.extend(history[-10:])
         _ensure_non_system(messages)
 
@@ -888,26 +937,25 @@ class ToolCallAdapter:
 
         # Start the target node's TTS now that the edge is known (early response).
         valid_edge_ids = {e.id for e in (node.edges or [])}
-        if (
-            function_name
-            and function_name in valid_edge_ids
-            and self._edge_id_callback
-        ):
+        if function_name and function_name in valid_edge_ids and self._edge_id_callback:
             await self._fire_early_response(function_name, node)
 
-
         if self._on_llm_complete is not None:
-            await self._on_llm_complete(LLMCallData(
-                node_id=node.id,
-                model=_strip_provider_prefix(self._model_id),
-                call_type="routing",
-                latency_ms=latency_ms,
-                tokens_in=prompt_tokens,
-                tokens_out=completion_tokens,
-                prompt_messages=messages,
-                response_json={"tool_call": function_name, "args": function_args},
-                edge_id=function_name if function_name != "__stay_on_node__" else None,
-            ))
+            await self._on_llm_complete(
+                LLMCallData(
+                    node_id=node.id,
+                    model=_strip_provider_prefix(self._model_id),
+                    call_type="routing",
+                    latency_ms=latency_ms,
+                    tokens_in=prompt_tokens,
+                    tokens_out=completion_tokens,
+                    prompt_messages=messages,
+                    response_json={"tool_call": function_name, "args": function_args},
+                    edge_id=function_name
+                    if function_name != "__stay_on_node__"
+                    else None,
+                )
+            )
 
         if not function_name:
             logger.info("[ToolCallAdapter] no tool_call returned for node=%s", node.id)
@@ -920,7 +968,9 @@ class ToolCallAdapter:
                     brief = json.loads(function_args).get("brief_response", "") or ""
                 except (json.JSONDecodeError, TypeError):
                     pass
-            logger.info("[ToolCallAdapter] stay_on_node brief=%r node=%s", brief[:60], node.id)
+            logger.info(
+                "[ToolCallAdapter] stay_on_node brief=%r node=%s", brief[:60], node.id
+            )
             return CriteriaResult(node_id=node.id, response=brief)
 
         edge_id = function_name
@@ -936,7 +986,9 @@ class ToolCallAdapter:
             schema = matched_descriptor.input_schema
             allowed_keys = set(schema.get("properties", {}).keys())
             if allowed_keys:
-                extracted_slots = {k: v for k, v in extracted_slots.items() if k in allowed_keys}
+                extracted_slots = {
+                    k: v for k, v in extracted_slots.items() if k in allowed_keys
+                }
             # Auto-fill required fields with single-value enums — these are constants,
             # not LLM-extracted. LLM often omits them; we set them deterministically.
             props = schema.get("properties", {})
@@ -946,7 +998,12 @@ class ToolCallAdapter:
                     if len(enum_vals) == 1:
                         extracted_slots[req_key] = enum_vals[0]
 
-        logger.info("[ToolCallAdapter] tool_call=%s slots=%s node=%s", edge_id, extracted_slots, node.id)
+        logger.info(
+            "[ToolCallAdapter] tool_call=%s slots=%s node=%s",
+            edge_id,
+            extracted_slots,
+            node.id,
+        )
 
         return CriteriaResult(
             node_id=node.id,
@@ -955,7 +1012,9 @@ class ToolCallAdapter:
             extracted_slots=extracted_slots,
         )
 
-    async def _fire_early_response(self, edge_id: str, current_node: "FlowNode") -> None:
+    async def _fire_early_response(
+        self, edge_id: str, current_node: "FlowNode"
+    ) -> None:
         """Pre-generate and stream response for target node when edge_id is known.
 
         Only fires for nodes with extractable speech text (0 LLM calls).
@@ -976,9 +1035,8 @@ class ToolCallAdapter:
         ctx = self._machine.context
         _node_had_slots = bool(ctx.node_slots.get(target_node.id))
         _is_single_edge = len(target_node.edges) == 1
-        if (
-            target_node.id in ctx.completed_nodes
-            and (_is_single_edge or _node_had_slots)
+        if target_node.id in ctx.completed_nodes and (
+            _is_single_edge or _node_had_slots
         ):
             return
 
@@ -987,7 +1045,8 @@ class ToolCallAdapter:
             # Skip early response if any template variable is not yet in userdata.
             # Slots are stored after _do_transition, not during streaming eval.
             import re as _re_check
-            needed = set(_re_check.findall(r'\{\{(\w+)\}\}', instruction))
+
+            needed = set(_re_check.findall(r"\{\{(\w+)\}\}", instruction))
             current_ud = dict(ctx.userdata) if ctx.userdata else {}
             if needed - set(current_ud.keys()):
                 return  # Variables not yet available — generate_reply will have them
@@ -1020,13 +1079,17 @@ class ToolCallAdapter:
 
         import httpx
 
-        print(f"[TRACK] ToolCallAdapter.execute_action START - action_id: {action.id}, userdata keys: {list(userdata.keys()) if userdata else 'None'}")
+        print(
+            f"[TRACK] ToolCallAdapter.execute_action START - action_id: {action.id}, userdata keys: {list(userdata.keys()) if userdata else 'None'}"
+        )
 
         # run_once: return cached result if already succeeded this session
         if action.run_once and action.store_response_as:
             cached = userdata.get(action.store_response_as, {})
             if isinstance(cached, dict) and cached.get("success"):
-                print(f"[TRACK] ToolCallAdapter - run_once HIT for action={action.id}, returning cached result")
+                print(
+                    f"[TRACK] ToolCallAdapter - run_once HIT for action={action.id}, returning cached result"
+                )
                 return cached
 
         ctx = self._build_context(userdata)
@@ -1035,14 +1098,22 @@ class ToolCallAdapter:
         if action.condition:
             condition_result = self._render(action.condition, ctx)
             if not condition_result.strip():
-                print(f"[TRACK] ToolCallAdapter - action={action.id} SKIPPED (condition empty after render)")
+                print(
+                    f"[TRACK] ToolCallAdapter - action={action.id} SKIPPED (condition empty after render)"
+                )
                 return None
 
         url = self._render(action.url, ctx)
         headers = {k: self._render(v, ctx) for k, v in action.headers.items()}
-        method = action.method.value if hasattr(action.method, "value") else str(action.method)
+        method = (
+            action.method.value
+            if hasattr(action.method, "value")
+            else str(action.method)
+        )
 
-        print(f"[TRACK] ToolCallAdapter - rendered URL: {url}  (template: {action.url[:80]})")
+        print(
+            f"[TRACK] ToolCallAdapter - rendered URL: {url}  (template: {action.url[:80]})"
+        )
         print(f"[TRACK] ToolCallAdapter - method: {method}")
 
         # GET cache: same URL in same session → return cached successful result.
@@ -1051,7 +1122,9 @@ class ToolCallAdapter:
         if method.upper() == "GET":
             _cache_key = f"GET:{url}"
             if _cache_key in self._get_cache:
-                print(f"[TRACK] ToolCallAdapter - GET cache HIT for action={action.id} url={url}")
+                print(
+                    f"[TRACK] ToolCallAdapter - GET cache HIT for action={action.id} url={url}"
+                )
                 return self._get_cache[_cache_key]
 
         body: Any = None
@@ -1087,8 +1160,12 @@ class ToolCallAdapter:
                     result["data"] = response.text
 
                 status_tag = "OK" if response.status_code < 400 else "FAILED"
-                print(f"[TRACK] ToolCallAdapter - action={action.id} {status_tag} status={response.status_code}")
-                print(f"[TRACK] ToolCallAdapter - response data: {json.dumps(result.get('data'), default=str)[:500]}")
+                print(
+                    f"[TRACK] ToolCallAdapter - action={action.id} {status_tag} status={response.status_code}"
+                )
+                print(
+                    f"[TRACK] ToolCallAdapter - response data: {json.dumps(result.get('data'), default=str)[:500]}"
+                )
 
                 # Apply env_updates (e.g. store ACCESS_TOKEN for subsequent actions)
                 for update in action.env_updates:
@@ -1097,9 +1174,13 @@ class ToolCallAdapter:
                         for key in update.result_path.split("."):
                             value = value[key]
                         self._env_vars[update.env_key] = str(value)
-                        print(f"[TRACK] ToolCallAdapter - env_update: {update.env_key} = {str(value)[:80]}")
+                        print(
+                            f"[TRACK] ToolCallAdapter - env_update: {update.env_key} = {str(value)[:80]}"
+                        )
                     except (KeyError, TypeError, IndexError):
-                        print(f"[TRACK] ToolCallAdapter - env_update FAILED: could not resolve {update.result_path} for {update.env_key}")
+                        print(
+                            f"[TRACK] ToolCallAdapter - env_update FAILED: could not resolve {update.result_path} for {update.env_key}"
+                        )
 
                 # Populate GET cache for successful responses.
                 # Key is "GET:<rendered_url>" — city change → different URL → different key.

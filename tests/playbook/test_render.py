@@ -9,6 +9,7 @@ from superdialog.playbook.events import (
     ToolResultEvent,
     UtteranceEvent,
 )
+from superdialog.llm.prompt_cache import CACHE_PREFIX_KEY
 from superdialog.playbook.models import Playbook
 from superdialog.playbook.render import estimate_tokens, render_view
 from superdialog.playbook.state import ConversationState
@@ -41,6 +42,21 @@ def test_view_contains_priority_sections() -> None:
     assert "Don't re-ask the city." in system  # steering note
     assert "city: Pune" in system  # slots
     assert view.spoke_from_version == state.version
+
+
+def test_system_message_cache_prefix_is_persona() -> None:
+    """The system message is annotated with the persona as its stable prefix."""
+    pb, state = _setup()
+    view = render_view(pb, state, token_budget=10_000)
+    sys_msg = view.messages[0]
+    content = sys_msg["content"]
+    # (a) content stays a bare string at the assembler.
+    assert isinstance(content, str)
+    # (b) the annotated prefix is a true leading substring of content.
+    assert CACHE_PREFIX_KEY in sys_msg
+    assert content.startswith(sys_msg[CACHE_PREFIX_KEY])
+    # (c) the prefix equals the persona source (stripped, as _system_block uses).
+    assert sys_msg[CACHE_PREFIX_KEY] == pb.persona.strip()
 
 
 def test_budget_drops_old_transcript_before_guidance() -> None:

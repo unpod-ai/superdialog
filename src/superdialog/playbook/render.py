@@ -15,6 +15,7 @@ from jinja2 import ChainableUndefined, TemplateError
 from jinja2.sandbox import SandboxedEnvironment
 from pydantic import BaseModel, Field
 
+from ..llm.prompt_cache import CACHE_PREFIX_KEY
 from .expr import ExprError, evaluate
 from .models import Playbook
 from .state import ConversationState
@@ -166,7 +167,16 @@ def render_view(
         chat.append({"role": entry.role, "content": entry.text})
         used += cost
     chat.reverse()
+    # Mark the stable prompt prefix (the persona, which leads ``system``) so the
+    # provider seam can cache it. ``_system_block`` builds ``system`` as
+    # "\n\n".join([pb.persona.strip(), ...]), so the persona is a true leading
+    # substring. The private key is stripped (or split into cache blocks) at the
+    # provider seam; ``content`` itself stays a bare string here.
+    sys_msg: dict[str, str] = {"role": "system", "content": system}
+    persona = pb.persona.strip()
+    if persona and system.startswith(persona):
+        sys_msg[CACHE_PREFIX_KEY] = persona
     return RenderedView(
-        messages=[{"role": "system", "content": system}, *chat],
+        messages=[sys_msg, *chat],
         spoke_from_version=state.version,
     )

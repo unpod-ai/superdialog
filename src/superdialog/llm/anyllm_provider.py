@@ -30,17 +30,67 @@ def _split_uri(uri: str) -> tuple[str | None, str]:
     return None, uri
 
 
+def _usage_get(u: Any, name: str) -> Any:
+    """Read ``name`` off a usage object or dict."""
+    v = getattr(u, name, None)
+    if v is None and isinstance(u, dict):
+        v = u.get(name)
+    return v
+
+
+def _extract_cache_usage(u: Any) -> dict[str, int]:
+    """Normalize provider-specific prompt-cache token counts, when present.
+
+    Explicit (Anthropic/Bedrock/Vertex/Gemini): ``cache_read_input_tokens`` /
+    ``cache_creation_input_tokens``. Automatic (OpenAI/xAI):
+    ``prompt_tokens_details.cached_tokens``. Deepseek:
+    ``prompt_cache_hit_tokens``. All collapse to a unified
+    ``cache_read_tokens`` / ``cache_write_tokens`` so savings are loggable
+    regardless of backend. Absent fields are simply omitted.
+    """
+    out: dict[str, int] = {}
+
+    read = _usage_get(u, "cache_read_input_tokens")
+    if read is not None:
+        out["cache_read_tokens"] = int(read)
+
+    if "cache_read_tokens" not in out:
+        details = _usage_get(u, "prompt_tokens_details")
+        cached = None
+        if details is not None:
+            cached = getattr(details, "cached_tokens", None)
+            if cached is None and isinstance(details, dict):
+                cached = details.get("cached_tokens")
+        if cached is None:
+            cached = _usage_get(u, "prompt_cache_hit_tokens")  # deepseek
+        if cached:
+            out["cache_read_tokens"] = int(cached)
+
+    write = _usage_get(u, "cache_creation_input_tokens")
+    if write is not None:
+        out["cache_write_tokens"] = int(write)
+
+    return out
+
+
 def _extract_usage(u: Any) -> dict[str, int]:
     """Normalize provider-specific token field names to prompt_tokens/completion_tokens.
 
     OpenAI:    prompt_tokens / completion_tokens
     Anthropic: input_tokens  / output_tokens
+
+    Also surfaces unified prompt-cache counts (``cache_read_tokens`` /
+    ``cache_write_tokens``) when the provider reports them.
     """
     prompt = getattr(u, "prompt_tokens", None) or getattr(u, "input_tokens", None) or 0
     completion = (
         getattr(u, "completion_tokens", None) or getattr(u, "output_tokens", None) or 0
     )
-    return {"prompt_tokens": int(prompt), "completion_tokens": int(completion)}
+    return {
+        "prompt_tokens": int(prompt),
+        "completion_tokens": int(completion),
+        **_extract_cache_usage(u),
+    }
 
 
 def _normalize_tool_calls(raw_calls: Any) -> list[dict[str, Any]]:

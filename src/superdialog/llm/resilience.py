@@ -27,6 +27,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Mapping
 
 import anyio
 
+from .prompt_cache import PromptCacheConfig, mark_cache_prefix
 from .provider import CompletionResult, LLMProvider, StreamChunk
 
 
@@ -151,10 +152,27 @@ class ResilientProvider:
         inner: LLMProvider,
         config: ResilienceConfig | None = None,
         hedge: LLMProvider | None = None,
+        prompt_cache: PromptCacheConfig | None = None,
     ) -> None:
         self.inner = inner
         self.cfg = config or ResilienceConfig()
         self._hedge = hedge
+        self._cache = prompt_cache or PromptCacheConfig.from_env()
+
+    def _mark_cache(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]] | None]:
+        """Apply prompt-cache markers once, before retry/hedge. No-op when the
+        flag is off or no assembler annotated a stable prefix."""
+        return mark_cache_prefix(
+            messages,
+            tools,
+            getattr(self.inner, "model", "") or "",
+            enabled=self._cache.enabled,
+            ttl=self._cache.ttl,
+        )
 
     def __getattr__(self, name: str) -> Any:
         # Delegate unknown attributes (e.g. ``model``) to the wrapped backend so
@@ -181,6 +199,7 @@ class ResilientProvider:
         **opts: Any,
     ) -> CompletionResult:
         """One completion with timeout + retry (and hedge when configured)."""
+        messages, tools = self._mark_cache(messages, tools)
         if self.cfg.hedge_enabled and self._hedge is not None:
             return await self._complete_hedged(messages, tools, opts)
         return await self._complete_with_retry(self.inner, messages, tools, opts)
@@ -278,6 +297,7 @@ class ResilientProvider:
         is safe before the first token). Once a chunk is yielded, a stall is
         surfaced rather than silently restarting a partially-spoken turn.
         """
+        messages, tools = self._mark_cache(messages, tools)
         attempt = 0
         while True:
             agen = self.inner.stream(messages, tools=tools, **opts)
