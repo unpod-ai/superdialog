@@ -166,6 +166,9 @@ class Playbook(BaseModel):
     middleware: MiddlewareSpec | None = None
     env: dict[str, str] = Field(default_factory=dict)
     views: dict[str, str] = Field(default_factory=dict)  # name -> expr
+    knowledge_base: str = ""  # global KB text (Jinja-renderable); injected into
+    # every Talker prompt so off-flow questions are answered in-context, then the
+    # flow resumes. Empty (the default) leaves the prompt byte-identical to before.
     initial: str | None = None  # defaults to first checkpoint of first journey
     source_path: str = ""  # set by Playbook.load(); empty when built from text
 

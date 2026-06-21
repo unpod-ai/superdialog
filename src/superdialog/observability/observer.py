@@ -212,11 +212,34 @@ class TracingProvider:
     """Wraps any LLMProvider and records generations via an Observer."""
 
     def __init__(
-        self, inner: LLMProvider, observer: Observer, trace_id: str
+        self,
+        inner: LLMProvider,
+        observer: Observer,
+        trace_id: str,
+        model_uri: str | None = None,
+        role: str | None = None,
     ) -> None:
         self._inner = inner
         self._observer = observer
         self._trace_id = trace_id
+        # Optional generation tagging. ``role`` (e.g. "talker"/"director")
+        # prefixes the generation name so multiple LLM roles in one turn are
+        # distinguishable; ``model_uri`` is recorded as ``metadata['model']`` so
+        # the trace shows which model produced the output. Both default to None,
+        # keeping the original 3-arg construction valid.
+        self._model_uri = model_uri
+        self._role = role
+
+    def _gen_name(self, base: str) -> str:
+        """Prefix the generation name with the role when one is set."""
+        return f"{self._role}:{base}" if self._role else base
+
+    def _tag_model(self, metadata: dict[str, Any]) -> dict[str, Any]:
+        """Record the model uri in the end metadata without clobbering a model
+        the provider already reported."""
+        if self._model_uri and "model" not in metadata:
+            return {**metadata, "model": self._model_uri}
+        return metadata
 
     async def complete(
         self,
@@ -225,7 +248,7 @@ class TracingProvider:
         **opts: Any,
     ) -> CompletionResult:
         obs_id = self._observer.on_generation_start(
-            self._trace_id, "complete", messages
+            self._trace_id, self._gen_name("complete"), messages
         )
         text_out: str = ""
         tool_calls_out: list[dict[str, Any]] = []
@@ -238,7 +261,7 @@ class TracingProvider:
             return result
         finally:
             self._observer.on_generation_end(
-                obs_id, text_out, tool_calls_out, metadata_out
+                obs_id, text_out, tool_calls_out, self._tag_model(metadata_out)
             )
 
     async def stream(
@@ -249,7 +272,7 @@ class TracingProvider:
     ) -> AsyncIterator[StreamChunk]:
         import time
         obs_id = self._observer.on_generation_start(
-            self._trace_id, "stream", messages
+            self._trace_id, self._gen_name("stream"), messages
         )
         buffer: list[str] = []
         final_metadata: dict[str, Any] = {}
@@ -266,7 +289,7 @@ class TracingProvider:
             latency_ms = (time.perf_counter() - t0) * 1000
             final_metadata.setdefault("latency_ms", latency_ms)
             self._observer.on_generation_end(
-                obs_id, "".join(buffer), [], final_metadata
+                obs_id, "".join(buffer), [], self._tag_model(final_metadata)
             )
 
 

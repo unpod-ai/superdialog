@@ -121,8 +121,29 @@ def _system_block(pb: Playbook, state: ConversationState) -> str:
         parts.append("## Reference data\n" + view_lines)
     if state.summary:
         parts.append("## Earlier in this conversation\n" + state.summary)
+    # Global knowledge base: answer off-flow questions in-context, then resume
+    # the current step (the drift fix). Rendered through the same Jinja sandbox,
+    # so an authoring typo degrades to raw text and never crashes the speaking
+    # path. When the KB is empty the prompt is byte-identical to before, so
+    # existing playbooks are unaffected.
+    kb = (
+        render_template(pb.knowledge_base, pb, state, ns=ns).strip()
+        if pb.knowledge_base
+        else ""
+    )
+    if kb:
+        parts.append("## Knowledge base\n" + kb)
+        parts.append(
+            "If the caller asks something covered by the Knowledge base but "
+            "outside the current step's goal, answer briefly from the Knowledge "
+            "base, then steer back to the current step's goal; do not abandon "
+            "the current step."
+        )
+        fact_sources = "Known information, Reference data, or the Knowledge base"
+    else:
+        fact_sources = "Known information or Reference data"
     parts.append(
-        "Only state facts present in Known information or Reference data; "
+        f"Only state facts present in {fact_sources}; "
         "if asked something not there, say you are checking."
     )
     return "\n\n".join(p for p in parts if p)

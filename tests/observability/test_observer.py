@@ -273,6 +273,83 @@ async def test_tracing_provider_stream_calls_observer_with_metadata():
     assert "latency_ms" in end_calls[0]["metadata"]
 
 
+# ── TracingProvider: optional model_uri / role tagging ─────────────────────────
+
+
+def test_tracing_provider_accepts_model_uri_and_role():
+    """Regression: PlaybookMachine.set_observer constructs TracingProvider with
+    model_uri/role kwargs; the 5-arg form must not raise (was TypeError)."""
+    inner = MagicMock()
+    provider = TracingProvider(
+        inner,
+        NullObserver(),
+        "trace-1",
+        model_uri="openai/gpt-4.1-mini",
+        role="talker",
+    )
+    assert provider is not None
+
+
+def test_tracing_provider_backward_compatible_three_arg():
+    """The original 3-arg construction stays valid and untagged."""
+    inner = MagicMock()
+    provider = TracingProvider(inner, NullObserver(), "trace-1")
+    assert provider is not None
+
+
+@pytest.mark.asyncio
+async def test_tracing_provider_role_prefixes_generation_name():
+    """role='talker' makes complete() open the generation as 'talker:complete'."""
+    from unittest.mock import AsyncMock
+
+    inner = MagicMock()
+    inner.complete = AsyncMock(
+        return_value=CompletionResult(text="hi", tool_calls=[], metadata={})
+    )
+    observer = NullObserver()
+    names: list[str] = []
+    original_start = observer.on_generation_start
+
+    def spy_start(trace_id, name, input_messages):
+        names.append(name)
+        return original_start(trace_id, name, input_messages)
+
+    observer.on_generation_start = spy_start
+
+    provider = TracingProvider(inner, observer, "trace-1", role="talker")
+    await provider.complete([{"role": "user", "content": "hi"}])
+
+    assert names == ["talker:complete"]
+
+
+@pytest.mark.asyncio
+async def test_tracing_provider_injects_model_into_end_metadata():
+    """model_uri is recorded as metadata['model'] on generation end so the
+    trace shows which model produced the turn."""
+    from unittest.mock import AsyncMock
+
+    inner = MagicMock()
+    inner.complete = AsyncMock(
+        return_value=CompletionResult(text="hi", tool_calls=[], metadata={})
+    )
+    observer = NullObserver()
+    metas: list[dict[str, Any]] = []
+    original_end = observer.on_generation_end
+
+    def spy_end(obs_id, output, tool_calls, metadata):
+        metas.append(metadata)
+        return original_end(obs_id, output, tool_calls, metadata)
+
+    observer.on_generation_end = spy_end
+
+    provider = TracingProvider(
+        inner, observer, "trace-1", model_uri="openai/gpt-4.1-mini"
+    )
+    await provider.complete([{"role": "user", "content": "hi"}])
+
+    assert metas and metas[0].get("model") == "openai/gpt-4.1-mini"
+
+
 # ── LLMAgent + Observer ───────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

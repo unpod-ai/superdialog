@@ -81,3 +81,30 @@ async def test_generate_retries_then_raises_on_missing_required_slots() -> None:
     with pytest.raises(ValueError):
         await generate_personas(pb, llm, max_attempts=2)
     assert len(llm.calls) == 2
+
+
+def _fenced(payload: str) -> str:
+    """Wrap a JSON payload in a ```json markdown fence — what real models
+    (e.g. haiku) emit despite the 'no fences' instruction."""
+    return f"```json\n{payload}\n```"
+
+
+async def test_generate_parses_fenced_json_response() -> None:
+    """Regression: models wrap the array in a ```json fence. The old
+    ``raw.strip().strip('`')`` left ``json\\n[...]`` and json.loads failed at
+    char 0 — 'persona generation failed: Expecting value: line 1 column 1
+    (char 0)'. The parser must recover the array from the fence."""
+    pb = Playbook.from_yaml(MINIMAL_YAML)
+    llm = CannedEditsLLM([_fenced(_personas_json())])
+    personas = await generate_personas(pb, llm)
+    assert len(personas) == 4
+    assert all(p.ground_truth_slots.keys() >= {"city", "date"} for p in personas)
+
+
+async def test_generate_parses_response_with_prose_around_array() -> None:
+    """Models sometimes add a lead-in sentence before the JSON array; the parser
+    must still recover the array rather than choke on the prose."""
+    pb = Playbook.from_yaml(MINIMAL_YAML)
+    llm = CannedEditsLLM([f"Here are the personas:\n{_personas_json()}\nDone."])
+    personas = await generate_personas(pb, llm)
+    assert len(personas) == 4

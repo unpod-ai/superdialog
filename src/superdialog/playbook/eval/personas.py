@@ -85,6 +85,25 @@ def _summary(playbook: Playbook) -> str:
     return "\n".join(lines)
 
 
+def _extract_json_array(raw: str) -> str:
+    """Recover a JSON array from a model reply.
+
+    The prompt asks for a bare array, but models frequently wrap it in a
+    `````json`` markdown fence or add a lead-in sentence. The old
+    ``raw.strip().strip("`")`` only removed backtick characters, leaving
+    ``json\\n[...]`` so ``json.loads`` failed at char 0. Slicing to the outermost
+    ``[`` ... ``]`` recovers the payload from a fence or surrounding prose; if no
+    array is present the stripped text is returned so ``json.loads`` raises a
+    clear error and the caller retries.
+    """
+    text = raw.strip()
+    start = text.find("[")
+    end = text.rfind("]")
+    if start != -1 and end > start:
+        return text[start : end + 1]
+    return text.strip("`").strip()
+
+
 async def generate_personas(
     playbook: Playbook,
     llm: CompletesLLM,
@@ -108,7 +127,7 @@ async def generate_personas(
     for _ in range(max_attempts):
         raw = await llm.complete(messages)
         try:
-            data = json.loads(raw.strip().strip("`"))
+            data = json.loads(_extract_json_array(raw))
             if not isinstance(data, list):
                 raise ValueError("expected a JSON array of personas")
             personas = [PersonaSpec.model_validate(item) for item in data]

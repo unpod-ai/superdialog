@@ -157,6 +157,63 @@ def test_ssti_payloads_contained() -> None:
     assert "cycler.__init__" in system  # degraded to raw template text
 
 
+_KB_YAML = textwrap.dedent("""
+    persona: "Booking assistant."
+    knowledge_base: "A 2BHK is priced at 50 lakh. Office hours are 9 to 6."
+    journeys:
+      j:
+        checkpoints:
+          - id: collect
+            goal: "Collect the name."
+            guidance: "Collect naturally."
+""")
+
+
+def _kb_state(pb: Playbook) -> ConversationState:
+    log = EventLog()
+    log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint="j.collect", rule="init"))
+    return ConversationState.fold(log, playbook=pb)
+
+
+def test_knowledge_base_injected_with_return_to_goal_directive() -> None:
+    pb = Playbook.from_yaml(_KB_YAML)
+    state = _kb_state(pb)
+    system = render_view(pb, state, token_budget=10_000).messages[0]["content"]
+    assert "## Knowledge base" in system
+    assert "50 lakh" in system  # KB content is present
+    # the aside-then-resume directive
+    assert "answer briefly from the Knowledge base" in system
+    assert "do not abandon" in system
+    # the grounding line is softened to allow the KB as a fact source
+    assert "Known information, Reference data, or the Knowledge base" in system
+
+
+def test_empty_knowledge_base_is_byte_identical_grounding() -> None:
+    """Regression guard: with no KB the system block is unchanged from before —
+    the original grounding line, no KB section. Proves existing playbooks are
+    unaffected by the additive field (the shared-package safety property)."""
+    pb, state = _setup()  # MINIMAL_YAML has no knowledge_base
+    system = render_view(pb, state, token_budget=10_000).messages[0]["content"]
+    assert "## Knowledge base" not in system
+    assert (
+        "Only state facts present in Known information or Reference data; "
+        "if asked something not there, say you are checking." in system
+    )
+    assert "or the Knowledge base" not in system
+
+
+def test_knowledge_base_jinja_degrades_to_raw_text() -> None:
+    """A KB authoring typo must not crash the speaking path (degrade to raw)."""
+    yaml_text = _KB_YAML.replace(
+        'knowledge_base: "A 2BHK is priced at 50 lakh. Office hours are 9 to 6."',
+        'knowledge_base: "Price is {{ slots."',  # broken template
+    )
+    pb = Playbook.from_yaml(yaml_text)
+    state = _kb_state(pb)
+    system = render_view(pb, state, token_budget=10_000).messages[0]["content"]
+    assert "Price is {{ slots." in system  # raw, un-rendered — no crash
+
+
 def test_devanagari_budget_estimate() -> None:
     """Byte-based estimate keeps Devanagari from voiding the token budget."""
     assert estimate_tokens("मुझे कल सुबह दस बजे का स्लॉट चाहिए") >= 22
