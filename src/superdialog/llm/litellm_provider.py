@@ -7,6 +7,7 @@ from typing import Any, AsyncIterator
 
 import litellm
 
+from .anyllm_provider import _extract_usage
 from .provider import CompletionResult, StreamChunk
 
 
@@ -34,20 +35,13 @@ class LitellmProvider:
         ]
         latency_ms = (time.perf_counter() - t0) * 1000
         usage = getattr(resp, "usage", None)
-        prompt_tokens = getattr(usage, "prompt_tokens", 0)
-        completion_tokens = getattr(usage, "completion_tokens", 0)
-        print(
-            f"[LLM] {latency_ms:.0f}ms  "
-            f"in={prompt_tokens} out={completion_tokens} tok  "
-            f"model={self.model}"
-        )
+        usage_dict = _extract_usage(usage) if usage else {}
         return CompletionResult(
             text=msg.content or "",
             tool_calls=tool_calls,
             metadata={
                 "latency_ms": latency_ms,
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
+                **usage_dict,
                 "model": self.model,
             },
         )
@@ -59,11 +53,29 @@ class LitellmProvider:
         **opts: Any,
     ) -> AsyncIterator[StreamChunk]:
         merged = {**self.default_opts, **opts, "stream": True}
+        # Do NOT pass stream_options. With stream_options=None, litellm auto-computes
+        # usage from OpenAI's trailing usage chunk and stores it in the done chunk's
+        # _hidden_params["usage"]. With stream_options set, litellm tries to yield
+        # a separate usage chunk — but swallows it internally, making it unreachable.
+        print(f"[LITELLM-DBG] stream model={self.model!r}", flush=True)
         resp = await litellm.acompletion(
             model=self.model, messages=messages, tools=tools, **merged
         )
+        usage_meta: dict[str, int] = {}
+        pending_done: StreamChunk | None = None
         async for chunk in resp:
+            chunk_choices = getattr(chunk, "choices", None)
+            # Capture usage from any chunk that carries it — litellm v1.88 yields
+            # it on a chunk with choices=[StreamingChoices(finish_reason=None)] AFTER
+            # the done chunk, so we can't key on choices alone.
+            u = getattr(chunk, "usage", None)
+            if u and not usage_meta:
+                usage_meta = _extract_usage(u)
+                print(f"[LITELLM-DBG] captured usage from chunk usage_meta={usage_meta}", flush=True)
+            if not chunk_choices:
+                continue
             delta = chunk.choices[0].delta
+            is_done = chunk.choices[0].finish_reason is not None
             tcs = getattr(delta, "tool_calls", None)
             tc_delta: dict[str, Any] | None = None
             if tcs:
@@ -71,8 +83,21 @@ class LitellmProvider:
                 tc_delta = (
                     first.model_dump() if hasattr(first, "model_dump") else dict(first)
                 )
-            yield StreamChunk(
+            sc = StreamChunk(
                 text=getattr(delta, "content", None),
                 tool_call_delta=tc_delta,
-                done=chunk.choices[0].finish_reason is not None,
+                done=is_done,
+                usage=None,
+            )
+            if is_done:
+                pending_done = sc
+            else:
+                yield sc
+        print(f"[LITELLM-DBG] stream exhausted usage_meta={usage_meta}", flush=True)
+        if pending_done is not None:
+            yield StreamChunk(
+                text=pending_done.text,
+                tool_call_delta=pending_done.tool_call_delta,
+                done=True,
+                usage=usage_meta if usage_meta else None,
             )

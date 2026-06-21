@@ -4,6 +4,7 @@ from .observer import (
     LangfuseObserver,
     NullObserver,
     Observer,
+    SuperdialogObserver,
     TracingProvider,
     build_observer,
 )
@@ -12,6 +13,7 @@ __all__ = [
     "LangfuseObserver",
     "NullObserver",
     "Observer",
+    "SuperdialogObserver",
     "TracingProvider",
     "build_observer",
 ]

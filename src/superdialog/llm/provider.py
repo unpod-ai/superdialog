@@ -18,6 +18,7 @@ class StreamChunk:
     text: str | None
     tool_call_delta: dict[str, Any] | None
     done: bool
+    usage: dict[str, int] | None = None  # prompt_tokens + completion_tokens when available
 
 
 class LLMProvider(Protocol):

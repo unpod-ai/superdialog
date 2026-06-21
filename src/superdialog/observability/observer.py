@@ -57,7 +57,7 @@ class NullObserver:
         return session_id
 
     def on_generation_start(
-        self, trace_id: str, name: str, input_messages: list[dict[str, Any]]
+        self, trace_id: str, name: str, input_messages: list[dict[str, Any]], **_: Any
     ) -> str:
         return ""
 
@@ -90,6 +90,12 @@ class NullObserver:
     def on_session_end(self, trace_id: str, output: str) -> None:
         return None
 
+    def on_error(self, trace_id: str, message: str, metadata: dict[str, Any]) -> None:
+        return None
+
+    def flush(self) -> None:
+        return None
+
 
 class LangfuseObserver:
     """Langfuse backend — wraps an injected Langfuse client. Best-effort, never raises."""
@@ -113,14 +119,25 @@ class LangfuseObserver:
             return session_id
 
     def on_generation_start(
-        self, trace_id: str, name: str, input_messages: list[dict[str, Any]]
+        self,
+        trace_id: str,
+        name: str,
+        input_messages: list[dict[str, Any]],
+        *,
+        model: str | None = None,
+        model_parameters: dict[str, Any] | None = None,
     ) -> str:
         try:
-            gen = self._client.generation(
-                trace_id=trace_id,
-                name=name,
-                input=input_messages,
-            )
+            gen_kwargs: dict[str, Any] = {
+                "trace_id": trace_id,
+                "name": name,
+                "input": input_messages,
+            }
+            if model is not None:
+                gen_kwargs["model"] = model
+            if model_parameters is not None:
+                gen_kwargs["model_parameters"] = model_parameters
+            gen = self._client.generation(**gen_kwargs)
             self._pending[gen.id] = (gen, trace_id)
             return gen.id
         except Exception as exc:
@@ -142,8 +159,8 @@ class LangfuseObserver:
             gen.end(
                 output=output,
                 usage={
-                    "input": metadata.get("prompt_tokens", 0),
-                    "output": metadata.get("completion_tokens", 0),
+                    "input": metadata.get("prompt_tokens") or metadata.get("input_tokens", 0),
+                    "output": metadata.get("completion_tokens") or metadata.get("output_tokens", 0),
                 },
                 metadata=metadata,
             )
@@ -202,10 +219,30 @@ class LangfuseObserver:
                 trace.update(output=output)
         except Exception as exc:
             logger.debug("langfuse session_end update skipped: %s", exc)
+        self.flush()
+
+    def on_error(self, trace_id: str, message: str, metadata: dict[str, Any]) -> None:
+        try:
+            span = self._client.span(
+                trace_id=trace_id,
+                name="error",
+                level="ERROR",
+                input={"error": message, **{k: v for k, v in (metadata or {}).items()}},
+            )
+            span.end(output={"error": message})
+        except Exception as exc:
+            logger.debug("langfuse on_error skipped: %s", exc)
+
+    def flush(self) -> None:
         try:
             self._client.flush()
         except Exception as exc:
             logger.debug("langfuse flush skipped: %s", exc)
+
+
+# Alias: superdialog's full-featured observer — exported so tracing.py in
+# supervoice can import it as SuperdialogObserver without a separate class.
+SuperdialogObserver = LangfuseObserver
 
 
 class TracingProvider:
@@ -217,16 +254,16 @@ class TracingProvider:
         observer: Observer,
         trace_id: str,
         model_uri: str | None = None,
-        role: str | None = None,
+        role: str = "llm",
     ) -> None:
         self._inner = inner
         self._observer = observer
         self._trace_id = trace_id
         # Optional generation tagging. ``role`` (e.g. "talker"/"director")
         # prefixes the generation name so multiple LLM roles in one turn are
-        # distinguishable; ``model_uri`` is recorded as ``metadata['model']`` so
-        # the trace shows which model produced the output. Both default to None,
-        # keeping the original 3-arg construction valid.
+        # distinguishable; it defaults to "llm". ``model_uri`` is recorded as
+        # ``metadata['model']`` on generation end so the trace shows which model
+        # produced the output. Both keep the original 3-arg construction valid.
         self._model_uri = model_uri
         self._role = role
 
@@ -281,9 +318,8 @@ class TracingProvider:
             async for chunk in self._inner.stream(messages, tools, **opts):
                 if chunk.text:
                     buffer.append(chunk.text)
-                # Capture metadata from chunk if available (some providers attach usage on final chunk)
-                if hasattr(chunk, "metadata") and chunk.metadata:
-                    final_metadata.update(chunk.metadata)
+                if chunk.usage:
+                    final_metadata.update(chunk.usage)
                 yield chunk
         finally:
             latency_ms = (time.perf_counter() - t0) * 1000

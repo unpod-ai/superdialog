@@ -102,9 +102,8 @@ class PlaybookAgent:
         http: HttpFn,
         python_tools: dict[str, PythonToolFn] | None = None,
         token_budget: int = 4000,
-        barrier_timeout: float = 0.4,
+        barrier_timeout: float = 4.0,
         hold_timeout: float | None = None,
-        split_utterance: bool = True,
         traversal_dir: str | Path | None = None,
         traversal_source: str = "",
         traversal_model: str = "",
@@ -128,7 +127,6 @@ class PlaybookAgent:
                 if hold_timeout is not None
                 else playbook.policies.hold_timeout
             ),
-            split_utterance=split_utterance,
         )
         self._traversal_dir: Path | None = Path(traversal_dir) if traversal_dir else None
         self._traversal_source = traversal_source or (

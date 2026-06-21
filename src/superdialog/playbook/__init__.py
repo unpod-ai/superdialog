@@ -35,6 +35,7 @@ from .eval import (
     traversal_to_scripted_user,
 )
 from .events import EventLog
+from .generate import generate_simple_playbook
 from .models import Playbook
 from .optimize import OptimizeReport, RoundTrace, optimize
 from .providers import ProviderDirector, ProviderTalker, provider_adapters

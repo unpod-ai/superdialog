@@ -64,7 +64,7 @@ class Checkpoint(BaseModel):
     say_verbatim: str | None = None  # same Jinja namespace; bypasses the Talker LLM
     never_say: list[str] = Field(default_factory=list)
     advance_when: list[AdvanceRule] = Field(default_factory=list)
-    gate: Literal["soft", "hard"] = "soft"
+    gate: Literal["soft", "hard"] = "hard"
     auto: bool = False  # speak verbatim once, then advance without user input
     pipeline: str | None = None
     on_enter: list[str] = Field(default_factory=list)  # tool ids
