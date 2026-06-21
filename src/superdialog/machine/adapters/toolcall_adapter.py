@@ -20,6 +20,8 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 
+from superdialog.llm.prompt_cache import CACHE_PREFIX_KEY
+
 
 @dataclass
 class LLMCallData:
@@ -72,7 +74,6 @@ from superdialog.machine.composer import get_time_context as _get_time_context
 from superdialog.machine.composer import process_text as _process_text
 from superdialog.machine.composer import resolve_language as _resolve_lang
 from superdialog.machine.models import CriteriaResult, ToolDescriptor
-from superdialog.llm.prompt_cache import CACHE_PREFIX_KEY
 from superdialog.llm.provider import LLMProvider
 from superdialog.llm.resolver import resolve_llm
 
@@ -324,10 +325,38 @@ def _coerce_numeric_strings(d: dict, skip_fields: set[str]) -> dict:
     return d
 
 
+def _canonical_json_schema(value: Any) -> Any:
+    """Return ``value`` with dict keys sorted for byte-stable serialization.
+
+    Prompt caching needs the tools prefix to be byte-identical turn-to-turn; a
+    dict whose key order varies between calls would silently break the cache.
+    Keys are sorted recursively EXCEPT inside a JSON-Schema ``properties`` map,
+    where declaration order is author-controlled and semantically meaningful and
+    so is preserved.
+    """
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for k in sorted(value):
+            v = value[k]
+            if k == "properties" and isinstance(v, dict):
+                out[k] = {pk: _canonical_json_schema(pv) for pk, pv in v.items()}
+            else:
+                out[k] = _canonical_json_schema(v)
+        return out
+    if isinstance(value, list):
+        return [_canonical_json_schema(x) for x in value]
+    return value
+
+
 def _descriptors_to_openai_tools(
     descriptors: list[ToolDescriptor],
 ) -> list[dict[str, Any]]:
-    """Convert ToolDescriptors to OpenAI function-calling tool schemas."""
+    """Convert ToolDescriptors to OpenAI function-calling tool schemas.
+
+    The output is canonicalized (deterministic key order) so the tools prefix is
+    byte-stable across turns and can be prompt-cached. Descriptor order is
+    preserved (it is the caller's stable per-node order).
+    """
     tools: list[dict[str, Any]] = []
     for desc in descriptors:
         tools.append(
@@ -336,8 +365,9 @@ def _descriptors_to_openai_tools(
                 "function": {
                     "name": desc.id,
                     "description": desc.description,
-                    "parameters": desc.input_schema
-                    or {"type": "object", "properties": {}},
+                    "parameters": _canonical_json_schema(
+                        desc.input_schema or {"type": "object", "properties": {}}
+                    ),
                 },
             }
         )
@@ -543,8 +573,13 @@ class ToolCallAdapter:
     # Instruction builder
     # ------------------------------------------------------------------
 
-    def _build_instructions(self, node: FlowNode, machine: Any) -> str:
-        """Build instructions identical to SimpleFlowAgent.__init__."""
+    def _build_instructions(self, node: FlowNode, machine: Any) -> tuple[str, str]:
+        """Build instructions identical to SimpleFlowAgent.__init__.
+
+        Returns ``(instructions, stable_persona)``. The flow system prompt leads
+        the string (a stable, cacheable prefix); ``stable_persona`` is that exact
+        leading substring (empty when the flow has no system prompt).
+        """
         lang = _resolve_lang(machine)
 
         flow_system_prompt = getattr(machine._flow, "system_prompt", "") or ""
@@ -572,12 +607,16 @@ class ToolCallAdapter:
             f"IST {time_ctx['current_time_Asia_Kolkata']}"
         )
 
-        base = (
-            f"{flow_system_prompt}\n\n{node_instruction}".strip()
-            if flow_system_prompt
-            else node_instruction
-        )
-        return f"{time_line}\n\n{base}"
+        # Persona-first ordering: the fixed flow system prompt LEADS so it (with
+        # the routing rule the caller prepends) forms a stable, cacheable prefix;
+        # the volatile time line moves after it. When there is no flow system
+        # prompt, keep the original layout (time line first) byte-for-byte.
+        if flow_system_prompt:
+            instructions = (
+                f"{flow_system_prompt}\n\n{time_line}\n\n{node_instruction}".rstrip()
+            )
+            return instructions, flow_system_prompt
+        return f"{time_line}\n\n{node_instruction}", ""
 
     def set_edge_id_callback(self, callback: Any | None) -> None:
         """Set async callback(text: str) fired with pre-generated response when edge_id known."""
@@ -824,8 +863,10 @@ class ToolCallAdapter:
             }
         )
 
-        instructions = (
-            self._build_instructions(node, machine) if machine else self._system_prompt
+        instructions, _flow_persona = (
+            self._build_instructions(node, machine)
+            if machine
+            else (self._system_prompt, "")
         )
 
         # Prepend routing discipline so LLM prefers __stay_on_node__ over false matches.
@@ -904,12 +945,18 @@ class ToolCallAdapter:
             _slot_lines = "\n".join(f"  {k}: {v}" for k, v in _all_data.items())
             instructions = f"{instructions}\n\n[CURRENT DATA]\n{_slot_lines}"
 
-        # Mark the stable routing-rule preamble (the fixed text that LEADS the
-        # system content every turn) as the cacheable prefix. The volatile
-        # time line / [CURRENT DATA] follow it, so `content.startswith(stable)`
-        # holds exactly. The seam (ResilientProvider) reads this private key.
+        # Mark the stable prefix as cacheable: the fixed routing rule plus the
+        # flow persona (both identical every turn, across nodes). _build_instructions
+        # leads with the persona, so routing_rule + persona is a true byte prefix;
+        # the volatile time line / [CURRENT DATA] follow it. The seam
+        # (ResilientProvider) reads this private key; guard startswith so a future
+        # construction change fails closed (no annotation) rather than mismarking.
+        _stable_prefix = (
+            f"{_routing_rule}\n\n{_flow_persona}" if _flow_persona else _routing_rule
+        )
         _system_msg: dict[str, Any] = {"role": "system", "content": instructions}
-        _system_msg[CACHE_PREFIX_KEY] = _routing_rule
+        if instructions.startswith(_stable_prefix):
+            _system_msg[CACHE_PREFIX_KEY] = _stable_prefix
         messages: list[dict[str, Any]] = [_system_msg]
         messages.extend(history[-10:])
         _ensure_non_system(messages)

@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
 from superdialog.flow.models import FlowNode
+from superdialog.llm.prompt_cache import CACHE_PREFIX_KEY
 from superdialog.llm.provider import LLMProvider
 from superdialog.machine.models import CriteriaResult
 
@@ -240,7 +241,8 @@ class CriteriaJudge:
 
         _ist = timezone(timedelta(hours=5, minutes=30))
         today = datetime.now(_ist).strftime("%A, %d %B %Y")
-        system = (
+        # Volatile, per-node/per-turn body (date, node, edges, collected data).
+        _body = (
             f"Today's date is {today}. Use this year when resolving"
             " partial dates like '22 April' or 'next Monday'."
             " Store dates in YYYY-MM-DD format.\n\n"
@@ -258,7 +260,11 @@ class CriteriaJudge:
             f"{completed_desc}"
             f"{turns_desc}"
             f"{agent_desc}"
-            f"\n\n{system_prompt}"
+        )
+        # Fixed JSON-response scaffolding. The edge-id examples reference the
+        # node's own edges (which are "listed above" in ``_body``), so this
+        # block stays immediately after ``_body``.
+        _schema_block = (
             "\n\nIMPORTANT: recommended_edge_id MUST be one of the"
             " edge id values listed above (e.g. "
             + (
@@ -288,7 +294,21 @@ class CriteriaJudge:
             "}"
         )
 
-        messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
+        # Hoist the flow's fixed system prompt to the FRONT so it forms a stable,
+        # cacheable prefix (the persona is identical every turn, across nodes).
+        # When there is no system prompt, fall back to its original placement at
+        # the end of the body so the output stays byte-identical (nothing to
+        # cache).
+        stable_prefix = system_prompt.strip() if system_prompt else ""
+        if stable_prefix:
+            system = f"{stable_prefix}\n\n{_body}{_schema_block}"
+        else:
+            system = f"{_body}\n\n{system_prompt}{_schema_block}"
+
+        sys_msg: dict[str, Any] = {"role": "system", "content": system}
+        if stable_prefix and system.startswith(stable_prefix):
+            sys_msg[CACHE_PREFIX_KEY] = stable_prefix
+        messages: list[dict[str, Any]] = [sys_msg]
         messages.extend(history)
         return messages
 

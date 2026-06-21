@@ -1,16 +1,10 @@
-"""Prompt-cache prefix safety check for ``CriteriaJudge``.
+"""Prompt-cache prefix behavior for ``CriteriaJudge.build_evaluation_messages``.
 
-The flow-llmadapter engine builds its system message in
-``CriteriaJudge.build_evaluation_messages``. The leading bytes of that content
-are a *volatile* timestamp ("Today's date is <weekday, day month year> ..."),
-not a fixed persona/preamble, and the fixed ``system_prompt`` is concatenated
-near the END of the string.
-
-Because nothing stable leads the content, this engine is in the
-``reorder_needed`` state: it MUST NOT be annotated with ``_cache_prefix`` (doing
-so would violate ``content.startswith(stable)`` or require touching the content
-bytes). These tests pin that decision so a future edit cannot silently add an
-incorrect marker.
+The flow-llmadapter engine originally led its system content with a volatile
+date, so it could not be cached. It now hoists the flow's fixed ``system_prompt``
+to the FRONT (a stable, node-independent prefix) and annotates it with
+``_cache_prefix`` — while staying byte-identical to the original output when no
+system prompt is supplied.
 """
 
 from __future__ import annotations
@@ -18,6 +12,8 @@ from __future__ import annotations
 from superdialog.flow.models import Edge, FlowNode
 from superdialog.llm.prompt_cache import CACHE_PREFIX_KEY
 from superdialog.machine.criteria import CriteriaJudge
+
+PERSONA = "You are Arjun, a meticulous golf-booking agent. Always be concise."
 
 
 def _make_node() -> FlowNode:
@@ -29,47 +25,48 @@ def _make_node() -> FlowNode:
     )
 
 
+def _content(system_prompt: str) -> dict:
+    judge = CriteriaJudge()
+    return judge.build_evaluation_messages(
+        _make_node(), history=[], userdata={}, system_prompt=system_prompt
+    )[0]
+
+
 def test_system_content_is_str() -> None:
-    """The leading message content must be a plain string."""
-    judge = CriteriaJudge()
-    messages = judge.build_evaluation_messages(
-        _make_node(),
-        history=[],
-        userdata={},
-        system_prompt="You are a careful evaluator.",
-    )
-    system = messages[0]
-    assert system["role"] == "system"
-    assert isinstance(system["content"], str)
+    assert isinstance(_content(PERSONA)["content"], str)
 
 
-def test_volatile_date_leads_content() -> None:
-    """Content begins with a volatile timestamp, not a fixed preamble."""
-    judge = CriteriaJudge()
-    messages = judge.build_evaluation_messages(
-        _make_node(),
-        history=[],
-        userdata={},
-        system_prompt="You are a careful evaluator.",
-    )
-    content: str = messages[0]["content"]
-    # The first line is the date — proof that volatile text leads the string.
-    assert content.startswith("Today's date is ")
-    # The fixed system_prompt is appended, so it does NOT lead the content.
-    assert not content.startswith("You are a careful evaluator.")
+def test_persona_leads_and_is_annotated() -> None:
+    """A non-empty system_prompt is hoisted to the front and cached."""
+    msg = _content(PERSONA)
+    content: str = msg["content"]
+    assert content.startswith(PERSONA)  # stable persona leads
+    assert msg[CACHE_PREFIX_KEY] == PERSONA
+    assert content.startswith(msg[CACHE_PREFIX_KEY])  # seam contract holds
 
 
-def test_no_cache_prefix_annotation() -> None:
-    """reorder_needed engine: the marker must NOT be added.
+def test_volatile_content_still_present_after_reorder() -> None:
+    """Reorder preserves every piece of information, just moved after the prefix."""
+    content: str = _content(PERSONA)["content"]
+    for marker in (
+        "Today's date is ",
+        "Current node: n1",
+        "Available transitions:",
+        "recommended_edge_id MUST",
+        '"criteria_met"',
+    ):
+        assert marker in content, marker
+    # the date no longer LEADS — it now sits after the persona prefix
+    assert not content.startswith("Today's date is ")
 
-    Annotating here is unsafe because no stable substring leads ``content``;
-    ``mark_cache_prefix`` requires ``content.startswith(_cache_prefix)``.
-    """
-    judge = CriteriaJudge()
-    messages = judge.build_evaluation_messages(
-        _make_node(),
-        history=[],
-        userdata={},
-        system_prompt="You are a careful evaluator.",
-    )
-    assert CACHE_PREFIX_KEY not in messages[0]
+
+def test_empty_system_prompt_not_annotated_and_date_leads() -> None:
+    """No persona → original layout preserved (date leads, no annotation)."""
+    msg = _content("")
+    assert CACHE_PREFIX_KEY not in msg
+    assert msg["content"].startswith("Today's date is ")
+
+
+def test_whitespace_only_system_prompt_not_annotated() -> None:
+    msg = _content("   ")
+    assert CACHE_PREFIX_KEY not in msg  # nothing meaningful to cache

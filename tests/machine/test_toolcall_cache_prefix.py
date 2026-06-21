@@ -151,9 +151,41 @@ async def test_cache_prefix_is_true_leading_substring():
 
 
 @pytest.mark.anyio
-async def test_cache_prefix_equals_routing_rule_preamble():
+async def test_cache_prefix_is_routing_rule_plus_persona():
+    """The cacheable prefix is routing rule + flow persona (both fixed every
+    turn), so the large persona is cached, not just the small routing rule."""
     _adapter, provider, _received = await _run_eval()
     assert provider.seen_messages is not None
     system_msg = provider.seen_messages[0]
-    # (c) the prefix is exactly the fixed routing-rule preamble source.
+    prefix = system_msg[CACHE_PREFIX_KEY]
+    expected = f"{_expected_routing_rule()}\n\n{_StubFlow.system_prompt}"
+    assert prefix == expected
+    # the persona is genuinely inside the cached prefix (the point of the reorder)
+    assert _StubFlow.system_prompt in prefix
+    # the volatile time line is NOT in the cached prefix
+    assert "[TODAY]" not in prefix
+
+
+@pytest.mark.anyio
+async def test_cache_prefix_is_routing_rule_only_without_persona():
+    """No flow system_prompt -> prefix is just the routing rule (nothing else
+    stable leads), and the time line stays first in the body."""
+    adapter = ToolCallAdapter(model_id="anthropic/claude-3-5-sonnet")
+    machine = _StubMachine()
+    machine._flow.system_prompt = ""  # flow without a persona
+    adapter._machine = machine
+    provider = _StubProvider()
+    adapter._provider = provider
+
+    await adapter.evaluate_criteria(
+        node=_StubNode(),
+        history=[{"role": "user", "content": "hi"}],
+        userdata={},
+        silent=False,
+    )
+    assert provider.seen_messages is not None
+    system_msg = provider.seen_messages[0]
     assert system_msg[CACHE_PREFIX_KEY] == _expected_routing_rule()
+    # with no persona, the volatile time line leads the body (original layout)
+    content = system_msg["content"]
+    assert content.startswith(_expected_routing_rule() + "\n\n[TODAY]")
