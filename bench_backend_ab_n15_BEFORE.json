@@ -1,0 +1,1938 @@
+{
+  "openai|flow|anyllm": [
+    {
+      "start_lat": 2.3421,
+      "turn_ttfts": [
+        2.1656,
+        2.4516,
+        0.0001
+      ],
+      "turn_totals": [
+        2.1656,
+        2.4517,
+        0.0001
+      ],
+      "wall": 4.62,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.1796,
+      "turn_ttfts": [
+        2.0986,
+        1.8384,
+        0.0
+      ],
+      "turn_totals": [
+        2.0986,
+        1.8384,
+        0.0
+      ],
+      "wall": 3.94,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.2284,
+      "turn_ttfts": [
+        1.7542,
+        1.8964,
+        0.0
+      ],
+      "turn_totals": [
+        1.7542,
+        1.8964,
+        0.0
+      ],
+      "wall": 3.65,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.6641,
+      "turn_ttfts": [
+        2.0481,
+        2.0353,
+        0.0001
+      ],
+      "turn_totals": [
+        2.0481,
+        2.0353,
+        0.0001
+      ],
+      "wall": 4.08,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.2364,
+      "turn_ttfts": [
+        1.9655,
+        1.9477,
+        0.0
+      ],
+      "turn_totals": [
+        1.9655,
+        1.9478,
+        0.0
+      ],
+      "wall": 3.91,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.118,
+      "turn_ttfts": [
+        1.9755,
+        1.9251,
+        0.0006
+      ],
+      "turn_totals": [
+        1.9755,
+        1.9251,
+        0.0006
+      ],
+      "wall": 3.9,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.087,
+      "turn_ttfts": [
+        1.7448,
+        1.8554,
+        0.0
+      ],
+      "turn_totals": [
+        1.7448,
+        1.8554,
+        0.0
+      ],
+      "wall": 3.6,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.1329,
+      "turn_ttfts": [
+        1.6971,
+        1.7574,
+        0.0
+      ],
+      "turn_totals": [
+        1.6971,
+        1.7574,
+        0.0
+      ],
+      "wall": 3.45,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.0035,
+      "turn_ttfts": [
+        2.6257,
+        1.9434,
+        0.0
+      ],
+      "turn_totals": [
+        2.6257,
+        1.9434,
+        0.0
+      ],
+      "wall": 4.57,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.0483,
+      "turn_ttfts": [
+        1.9937,
+        1.9069,
+        0.0
+      ],
+      "turn_totals": [
+        1.9937,
+        1.9069,
+        0.0
+      ],
+      "wall": 3.9,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.9542,
+      "turn_ttfts": [
+        1.8158,
+        1.8455,
+        0.0
+      ],
+      "turn_totals": [
+        1.8158,
+        1.8456,
+        0.0
+      ],
+      "wall": 3.66,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.9713,
+      "turn_ttfts": [
+        1.8358,
+        2.048,
+        0.0
+      ],
+      "turn_totals": [
+        1.8359,
+        2.048,
+        0.0
+      ],
+      "wall": 3.88,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.0237,
+      "turn_ttfts": [
+        1.7509,
+        2.3066,
+        0.0
+      ],
+      "turn_totals": [
+        1.7509,
+        2.3066,
+        0.0
+      ],
+      "wall": 4.06,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.1319,
+      "turn_ttfts": [
+        1.7473,
+        2.257,
+        0.0001
+      ],
+      "turn_totals": [
+        1.7473,
+        2.257,
+        0.0001
+      ],
+      "wall": 4.0,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.1451,
+      "turn_ttfts": [
+        1.7544,
+        2.1038,
+        0.0
+      ],
+      "turn_totals": [
+        1.7544,
+        2.1038,
+        0.0
+      ],
+      "wall": 3.86,
+      "completed": true,
+      "turns_used": 3
+    }
+  ],
+  "openai|flow|litellm": [
+    {
+      "start_lat": 1.0042,
+      "turn_ttfts": [
+        1.6264,
+        1.9086,
+        0.0
+      ],
+      "turn_totals": [
+        1.6264,
+        1.9086,
+        0.0
+      ],
+      "wall": 3.53,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.9587,
+      "turn_ttfts": [
+        1.6869,
+        1.9655,
+        0.0
+      ],
+      "turn_totals": [
+        1.6869,
+        1.9655,
+        0.0
+      ],
+      "wall": 3.65,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.1556,
+      "turn_ttfts": [
+        1.735,
+        2.0475,
+        0.0
+      ],
+      "turn_totals": [
+        1.735,
+        2.0476,
+        0.0
+      ],
+      "wall": 3.78,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.0317,
+      "turn_ttfts": [
+        1.6205,
+        2.0276,
+        0.0
+      ],
+      "turn_totals": [
+        1.6205,
+        2.0276,
+        0.0
+      ],
+      "wall": 3.65,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.8858,
+      "turn_ttfts": [
+        1.6762,
+        2.0343,
+        0.0
+      ],
+      "turn_totals": [
+        1.6762,
+        2.0343,
+        0.0
+      ],
+      "wall": 3.71,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.9927,
+      "turn_ttfts": [
+        1.5668,
+        2.1065,
+        0.0001
+      ],
+      "turn_totals": [
+        1.5668,
+        2.1068,
+        0.0001
+      ],
+      "wall": 3.67,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.944,
+      "turn_ttfts": [
+        1.6726,
+        1.839,
+        0.0
+      ],
+      "turn_totals": [
+        1.6727,
+        1.839,
+        0.0
+      ],
+      "wall": 3.51,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.0004,
+      "turn_ttfts": [
+        1.6173,
+        1.8393,
+        0.0
+      ],
+      "turn_totals": [
+        1.6173,
+        1.8393,
+        0.0
+      ],
+      "wall": 3.46,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.9179,
+      "turn_ttfts": [
+        1.6926,
+        1.7594,
+        0.0001
+      ],
+      "turn_totals": [
+        1.6926,
+        1.7594,
+        0.0001
+      ],
+      "wall": 3.45,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.9483,
+      "turn_ttfts": [
+        1.7436,
+        1.8784,
+        0.0
+      ],
+      "turn_totals": [
+        1.7437,
+        1.8784,
+        0.0
+      ],
+      "wall": 3.62,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.141,
+      "turn_ttfts": [
+        1.5721,
+        1.6863,
+        0.0
+      ],
+      "turn_totals": [
+        1.5721,
+        1.6863,
+        0.0
+      ],
+      "wall": 3.26,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.0411,
+      "turn_ttfts": [
+        1.865,
+        1.8471,
+        0.0
+      ],
+      "turn_totals": [
+        1.865,
+        1.8471,
+        0.0
+      ],
+      "wall": 3.71,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.997,
+      "turn_ttfts": [
+        1.6663,
+        2.0123,
+        0.0
+      ],
+      "turn_totals": [
+        1.6663,
+        2.0123,
+        0.0
+      ],
+      "wall": 3.68,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.9413,
+      "turn_ttfts": [
+        1.6172,
+        1.7926,
+        0.0
+      ],
+      "turn_totals": [
+        1.6172,
+        1.7926,
+        0.0
+      ],
+      "wall": 3.41,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.0143,
+      "turn_ttfts": [
+        1.7664,
+        1.9456,
+        0.0003
+      ],
+      "turn_totals": [
+        1.7664,
+        1.9456,
+        0.0003
+      ],
+      "wall": 3.71,
+      "completed": true,
+      "turns_used": 3
+    }
+  ],
+  "openai|playbook|anyllm": [
+    {
+      "start_lat": 0.0012,
+      "turn_ttfts": [
+        0.4016,
+        0.4012,
+        0.725
+      ],
+      "turn_totals": [
+        2.3581,
+        2.121,
+        0.9576
+      ],
+      "wall": 5.44,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0003,
+      "turn_ttfts": [
+        0.4007,
+        0.4012,
+        0.6943
+      ],
+      "turn_totals": [
+        2.0143,
+        2.134,
+        1.0084
+      ],
+      "wall": 5.16,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0002,
+      "turn_ttfts": [
+        0.4011,
+        0.4012,
+        0.6281
+      ],
+      "turn_totals": [
+        1.9318,
+        2.2636,
+        0.8809
+      ],
+      "wall": 5.08,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0006,
+      "turn_ttfts": [
+        0.4014,
+        0.4002,
+        0.6562
+      ],
+      "turn_totals": [
+        1.9119,
+        2.4472,
+        0.9014
+      ],
+      "wall": 5.26,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0005,
+      "turn_ttfts": [
+        0.4011,
+        0.4014,
+        0.6849
+      ],
+      "turn_totals": [
+        1.9114,
+        2.1657,
+        0.9228
+      ],
+      "wall": 5.0,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0008,
+      "turn_ttfts": [
+        0.4014,
+        0.4014,
+        0.7531
+      ],
+      "turn_totals": [
+        1.9892,
+        2.0951,
+        1.0119
+      ],
+      "wall": 5.1,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0002,
+      "turn_ttfts": [
+        0.4012,
+        0.4016,
+        0.7712
+      ],
+      "turn_totals": [
+        2.0995,
+        2.3799,
+        0.9505
+      ],
+      "wall": 5.43,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0006,
+      "turn_ttfts": [
+        0.4013,
+        0.4015,
+        0.639
+      ],
+      "turn_totals": [
+        2.0335,
+        2.6435,
+        1.0724
+      ],
+      "wall": 5.75,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0004,
+      "turn_ttfts": [
+        0.4016,
+        0.4012,
+        0.7029
+      ],
+      "turn_totals": [
+        1.9222,
+        2.1506,
+        0.9947
+      ],
+      "wall": 5.07,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0002,
+      "turn_ttfts": [
+        0.4011,
+        0.4013,
+        0.7061
+      ],
+      "turn_totals": [
+        1.7295,
+        2.1077,
+        0.9726
+      ],
+      "wall": 4.81,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0018,
+      "turn_ttfts": [
+        0.4021,
+        0.402,
+        0.8143
+      ],
+      "turn_totals": [
+        1.879,
+        2.3163,
+        1.0487
+      ],
+      "wall": 5.24,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.006,
+      "turn_ttfts": [
+        0.4018,
+        0.4013,
+        0.6971
+      ],
+      "turn_totals": [
+        1.8724,
+        2.2673,
+        0.9967
+      ],
+      "wall": 5.14,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0004,
+      "turn_ttfts": [
+        0.4012,
+        0.4013,
+        0.7115
+      ],
+      "turn_totals": [
+        2.1032,
+        2.2192,
+        0.9613
+      ],
+      "wall": 5.28,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0004,
+      "turn_ttfts": [
+        0.4003,
+        0.4011,
+        0.6544
+      ],
+      "turn_totals": [
+        2.1146,
+        2.3195,
+        0.9787
+      ],
+      "wall": 5.41,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0002,
+      "turn_ttfts": [
+        0.4012,
+        0.4018,
+        1.35
+      ],
+      "turn_totals": [
+        1.9912,
+        3.2518,
+        1.5107
+      ],
+      "wall": 6.75,
+      "completed": true,
+      "turns_used": 3
+    }
+  ],
+  "openai|playbook|litellm": [
+    {
+      "start_lat": 0.0004,
+      "turn_ttfts": [
+        0.4031,
+        0.4014,
+        0.6815
+      ],
+      "turn_totals": [
+        1.775,
+        2.5244,
+        1.0001
+      ],
+      "wall": 5.3,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0002,
+      "turn_ttfts": [
+        0.4013,
+        0.4024,
+        0.6737
+      ],
+      "turn_totals": [
+        1.8801,
+        2.0922,
+        0.9164
+      ],
+      "wall": 4.89,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0003,
+      "turn_ttfts": [
+        0.4012,
+        0.4014,
+        0.6884
+      ],
+      "turn_totals": [
+        1.8206,
+        2.0986,
+        1.0363
+      ],
+      "wall": 4.96,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0003,
+      "turn_ttfts": [
+        0.4007,
+        0.4014,
+        0.7598
+      ],
+      "turn_totals": [
+        1.7409,
+        2.1113,
+        0.9404
+      ],
+      "wall": 4.79,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0005,
+      "turn_ttfts": [
+        0.4025,
+        0.4016,
+        0.8063
+      ],
+      "turn_totals": [
+        1.8184,
+        2.4312,
+        0.9492
+      ],
+      "wall": 5.2,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0003,
+      "turn_ttfts": [
+        0.4015,
+        0.4015,
+        0.7917
+      ],
+      "turn_totals": [
+        1.8428,
+        2.4566,
+        1.0002
+      ],
+      "wall": 5.3,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0009,
+      "turn_ttfts": [
+        0.4013,
+        0.4005,
+        0.6957
+      ],
+      "turn_totals": [
+        1.9058,
+        2.4471,
+        0.9575
+      ],
+      "wall": 5.31,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0003,
+      "turn_ttfts": [
+        0.402,
+        0.4014,
+        0.7463
+      ],
+      "turn_totals": [
+        1.895,
+        2.0946,
+        1.2939
+      ],
+      "wall": 5.28,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0003,
+      "turn_ttfts": [
+        0.4014,
+        0.4012,
+        0.8222
+      ],
+      "turn_totals": [
+        1.9742,
+        2.1513,
+        1.0877
+      ],
+      "wall": 5.21,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0002,
+      "turn_ttfts": [
+        0.4012,
+        0.4019,
+        0.7153
+      ],
+      "turn_totals": [
+        1.85,
+        2.1241,
+        0.9746
+      ],
+      "wall": 4.95,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0008,
+      "turn_ttfts": [
+        0.4017,
+        0.4025,
+        0.7836
+      ],
+      "turn_totals": [
+        2.01,
+        2.4433,
+        0.9612
+      ],
+      "wall": 5.41,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0002,
+      "turn_ttfts": [
+        0.4012,
+        0.4014,
+        0.7697
+      ],
+      "turn_totals": [
+        2.5107,
+        2.3051,
+        0.9502
+      ],
+      "wall": 5.77,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0002,
+      "turn_ttfts": [
+        0.4014,
+        0.401,
+        0.7029
+      ],
+      "turn_totals": [
+        2.2109,
+        2.1672,
+        0.8987
+      ],
+      "wall": 5.28,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0003,
+      "turn_ttfts": [
+        0.4009,
+        0.4015,
+        0.7049
+      ],
+      "turn_totals": [
+        1.8832,
+        2.4388,
+        0.985
+      ],
+      "wall": 5.31,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0004,
+      "turn_ttfts": [
+        0.4013,
+        0.4013,
+        0.554
+      ],
+      "turn_totals": [
+        1.8332,
+        2.0974,
+        0.8114
+      ],
+      "wall": 4.74,
+      "completed": true,
+      "turns_used": 3
+    }
+  ],
+  "anthropic|flow|anyllm": [
+    {
+      "start_lat": 1.1394,
+      "turn_ttfts": [
+        2.2242,
+        2.3676,
+        0.0
+      ],
+      "turn_totals": [
+        2.2242,
+        2.3677,
+        0.0
+      ],
+      "wall": 4.59,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.8198,
+      "turn_ttfts": [
+        2.7688,
+        2.7879,
+        0.0001
+      ],
+      "turn_totals": [
+        2.7688,
+        2.7879,
+        0.0001
+      ],
+      "wall": 5.56,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 2.8382,
+      "turn_ttfts": [
+        2.6277,
+        3.1297,
+        0.0001
+      ],
+      "turn_totals": [
+        2.6277,
+        3.1297,
+        0.0001
+      ],
+      "wall": 5.76,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.3892,
+      "turn_ttfts": [
+        2.4593,
+        2.5806,
+        0.0
+      ],
+      "turn_totals": [
+        2.4593,
+        2.5806,
+        0.0
+      ],
+      "wall": 5.04,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.4334,
+      "turn_ttfts": [
+        2.3107,
+        2.8478,
+        0.0001
+      ],
+      "turn_totals": [
+        2.3107,
+        2.8478,
+        0.0001
+      ],
+      "wall": 5.16,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 3.2719,
+      "turn_ttfts": [
+        2.054,
+        4.1966,
+        0.0002
+      ],
+      "turn_totals": [
+        2.054,
+        4.1967,
+        0.0002
+      ],
+      "wall": 6.25,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.2311,
+      "turn_ttfts": [
+        1.909,
+        2.6303,
+        0.0
+      ],
+      "turn_totals": [
+        1.909,
+        2.6303,
+        0.0
+      ],
+      "wall": 4.54,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.5619,
+      "turn_ttfts": [
+        2.2181,
+        2.3934,
+        0.0
+      ],
+      "turn_totals": [
+        2.2181,
+        2.3934,
+        0.0
+      ],
+      "wall": 4.61,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.6899,
+      "turn_ttfts": [
+        2.2568,
+        3.0207,
+        0.0
+      ],
+      "turn_totals": [
+        2.2568,
+        3.0207,
+        0.0
+      ],
+      "wall": 5.28,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.1709,
+      "turn_ttfts": [
+        2.2736,
+        2.6141,
+        0.0
+      ],
+      "turn_totals": [
+        2.2737,
+        2.6141,
+        0.0
+      ],
+      "wall": 4.89,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.9851,
+      "turn_ttfts": [
+        10.7871,
+        2.6221,
+        0.0001
+      ],
+      "turn_totals": [
+        10.7871,
+        2.6222,
+        0.0001
+      ],
+      "wall": 13.41,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.1773,
+      "turn_ttfts": [
+        3.0132,
+        3.059,
+        0.0
+      ],
+      "turn_totals": [
+        3.0132,
+        3.059,
+        0.0
+      ],
+      "wall": 6.07,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.2073,
+      "turn_ttfts": [
+        3.8978,
+        3.0635,
+        0.0
+      ],
+      "turn_totals": [
+        3.8978,
+        3.0635,
+        0.0
+      ],
+      "wall": 6.96,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.2007,
+      "turn_ttfts": [
+        6.0894,
+        2.4594,
+        0.0001
+      ],
+      "turn_totals": [
+        6.0894,
+        2.4594,
+        0.0001
+      ],
+      "wall": 8.55,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.1671,
+      "turn_ttfts": [
+        4.0659,
+        2.8468,
+        0.0
+      ],
+      "turn_totals": [
+        4.066,
+        2.8468,
+        0.0
+      ],
+      "wall": 6.91,
+      "completed": true,
+      "turns_used": 3
+    }
+  ],
+  "anthropic|flow|litellm": [
+    {
+      "start_lat": 1.925,
+      "turn_ttfts": [
+        2.2939,
+        2.3728,
+        0.0
+      ],
+      "turn_totals": [
+        2.2939,
+        2.3728,
+        0.0
+      ],
+      "wall": 4.67,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.0432,
+      "turn_ttfts": [
+        1.9924,
+        3.3861,
+        0.0001
+      ],
+      "turn_totals": [
+        1.9924,
+        3.3862,
+        0.0001
+      ],
+      "wall": 5.38,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.0428,
+      "turn_ttfts": [
+        3.0246,
+        2.1605,
+        0.0
+      ],
+      "turn_totals": [
+        3.0246,
+        2.1605,
+        0.0
+      ],
+      "wall": 5.19,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.2538,
+      "turn_ttfts": [
+        2.1269,
+        2.084,
+        0.0
+      ],
+      "turn_totals": [
+        2.1269,
+        2.0841,
+        0.0
+      ],
+      "wall": 4.21,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.3692,
+      "turn_ttfts": [
+        3.4584,
+        2.2786,
+        0.0001
+      ],
+      "turn_totals": [
+        3.4584,
+        2.2786,
+        0.0001
+      ],
+      "wall": 5.74,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.5523,
+      "turn_ttfts": [
+        7.602,
+        2.4913,
+        0.0
+      ],
+      "turn_totals": [
+        7.602,
+        2.4914,
+        0.0
+      ],
+      "wall": 10.09,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.0554,
+      "turn_ttfts": [
+        2.0763,
+        2.3508,
+        0.0
+      ],
+      "turn_totals": [
+        2.0764,
+        2.3508,
+        0.0
+      ],
+      "wall": 4.43,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.2889,
+      "turn_ttfts": [
+        2.2197,
+        2.1669,
+        0.0
+      ],
+      "turn_totals": [
+        2.2197,
+        2.1669,
+        0.0
+      ],
+      "wall": 4.39,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.3367,
+      "turn_ttfts": [
+        2.0047,
+        4.8643,
+        0.0
+      ],
+      "turn_totals": [
+        2.0047,
+        4.8643,
+        0.0
+      ],
+      "wall": 6.87,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.1572,
+      "turn_ttfts": [
+        2.7425,
+        4.6362,
+        0.0
+      ],
+      "turn_totals": [
+        2.7426,
+        4.6362,
+        0.0
+      ],
+      "wall": 7.38,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.2777,
+      "turn_ttfts": [
+        2.4417,
+        3.6289,
+        0.0
+      ],
+      "turn_totals": [
+        2.4417,
+        3.6289,
+        0.0
+      ],
+      "wall": 6.07,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.9559,
+      "turn_ttfts": [
+        2.9517,
+        2.2389,
+        0.0
+      ],
+      "turn_totals": [
+        2.9517,
+        2.2389,
+        0.0
+      ],
+      "wall": 5.19,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.1594,
+      "turn_ttfts": [
+        2.6083,
+        3.2106,
+        0.0
+      ],
+      "turn_totals": [
+        2.6083,
+        3.2106,
+        0.0
+      ],
+      "wall": 5.82,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 1.3521,
+      "turn_ttfts": [
+        6.4958,
+        3.4652,
+        0.0
+      ],
+      "turn_totals": [
+        6.4958,
+        3.4652,
+        0.0
+      ],
+      "wall": 9.96,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 2.7622,
+      "turn_ttfts": [
+        2.3767,
+        2.656,
+        0.0
+      ],
+      "turn_totals": [
+        2.3767,
+        2.656,
+        0.0
+      ],
+      "wall": 5.03,
+      "completed": true,
+      "turns_used": 3
+    }
+  ],
+  "anthropic|playbook|anyllm": [
+    {
+      "start_lat": 0.0004,
+      "turn_ttfts": [
+        0.4012,
+        0.4014,
+        0.7672
+      ],
+      "turn_totals": [
+        2.0667,
+        3.2199,
+        0.9674
+      ],
+      "wall": 6.25,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0002,
+      "turn_ttfts": [
+        0.4012,
+        0.4012,
+        3.6732
+      ],
+      "turn_totals": [
+        3.2063,
+        3.6061,
+        5.3069
+      ],
+      "wall": 12.12,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0003,
+      "turn_ttfts": [
+        0.4003,
+        0.4012,
+        0.6884
+      ],
+      "turn_totals": [
+        2.4576,
+        2.1952,
+        1.0898
+      ],
+      "wall": 5.74,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0002,
+      "turn_ttfts": [
+        0.4008,
+        0.4017,
+        4.5583
+      ],
+      "turn_totals": [
+        2.8855,
+        4.2623,
+        4.9446
+      ],
+      "wall": 12.09,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0003,
+      "turn_ttfts": [
+        0.4006,
+        0.4017,
+        1.1924
+      ],
+      "turn_totals": [
+        2.6045,
+        2.9605,
+        1.4593
+      ],
+      "wall": 7.02,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.001,
+      "turn_ttfts": [
+        0.4013,
+        0.4012,
+        0.6684
+      ],
+      "turn_totals": [
+        2.3788,
+        3.0897,
+        0.8651
+      ],
+      "wall": 6.33,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0002,
+      "turn_ttfts": [
+        0.4011,
+        0.4012,
+        0.8553
+      ],
+      "turn_totals": [
+        1.9936,
+        3.1103,
+        1.0051
+      ],
+      "wall": 6.11,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0005,
+      "turn_ttfts": [
+        0.4014,
+        0.4012,
+        8.712
+      ],
+      "turn_totals": [
+        2.2821,
+        2.796,
+        9.288
+      ],
+      "wall": 14.37,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0004,
+      "turn_ttfts": [
+        0.4007,
+        0.4012,
+        0.6974
+      ],
+      "turn_totals": [
+        2.0024,
+        2.8631,
+        1.0489
+      ],
+      "wall": 5.91,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0003,
+      "turn_ttfts": [
+        0.4013,
+        0.4009,
+        0.685
+      ],
+      "turn_totals": [
+        2.75,
+        2.4915,
+        0.8454
+      ],
+      "wall": 6.09,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0007,
+      "turn_ttfts": [
+        0.4012,
+        0.4002,
+        4.1184
+      ],
+      "turn_totals": [
+        2.0348,
+        2.8821,
+        4.3166
+      ],
+      "wall": 9.23,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0004,
+      "turn_ttfts": [
+        0.4013,
+        0.4015,
+        0.8617
+      ],
+      "turn_totals": [
+        3.3004,
+        3.2246,
+        0.9585
+      ],
+      "wall": 7.48,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.001,
+      "turn_ttfts": [
+        0.4004,
+        0.4012,
+        1.194
+      ],
+      "turn_totals": [
+        2.4964,
+        2.9894,
+        1.414
+      ],
+      "wall": 6.9,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0004,
+      "turn_ttfts": [
+        0.4013,
+        0.4012,
+        1.3093
+      ],
+      "turn_totals": [
+        4.5763,
+        2.6579,
+        1.3835
+      ],
+      "wall": 8.62,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0002,
+      "turn_ttfts": [
+        0.4015,
+        0.4013,
+        0.6886
+      ],
+      "turn_totals": [
+        2.545,
+        2.6918,
+        0.8516
+      ],
+      "wall": 6.09,
+      "completed": true,
+      "turns_used": 3
+    }
+  ],
+  "anthropic|playbook|litellm": [
+    {
+      "start_lat": 0.0002,
+      "turn_ttfts": [
+        0.4012,
+        0.401,
+        0.6845
+      ],
+      "turn_totals": [
+        2.4167,
+        2.4284,
+        0.806
+      ],
+      "wall": 5.65,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0003,
+      "turn_ttfts": [
+        0.4012,
+        0.4014,
+        1.1337
+      ],
+      "turn_totals": [
+        3.5645,
+        2.5275,
+        1.2471
+      ],
+      "wall": 7.34,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0003,
+      "turn_ttfts": [
+        0.4012,
+        0.4006,
+        0.6576
+      ],
+      "turn_totals": [
+        2.1321,
+        3.5602,
+        0.8337
+      ],
+      "wall": 6.53,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0003,
+      "turn_ttfts": [
+        0.4013,
+        0.4012,
+        1.053
+      ],
+      "turn_totals": [
+        2.6461,
+        2.2826,
+        1.5567
+      ],
+      "wall": 6.49,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0002,
+      "turn_ttfts": [
+        0.4006,
+        0.4014,
+        0.6366
+      ],
+      "turn_totals": [
+        1.9372,
+        3.1394,
+        0.7591
+      ],
+      "wall": 5.84,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0002,
+      "turn_ttfts": [
+        0.4012,
+        0.4001,
+        0.8723
+      ],
+      "turn_totals": [
+        2.149,
+        2.2978,
+        1.1981
+      ],
+      "wall": 5.65,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0002,
+      "turn_ttfts": [
+        0.4009,
+        0.4014,
+        0.7903
+      ],
+      "turn_totals": [
+        2.2058,
+        2.7239,
+        5.4679
+      ],
+      "wall": 10.4,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0003,
+      "turn_ttfts": [
+        0.4012,
+        0.4012,
+        0.6116
+      ],
+      "turn_totals": [
+        2.6768,
+        3.5657,
+        0.7808
+      ],
+      "wall": 7.02,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0004,
+      "turn_ttfts": [
+        0.4012,
+        0.4015,
+        0.8558
+      ],
+      "turn_totals": [
+        2.9684,
+        2.7171,
+        0.9564
+      ],
+      "wall": 6.64,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0003,
+      "turn_ttfts": [
+        0.4012,
+        0.4011,
+        0.7518
+      ],
+      "turn_totals": [
+        2.087,
+        3.9523,
+        1.1949
+      ],
+      "wall": 7.23,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0002,
+      "turn_ttfts": [
+        0.4008,
+        0.401,
+        0.7631
+      ],
+      "turn_totals": [
+        2.2391,
+        2.66,
+        0.9782
+      ],
+      "wall": 5.88,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0008,
+      "turn_ttfts": [
+        0.4017,
+        0.4012,
+        0.6633
+      ],
+      "turn_totals": [
+        3.4236,
+        2.7635,
+        0.8217
+      ],
+      "wall": 7.01,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0004,
+      "turn_ttfts": [
+        0.4013,
+        0.401,
+        0.8184
+      ],
+      "turn_totals": [
+        4.6811,
+        3.7391,
+        1.0269
+      ],
+      "wall": 9.45,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0002,
+      "turn_ttfts": [
+        0.4012,
+        0.4014,
+        0.634
+      ],
+      "turn_totals": [
+        2.1294,
+        2.4546,
+        0.8465
+      ],
+      "wall": 5.43,
+      "completed": true,
+      "turns_used": 3
+    },
+    {
+      "start_lat": 0.0002,
+      "turn_ttfts": [
+        0.4012,
+        0.4057,
+        1.246
+      ],
+      "turn_totals": [
+        5.0422,
+        2.4787,
+        1.6953
+      ],
+      "wall": 9.22,
+      "completed": true,
+      "turns_used": 3
+    }
+  ]
+}

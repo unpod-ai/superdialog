@@ -1,0 +1,74 @@
+{
+  "openai|flow|anyllm": [
+    {
+      "start_lat": 2.4781,
+      "turn_ttfts": [
+        2.416,
+        2.2139,
+        0.0
+      ],
+      "turn_totals": [
+        2.416,
+        2.2139,
+        0.0
+      ],
+      "wall": 4.63,
+      "completed": true,
+      "turns_used": 3
+    }
+  ],
+  "openai|flow|litellm": [
+    {
+      "start_lat": 1.116,
+      "turn_ttfts": [
+        2.0304,
+        2.1976,
+        0.0001
+      ],
+      "turn_totals": [
+        2.0304,
+        2.1976,
+        0.0001
+      ],
+      "wall": 4.23,
+      "completed": true,
+      "turns_used": 3
+    }
+  ],
+  "openai|playbook|anyllm": [
+    {
+      "start_lat": 0.0004,
+      "turn_ttfts": [
+        0.4015,
+        0.4014,
+        0.6952
+      ],
+      "turn_totals": [
+        2.3631,
+        2.2394,
+        1.0484
+      ],
+      "wall": 5.65,
+      "completed": true,
+      "turns_used": 3
+    }
+  ],
+  "openai|playbook|litellm": [
+    {
+      "start_lat": 0.0003,
+      "turn_ttfts": [
+        0.4013,
+        0.4012,
+        0.6018
+      ],
+      "turn_totals": [
+        1.7729,
+        2.0347,
+        0.9385
+      ],
+      "wall": 4.75,
+      "completed": true,
+      "turns_used": 3
+    }
+  ]
+}

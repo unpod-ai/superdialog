@@ -85,6 +85,30 @@ def test_anyllm_uri_splits_provider_and_model() -> None:
     assert (bare._provider, bare._model) == (None, "gpt-4.1-mini")
 
 
+def test_anyllm_provider_reuses_client_across_calls() -> None:
+    """Regression: the AnyLLM client (and its keep-alive connection pool) is
+    built once and reused across turns, instead of rebuilt on every call."""
+    pytest.importorskip("any_llm")
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    msg = MagicMock(content="hi", tool_calls=None)
+    resp = MagicMock(choices=[MagicMock(message=msg)], usage=None)
+    fake_client = MagicMock()
+    fake_client.acompletion = AsyncMock(return_value=resp)
+
+    with patch("any_llm.AnyLLM.create", return_value=fake_client) as create:
+        p = AnyLlmProvider("openai/gpt-4.1-mini")
+
+        async def _two_turns() -> None:
+            await p.complete([{"role": "user", "content": "a"}])
+            await p.complete([{"role": "user", "content": "b"}])
+
+        anyio.run(_two_turns)
+
+    assert create.call_count == 1  # client built once...
+    assert fake_client.acompletion.await_count == 2  # ...reused for both turns
+
+
 # ----------------------------------------------------------------------------
 # Live: cross-backend parity (task 1.5)
 # ----------------------------------------------------------------------------
