@@ -56,8 +56,9 @@ class LitellmProvider:
         # Request usage on the trailing stream chunk. Without this, some providers
         # (verified: Anthropic) stream NO usage at all, so token + cache accounting
         # silently reports zero for streamed turns — notably the playbook Talker.
-        # litellm emits a final usage-only chunk (empty choices) that the loop
-        # below captures via ``_extract_usage``. Callers may override.
+        # litellm then yields a usage-bearing chunk (often choices=[] or a
+        # post-done chunk); the loop below captures it on every chunk, before the
+        # choices-based branching. Callers may override.
         merged.setdefault("stream_options", {"include_usage": True})
         resp = await litellm.acompletion(
             model=self.model, messages=messages, tools=tools, **merged
@@ -66,13 +67,9 @@ class LitellmProvider:
         pending_done: StreamChunk | None = None
         async for chunk in resp:
             chunk_choices = getattr(chunk, "choices", None)
-            # Capture usage from any chunk that carries it — litellm v1.88 yields
-            # it on a chunk with choices=[StreamingChoices(finish_reason=None)] AFTER
-            # the done chunk, so we can't key on choices alone.
             u = getattr(chunk, "usage", None)
             if u and not usage_meta:
                 usage_meta = _extract_usage(u)
-                print(f"[LITELLM-DBG] captured usage from chunk usage_meta={usage_meta}", flush=True)
             if not chunk_choices:
                 continue
             delta = chunk.choices[0].delta
@@ -94,7 +91,6 @@ class LitellmProvider:
                 pending_done = sc
             else:
                 yield sc
-        print(f"[LITELLM-DBG] stream exhausted usage_meta={usage_meta}", flush=True)
         if pending_done is not None:
             yield StreamChunk(
                 text=pending_done.text,

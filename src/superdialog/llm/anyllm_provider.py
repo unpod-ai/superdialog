@@ -234,11 +234,6 @@ class AnyLlmProvider:
                 pending_done = sc
             else:
                 yield sc
-        # Stream exhausted: usage_meta now contains the final token counts.
-        print(
-            f"[ANYLLM-DBG] stream done. usage_meta={usage_meta} pending_done={pending_done is not None}",
-            flush=True,
-        )
         if pending_done is not None:
             yield StreamChunk(
                 text=pending_done.text,

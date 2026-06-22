@@ -139,11 +139,15 @@ class DialogMachine:
         # Test seams: inject scripted Talker/Director so tests stay offline.
         self._talker_override: Any = None
         self._director_override: Any = None
-        # Billing/observability: per-LLM-call callback wired by the SDK via
+        # Billing: per-LLM-call callback wired by the SDK via
         # register_llm_callback; attached to the provider adapters at build time.
         self._llm_callback: Any = None
         self._pb_director: Any = None
         self._pb_talker: Any = None
+        # Observability — same fields as graph engine so set_observer works for both.
+        self._observer: Observer = NullObserver()
+        self._trace_id: str = ""
+        self._pb_prev_checkpoint: str | None = None
 
     def _init_graph(
         self,
@@ -221,14 +225,28 @@ class DialogMachine:
             pb = Playbook.load(self._pb_source)
         else:
             pb = Playbook._from_doc(self._pb_source)
-        director, talker = provider_adapters(resolve_llm(self._llm_uri or ""))
-        if self._director_uri:
-            director, _ = provider_adapters(resolve_llm(self._director_uri))
+        talker_provider = resolve_llm(self._llm_uri or "")
+        director_provider = (
+            resolve_llm(self._director_uri) if self._director_uri else talker_provider
+        )
+        # Observability: wrap each provider in TracingProvider when an observer
+        # is set, so playbook Director/Talker calls are traced like the graph.
+        if not isinstance(self._observer, NullObserver):
+            talker_provider = TracingProvider(
+                talker_provider, self._observer, self._trace_id,
+                model_uri=self._llm_uri, role="talker",
+            )
+            director_provider = TracingProvider(
+                director_provider, self._observer, self._trace_id,
+                model_uri=self._director_uri or self._llm_uri, role="director",
+            )
+        _, talker = provider_adapters(talker_provider)
+        director, _ = provider_adapters(director_provider)
         final_director = self._director_override or director
         final_talker = self._talker_override or talker
-        # Attach the billing callback to whatever adapters are actually used so
-        # playbook LLM token usage reaches the SDK usage ledger (no-op for
-        # scripted test overrides — setting the attribute is harmless).
+        # Billing: attach the per-call usage callback to whatever adapters are
+        # actually used so playbook LLM tokens reach the SDK usage ledger (no-op
+        # for scripted test overrides — setting the attribute is harmless).
         self._pb_director = final_director
         self._pb_talker = final_talker
         if self._llm_callback is not None:
@@ -316,7 +334,14 @@ class DialogMachine:
         before generating the greeting.
         """
         if self._engine == "playbook":
-            lines = await self._ensure_backend().runtime.start()
+            pb = self._ensure_backend()
+            lines = await pb.runtime.start()
+            try:
+                _cp = pb.runtime.state.checkpoint_id
+                self._pb_prev_checkpoint = _cp
+                self._observer.on_flow_node(self._trace_id, _cp, {}, prev_node=None)
+            except Exception:
+                pass
             return Turn(text=" ".join(lines).strip(), tool_calls=[], metadata={})
         machine = await self._ensure_machine()
         # Fire on_enter actions for the initial node (auth, preloads, etc.)
@@ -338,6 +363,15 @@ class DialogMachine:
             }
         ]
         self._traversal_saved = False
+        try:
+            self._observer.on_flow_node(
+                self._trace_id,
+                current.id,
+                dict(machine.context.userdata),
+                prev_node=None,
+            )
+        except Exception:
+            pass
         return Turn(
             text=response,
             tool_calls=[],
@@ -365,7 +399,19 @@ class DialogMachine:
         the assembled :class:`Turn` on ``chunk.turn``.
         """
         if self._engine == "playbook":
-            return await self._ensure_backend().turn(text, stream=bool(stream))
+            pb = self._ensure_backend()
+            result = await pb.turn(text, stream=bool(stream))
+            try:
+                _cp = pb.runtime.state.checkpoint_id
+                if _cp != self._pb_prev_checkpoint:
+                    _slots = {k: v.value for k, v in pb.runtime.state.slots.items()}
+                    self._observer.on_flow_node(
+                        self._trace_id, _cp, _slots, prev_node=self._pb_prev_checkpoint
+                    )
+                    self._pb_prev_checkpoint = _cp
+            except Exception:
+                pass
+            return result
         if stream:
             return self._stream_turn(text, context)
         return await self._run_turn(text, context)
@@ -386,6 +432,15 @@ class DialogMachine:
             self._chat_turns[-1]["user"] = text
 
         result = await machine.process_turn(text)
+        try:
+            self._observer.on_flow_node(
+                self._trace_id,
+                result.to_node,
+                dict(machine.context.userdata),
+                prev_node=result.from_node,
+            )
+        except Exception:
+            pass
 
         # Append a new record for the node we just transitioned INTO.
         # user=None will be filled on the next turn (or stay None at final nodes).
@@ -549,11 +604,17 @@ class DialogMachine:
             self._adapter.set_provider(self._llm)
 
     def set_observer(self, observer: Observer, trace_id: str) -> None:
-        """Wrap the active LLM provider with TracingProvider for generation tracing."""
-        if self._engine == "playbook":
-            return  # playbook backend owns its own LLM provider chain
+        """Wrap the active LLM provider with TracingProvider for generation tracing.
+
+        Works for both graph and playbook engines.  For playbook, nullifies the
+        cached backend so the next call to ``_ensure_backend`` rebuilds it with
+        traced Talker/Director providers.
+        """
         self._observer = observer
         self._trace_id = trace_id
+        if self._engine == "playbook":
+            self._pb = None  # force rebuild with tracing on next _ensure_backend
+            return
         if self._llm is not None:
             self._llm = TracingProvider(self._llm, observer, trace_id)
             if self._adapter is not None:

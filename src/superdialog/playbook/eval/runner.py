@@ -55,12 +55,14 @@ async def run_eval(
     n: int = 1,
 ) -> EvalReport:
     """Run each persona ``n`` times against fresh agents; aggregate metrics."""
-    sessions = [
-        await run_session(playbook_factory(), persona, user_llm)
+    import asyncio
+
+    results = await asyncio.gather(*[
+        run_session(playbook_factory(), persona, user_llm)
         for persona in personas
         for _ in range(n)
-    ]
-    return EvalReport(sessions=sessions)
+    ])
+    return EvalReport(sessions=list(results))
 
 
 def _persona_messages(
