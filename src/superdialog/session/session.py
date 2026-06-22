@@ -14,6 +14,19 @@ if TYPE_CHECKING:
 
 
 @dataclass
+class SessionInit:
+    """Per-session construction context for a context-aware agent factory.
+
+    Carries the ``session_id`` and arbitrary ``metadata`` (e.g. ``playbook_id``)
+    supplied at :meth:`SessionWorker.acquire` time, so one worker process can
+    build a *different* Agent per session.
+    """
+
+    session_id: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class Session:
     """Per-conversation persistent state.
 
@@ -79,4 +92,4 @@ class SessionHandle:
         }
 
 
-__all__ = ["Session", "SessionHandle"]
+__all__ = ["Session", "SessionHandle", "SessionInit"]

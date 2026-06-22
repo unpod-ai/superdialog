@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, AsyncIterator, Callable
 
 from .lock import AsyncioLockBackend, LockBackend
 from .record import SessionRecord
-from .session import Session, SessionHandle
+from .session import Session, SessionHandle, SessionInit
 from .store import InMemorySessionStore, SessionStore
 
 if TYPE_CHECKING:
@@ -39,28 +39,41 @@ class SessionWorker:
     def __init__(
         self,
         *,
-        agent_factory: Callable[[], "Agent"],
+        agent_factory: Callable[[], "Agent"] | None = None,
+        agent_factory_ctx: Callable[[SessionInit], "Agent"] | None = None,
         store: SessionStore | None = None,
         lock_backend: LockBackend | None = None,
         max_sessions: int = DEFAULT_MAX_SESSIONS,
     ) -> None:
+        if (agent_factory is None) == (agent_factory_ctx is None):
+            raise ValueError(
+                "provide exactly one of agent_factory or agent_factory_ctx"
+            )
         self._agent_factory = agent_factory
+        self._agent_factory_ctx = agent_factory_ctx
         self._store: SessionStore = store or InMemorySessionStore()
         self._lock_backend: LockBackend = lock_backend or AsyncioLockBackend()
         self._max_sessions = max_sessions
         self._cache: "OrderedDict[str, tuple[Session, Agent]]" = OrderedDict()
 
     @asynccontextmanager
-    async def acquire(self, session_id: str) -> AsyncIterator[SessionHandle]:
+    async def acquire(
+        self, session_id: str, *, init: SessionInit | None = None
+    ) -> AsyncIterator[SessionHandle]:
         """Acquire exclusive access to a session by id.
 
         On entry: lock(session_id), load or create the Session+Agent pair,
         load any persisted state into the Agent, yield a SessionHandle.
         On exit: pull updated state out of the Agent, persist a SessionRecord,
         keep the pair in the LRU cache for the next acquire.
+
+        ``init`` carries per-session construction context (e.g. ``playbook_id``)
+        for a worker built with ``agent_factory_ctx``. It is consumed only when
+        the session is first created (bind-at-creation); a cached session is
+        returned untouched.
         """
         async with self._lock_backend.acquire(session_id):
-            session, agent = await self._load_or_create(session_id)
+            session, agent = await self._load_or_create(session_id, init)
             try:
                 yield SessionHandle(session, agent)
             finally:
@@ -79,14 +92,16 @@ class SessionWorker:
 
     # ---- internals --------------------------------------------------------
 
-    async def _load_or_create(self, session_id: str) -> "tuple[Session, Agent]":
+    async def _load_or_create(
+        self, session_id: str, init: SessionInit | None = None
+    ) -> "tuple[Session, Agent]":
         cached = self._cache.get(session_id)
         if cached is not None:
             self._cache.move_to_end(session_id)
             return cached
 
         # Construct fresh Agent + load any persisted record
-        agent = self._agent_factory()
+        agent = self._build_agent(session_id, init)
         record = await self._store.load(session_id)
         if record is not None:
             agent.load_chat_ctx(record.chat_ctx)
@@ -99,11 +114,21 @@ class SessionWorker:
                 metadata=dict(record.metadata),
             )
         else:
-            session = Session(id=session_id)
+            session = Session(
+                id=session_id,
+                metadata=dict(init.metadata) if init is not None else {},
+            )
 
         self._cache[session_id] = (session, agent)
         await self._enforce_lru()
         return session, agent
+
+    def _build_agent(self, session_id: str, init: SessionInit | None) -> "Agent":
+        """Build a fresh Agent via whichever factory form was configured."""
+        if self._agent_factory_ctx is not None:
+            return self._agent_factory_ctx(init or SessionInit(session_id=session_id))
+        assert self._agent_factory is not None  # guaranteed by __init__ validation
+        return self._agent_factory()
 
     def _sync_session_from_agent(self, session: Session, agent: "Agent") -> None:
         """Pull updated state out of the Agent back into the Session."""
