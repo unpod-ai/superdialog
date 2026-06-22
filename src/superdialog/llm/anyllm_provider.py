@@ -170,10 +170,6 @@ class AnyLlmProvider:
         # OpenAI streaming suppresses usage by default; request it explicitly.
         if self._provider in ("openai", None):
             merged.setdefault("stream_options", {"include_usage": True})
-        print(
-            f"[ANYLLM-DBG] stream provider={self._provider!r} model={self._model!r} stream_options={merged.get('stream_options')}",
-            flush=True,
-        )
         resp = await client.acompletion(
             model=self._model,
             messages=messages,
@@ -185,10 +181,6 @@ class AnyLlmProvider:
         async for chunk in resp:
             if not getattr(chunk, "choices", None):
                 u = getattr(chunk, "usage", None)
-                print(
-                    f"[ANYLLM-DBG] usage-only chunk u={u} choices={getattr(chunk, 'choices', None)!r}",
-                    flush=True,
-                )
                 if u:
                     usage_meta = _extract_usage(u)
                 continue
@@ -213,11 +205,6 @@ class AnyLlmProvider:
                 pending_done = sc
             else:
                 yield sc
-        # Stream exhausted: usage_meta now contains the final token counts.
-        print(
-            f"[ANYLLM-DBG] stream done. usage_meta={usage_meta} pending_done={pending_done is not None}",
-            flush=True,
-        )
         if pending_done is not None:
             yield StreamChunk(
                 text=pending_done.text,

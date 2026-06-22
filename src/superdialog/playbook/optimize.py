@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Callable
 
@@ -25,26 +26,41 @@ AgentFactory = Callable[[Playbook], PlaybookAgent]
 
 
 _JINJA = Environment()
-_EVENT_LOG_CAP = 4000  # chars of event log shown per worst session
+_EVENT_LOG_CAP = 6000  # chars of event log shown per worst session
 _JINJA_CHECKED_SUFFIXES = (".guidance", ".say_verbatim", ".say")
+_REGRESSION_FLOOR = 0.05  # max allowed drop per individual metric before candidate is rejected
 
 _REFLECT_RULES = """\
-You improve conversational playbook prose. You will see the current playbook,
-the exact list of editable field addresses, and evidence from the worst
-self-play sessions.
+You improve conversational voice-agent playbook prose.
+You will see the current playbook YAML, every editable field address,
+evidence from the WORST sessions (failures), and the BEST sessions (successes).
 
-Return ONLY a JSON array of edits: [{"address": "...", "new_text": "..."}].
-Rules:
-- Use only addresses from the EDITABLE FIELDS list, verbatim.
-- new_text is a string (or a list of strings for never_say-style fields;
-  never remove existing entries).
-- Do not alter factual claims, prices, or hard boundaries anywhere.
-- Propose at least one edit. No commentary, no markdown fences.
+THINK (silently — do not output this reasoning):
+1. Why did each failing session fail? (Slot not collected, premature goodbye,
+   persona confused by language, repair loop, wrong branch taken?)
+2. What are the successful sessions doing right? — protect that behaviour.
+3. What is the single highest-impact change? Prioritise it.
+4. Would changing guidance wording, a say template, or a repair step fix this?
+
+Then return ONLY a JSON array of edits: [{"address": "...", "new_text": "..."}]
+
+Hard rules:
+- Use only addresses from the EDITABLE FIELDS list — verbatim, no invented paths.
+- new_text must be a string, or a list of strings for never_say-style fields
+  (only append to those lists; never remove existing entries).
+- Never alter factual claims, prices, product names, regulatory language, or
+  hard decision boundaries.
+- Prefer editing guidance/say/instructions over restructuring the flow.
+- If slot_accuracy was low → make the extraction cue more explicit in guidance.
+- If repair_count was high → strengthen the re-prompt or add clarification language.
+- If a session ended prematurely → soften or remove any early-exit condition.
+- Propose 1–4 focused, high-quality edits. Quality beats quantity.
+- No commentary, no markdown fences, no explanation — only the JSON array.
 """
 
 
 def _worst_sessions(report: EvalReport, k: int = 3) -> list[SessionMetrics]:
-    """The k weakest sessions: incomplete, then inaccurate, then repair-heavy."""
+    """The k weakest sessions: incomplete first, then inaccurate, then repair-heavy."""
     ranked = sorted(
         report.sessions,
         key=lambda s: (s.completed, s.slot_accuracy, -s.repair_count),
@@ -52,26 +68,83 @@ def _worst_sessions(report: EvalReport, k: int = 3) -> list[SessionMetrics]:
     return ranked[:k]
 
 
+def _best_sessions(report: EvalReport, k: int = 2) -> list[SessionMetrics]:
+    """The k strongest sessions — show LLM what to protect."""
+    ranked = sorted(
+        report.sessions,
+        key=lambda s: (s.completed, s.slot_accuracy, -s.repair_count),
+        reverse=True,
+    )
+    return ranked[:k]
+
+
+def _format_session(s: SessionMetrics, cap: int = _EVENT_LOG_CAP) -> str:
+    return (
+        f"persona={s.persona} completed={s.completed} outcome={s.outcome}\n"
+        f"slot_diffs={s.slot_diffs} repair_count={s.repair_count}\n"
+        f"turns_per_checkpoint={s.turns_per_checkpoint}\n"
+        f"log:\n{s.event_log_jsonl[:cap]}"
+    )
+
+
+def _no_regression(
+    inc: "ObjectiveBreakdown", cand: "ObjectiveBreakdown"
+) -> tuple[bool, str]:
+    """True when no individual metric dropped more than _REGRESSION_FLOOR.
+
+    Returns (ok, reason) — reason is empty when ok=True.
+    """
+    if cand.completion_rate < inc.completion_rate - _REGRESSION_FLOOR:
+        return False, (
+            f"completion_rate regressed {inc.completion_rate:.3f}→{cand.completion_rate:.3f}"
+>>>>>>> 5ffce79 (feat(playbook): parallel eval runner + robust optimize loop)
+        )
+    if cand.slot_accuracy < inc.slot_accuracy - _REGRESSION_FLOOR:
+        return False, (
+            f"slot_accuracy regressed {inc.slot_accuracy:.3f}→{cand.slot_accuracy:.3f}"
+        )
+    # Higher turns/checkpoint = worse smoothness; allow at most _REGRESSION_FLOOR extra turns.
+    # Skip when incumbent had no completed sessions (mean_tpc=0 means no baseline, not "0 turns").
+    if (
+        inc.mean_turns_per_checkpoint > 0
+        and cand.mean_turns_per_checkpoint > inc.mean_turns_per_checkpoint + _REGRESSION_FLOOR * 10
+    ):
+        return False, (
+            f"mean_turns regressed {inc.mean_turns_per_checkpoint:.2f}→{cand.mean_turns_per_checkpoint:.2f}"
+        )
+    return True, ""
+
+
 def _reflect_messages(
     doc: EditableDoc,
     report: EvalReport,
     k: int = 3,
+    golden_transcript: str | None = None,
     real_traces: "list[dict] | None" = None,
 ) -> list[dict[str, str]]:
-    """Build the candidate-LLM prompt from the doc and the failing evidence."""
+    """Build the candidate-LLM prompt from the doc and session evidence."""
     fields_block = "\n".join(f"- {f.address}: {f.text!r}" for f in doc.fields())
-    sessions: list[str] = []
-    for s in _worst_sessions(report, k):
-        sessions.append(
-            f"persona={s.persona} completed={s.completed} outcome={s.outcome}\n"
-            f"slot_diffs={s.slot_diffs} repair_count={s.repair_count}\n"
-            f"turns_per_checkpoint={s.turns_per_checkpoint}\n"
-            f"log:\n{s.event_log_jsonl[:_EVENT_LOG_CAP]}"
+    worst_block = "\n---\n".join(_format_session(s) for s in _worst_sessions(report, k))
+    best_sessions = _best_sessions(report, k=2)
+    # Only include best-session block when there are genuinely good runs to contrast
+    if best_sessions and best_sessions[0].completed:
+        best_block = "\n---\n".join(
+            _format_session(s, cap=_EVENT_LOG_CAP // 2) for s in best_sessions
         )
+        best_section = f"\n\nBEST SESSIONS (protect what works):\n{best_block}"
+    else:
+        best_section = ""
+    golden_section = (
+        f"\n\nGOLDEN TRANSCRIPT (a hand-verified successful call — emulate this tone and flow):\n{golden_transcript}"
+        if golden_transcript
+        else ""
+    )
     user = (
         f"PLAYBOOK:\n{doc.emit()}\n\n"
         f"EDITABLE FIELDS:\n{fields_block}\n\n"
-        f"WORST SESSIONS:\n" + "\n---\n".join(sessions)
+        f"WORST SESSIONS (these need to improve):\n{worst_block}"
+        f"{best_section}"
+        f"{golden_section}"
     )
     if real_traces:
         try:
@@ -167,6 +240,7 @@ async def propose_edits(
     candidate_llm: CompletesLLM,
     *,
     max_attempts: int = 3,
+    golden_transcript: str | None = None,
     real_traces: "list[dict] | None" = None,
 ) -> tuple[EditableDoc, list[Edit]] | None:
     """Ask the candidate LLM for prose edits; validate; retry; None on failure.
@@ -179,7 +253,9 @@ async def propose_edits(
     When provided they are injected into the reflection prompt so the LLM
     can target real production failure patterns, not just synthetic ones.
     """
-    messages = _reflect_messages(doc, report, real_traces=real_traces)
+    messages = _reflect_messages(
+        doc, report, golden_transcript=golden_transcript, real_traces=real_traces
+    )
     for _ in range(max_attempts):
         raw = await candidate_llm.complete(messages)
         try:
@@ -213,6 +289,7 @@ async def optimize(
     n: int = 1,
     patience: int = 2,
     reflect_attempts: int = 3,
+    golden_transcript: str | None = None,
     real_traces: "list[dict] | None" = None,
 ) -> OptimizeReport:
     """Paired-round reflective optimization. Returns the final incumbent.
@@ -235,8 +312,11 @@ async def optimize(
     stale = 0
     for round_no in range(1, rounds + 1):
         proposal = await propose_edits(
-            incumbent, last_report, candidate_llm,
+            incumbent,
+            last_report,
+            candidate_llm,
             max_attempts=reflect_attempts,
+            golden_transcript=golden_transcript,
             real_traces=real_traces,
         )
         if proposal is None:
@@ -251,14 +331,17 @@ async def optimize(
             stale += 1
         else:
             candidate, edits = proposal
-            inc_report = await _eval(incumbent)
-            cand_report = await _eval(candidate)
+            inc_report, cand_report = await asyncio.gather(
+                _eval(incumbent), _eval(candidate)
+            )
             inc_b = score_report(inc_report)
             cand_b = score_report(cand_report)
-            accepted = cand_b.objective > inc_b.objective
+            no_reg, reg_reason = _no_regression(inc_b, cand_b)
+            accepted = cand_b.objective > inc_b.objective and no_reg
             t = RoundTrace(
                 round_no=round_no,
                 accepted=accepted,
+                detail=reg_reason if not no_reg else "",
                 incumbent_breakdown=inc_b,
                 candidate_breakdown=cand_b,
                 edits=edits,
