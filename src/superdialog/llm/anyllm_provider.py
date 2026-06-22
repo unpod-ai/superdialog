@@ -195,10 +195,6 @@ class AnyLlmProvider:
         # OpenAI streaming suppresses usage by default; request it explicitly.
         if self._provider in ("openai", None):
             merged.setdefault("stream_options", {"include_usage": True})
-        print(
-            f"[ANYLLM-DBG] stream provider={self._provider!r} model={self._model!r} stream_options={merged.get('stream_options')}",
-            flush=True,
-        )
         resp = await client.acompletion(
             model=self._model,
             messages=messages,
@@ -208,14 +204,14 @@ class AnyLlmProvider:
         usage_meta: dict[str, int] = {}
         pending_done: StreamChunk | None = None
         async for chunk in resp:
+            # Capture usage from ANY chunk that carries it. Some providers
+            # (e.g. Anthropic via any-llm) attach usage to a chunk that still
+            # has choices, so keying only on choice-less chunks would miss it
+            # and report zero tokens for streamed turns (e.g. the playbook Talker).
+            u = getattr(chunk, "usage", None)
+            if u and not usage_meta:
+                usage_meta = _extract_usage(u)
             if not getattr(chunk, "choices", None):
-                u = getattr(chunk, "usage", None)
-                print(
-                    f"[ANYLLM-DBG] usage-only chunk u={u} choices={getattr(chunk, 'choices', None)!r}",
-                    flush=True,
-                )
-                if u:
-                    usage_meta = _extract_usage(u)
                 continue
             delta = chunk.choices[0].delta
             is_done = chunk.choices[0].finish_reason is not None

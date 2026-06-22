@@ -53,11 +53,12 @@ class LitellmProvider:
         **opts: Any,
     ) -> AsyncIterator[StreamChunk]:
         merged = {**self.default_opts, **opts, "stream": True}
-        # Do NOT pass stream_options. With stream_options=None, litellm auto-computes
-        # usage from OpenAI's trailing usage chunk and stores it in the done chunk's
-        # _hidden_params["usage"]. With stream_options set, litellm tries to yield
-        # a separate usage chunk — but swallows it internally, making it unreachable.
-        print(f"[LITELLM-DBG] stream model={self.model!r}", flush=True)
+        # Request usage on the trailing stream chunk. Without this, some providers
+        # (verified: Anthropic) stream NO usage at all, so token + cache accounting
+        # silently reports zero for streamed turns — notably the playbook Talker.
+        # litellm emits a final usage-only chunk (empty choices) that the loop
+        # below captures via ``_extract_usage``. Callers may override.
+        merged.setdefault("stream_options", {"include_usage": True})
         resp = await litellm.acompletion(
             model=self.model, messages=messages, tools=tools, **merged
         )
