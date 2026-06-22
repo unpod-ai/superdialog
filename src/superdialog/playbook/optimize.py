@@ -97,7 +97,6 @@ def _no_regression(
     if cand.completion_rate < inc.completion_rate - _REGRESSION_FLOOR:
         return False, (
             f"completion_rate regressed {inc.completion_rate:.3f}→{cand.completion_rate:.3f}"
->>>>>>> 5ffce79 (feat(playbook): parallel eval runner + robust optimize loop)
         )
     if cand.slot_accuracy < inc.slot_accuracy - _REGRESSION_FLOOR:
         return False, (
