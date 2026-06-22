@@ -81,15 +81,40 @@ def _extract_usage(u: Any) -> dict[str, int]:
 
     Also surfaces unified prompt-cache counts (``cache_read_tokens`` /
     ``cache_write_tokens``) when the provider reports them.
+
+    INVARIANT (billing-critical): the emitted ``prompt_tokens`` is the
+    **non-cached** input only, and ``cache_read_tokens`` is the cached input —
+    the two are disjoint and sum to the total prompt. Providers disagree on
+    this: Anthropic's ``cache_read_input_tokens`` is already disjoint from
+    ``input_tokens``, but OpenAI's ``prompt_tokens_details.cached_tokens`` and
+    Deepseek's ``prompt_cache_hit_tokens`` are *subsets* of ``prompt_tokens``
+    (and LiteLLM normalizes Anthropic into that subset shape too). Charging the
+    full prompt at the input rate *and* the cached count at the cached rate
+    would double-bill the cached tokens. So when the cached count is a subset
+    (``cache_read_tokens <= prompt_tokens``) we subtract it here; when it is
+    larger it is already disjoint and left as-is. No-op when caching is off
+    (cache_read_tokens == 0), so legacy non-cached usage is unchanged.
     """
-    prompt = getattr(u, "prompt_tokens", None) or getattr(u, "input_tokens", None) or 0
-    completion = (
+    prompt = int(
+        getattr(u, "prompt_tokens", None) or getattr(u, "input_tokens", None) or 0
+    )
+    completion = int(
         getattr(u, "completion_tokens", None) or getattr(u, "output_tokens", None) or 0
     )
+    cache = _extract_cache_usage(u)
+    # Cache reads AND writes (creation) are both subsets of the normalized
+    # prompt total on litellm/any-llm. Subtract whichever are present so
+    # prompt_tokens is the pure non-cached input and prompt + read + write sum
+    # to the total — each token billed exactly once. Only subtract when they are
+    # a subset (overlap <= prompt); a larger value is already disjoint (raw
+    # Anthropic shape) and left alone. No-op when caching is off.
+    overlap = cache.get("cache_read_tokens", 0) + cache.get("cache_write_tokens", 0)
+    if 0 < overlap <= prompt:
+        prompt -= overlap
     return {
-        "prompt_tokens": int(prompt),
-        "completion_tokens": int(completion),
-        **_extract_cache_usage(u),
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        **cache,
     }
 
 

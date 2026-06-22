@@ -143,7 +143,16 @@ from types import SimpleNamespace  # noqa: E402
 from superdialog.llm.anyllm_provider import _extract_usage  # noqa: E402
 
 
-def test_extract_usage_anthropic_cache_fields():
+# Billing invariant: prompt_tokens (non-cached) and cache_read_tokens (cached)
+# must be DISJOINT so the supervoice ledger never bills the cached read twice.
+# litellm/any-llm normalize every provider into the subset shape (prompt_tokens
+# is the FULL prompt, cached is inside it), so _extract_usage subtracts the
+# cached subset from prompt_tokens.
+
+
+def test_extract_usage_anthropic_subset_subtracted():
+    # litellm/any-llm-normalized Anthropic: prompt_tokens (500) includes the
+    # cache_read (480) -> prompt_tokens becomes the 20 non-cached tokens.
     u = SimpleNamespace(
         prompt_tokens=500,
         completion_tokens=20,
@@ -153,10 +162,11 @@ def test_extract_usage_anthropic_cache_fields():
     out = _extract_usage(u)
     assert out["cache_read_tokens"] == 480
     assert out["cache_write_tokens"] == 0
-    assert out["prompt_tokens"] == 500
+    assert out["prompt_tokens"] == 20  # 500 - 480, disjoint
+    assert out["prompt_tokens"] + out["cache_read_tokens"] == 500  # sums to total
 
 
-def test_extract_usage_openai_cached_tokens():
+def test_extract_usage_openai_cached_subtracted():
     u = SimpleNamespace(
         prompt_tokens=1200,
         completion_tokens=15,
@@ -164,17 +174,50 @@ def test_extract_usage_openai_cached_tokens():
     )
     out = _extract_usage(u)
     assert out["cache_read_tokens"] == 1024
+    assert out["prompt_tokens"] == 176  # 1200 - 1024
     assert "cache_write_tokens" not in out
 
 
-def test_extract_usage_deepseek_hit_tokens():
+def test_extract_usage_deepseek_hit_subtracted():
     u = SimpleNamespace(
         prompt_tokens=800, completion_tokens=10, prompt_cache_hit_tokens=768
     )
-    assert _extract_usage(u)["cache_read_tokens"] == 768
+    out = _extract_usage(u)
+    assert out["cache_read_tokens"] == 768
+    assert out["prompt_tokens"] == 32  # 800 - 768
 
 
-def test_extract_usage_no_cache_fields_omitted():
+def test_extract_usage_write_subtracted_on_creation_turn():
+    # Cache-creation turn: prompt_tokens (7683) includes the written prefix
+    # (7670) -> prompt becomes the 13 non-cached tokens; write billed separately.
+    u = SimpleNamespace(
+        prompt_tokens=7683,
+        completion_tokens=20,
+        cache_creation_input_tokens=7670,
+        cache_read_input_tokens=0,
+    )
+    out = _extract_usage(u)
+    assert out["cache_write_tokens"] == 7670
+    assert out.get("cache_read_tokens", 0) == 0
+    assert out["prompt_tokens"] == 13  # 7683 - 7670
+    assert out["prompt_tokens"] + out["cache_write_tokens"] == 7683
+
+
+def test_extract_usage_disjoint_cache_not_subtracted():
+    # True disjoint shape (cached > the small non-cached prompt): leave as-is so
+    # we never produce a negative / wrong prompt count.
+    u = SimpleNamespace(
+        prompt_tokens=29,  # non-cached remainder only
+        completion_tokens=10,
+        cache_read_input_tokens=6022,
+    )
+    out = _extract_usage(u)
+    assert out["cache_read_tokens"] == 6022
+    assert out["prompt_tokens"] == 29  # unchanged (already disjoint)
+
+
+def test_extract_usage_no_cache_is_noop():
+    # Caching off -> cache_read_tokens absent -> prompt_tokens untouched.
     u = SimpleNamespace(prompt_tokens=10, completion_tokens=5)
     out = _extract_usage(u)
     assert "cache_read_tokens" not in out and "cache_write_tokens" not in out

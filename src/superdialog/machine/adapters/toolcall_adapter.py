@@ -34,6 +34,8 @@ class LLMCallData:
     prompt_messages: list[dict]
     response_json: dict
     edge_id: str | None
+    cached: int = 0  # prompt-cache READ tokens (billable as llm_cached_tokens)
+    cache_write: int = 0  # prompt-cache WRITE/creation tokens (llm_cache_write_tokens)
 
 
 # ── Language extraction patterns ─────────────────────────────────────────────
@@ -759,6 +761,8 @@ class ToolCallAdapter:
                     latency_ms=latency_ms,
                     tokens_in=meta.get("prompt_tokens", 0) or 0,
                     tokens_out=meta.get("completion_tokens", 0) or 0,
+                    cached=meta.get("cache_read_tokens", 0) or 0,
+                    cache_write=meta.get("cache_write_tokens", 0) or 0,
                     prompt_messages=messages,
                     response_json={"text": text},
                     edge_id=None,
@@ -974,6 +978,8 @@ class ToolCallAdapter:
         meta = result.metadata or {}
         prompt_tokens = meta.get("prompt_tokens", 0) or 0
         completion_tokens = meta.get("completion_tokens", 0) or 0
+        cached_tokens = meta.get("cache_read_tokens", 0) or 0
+        cache_write_tokens = meta.get("cache_write_tokens", 0) or 0
 
         function_name = ""
         function_args = ""
@@ -996,6 +1002,8 @@ class ToolCallAdapter:
                     latency_ms=latency_ms,
                     tokens_in=prompt_tokens,
                     tokens_out=completion_tokens,
+                    cached=cached_tokens,
+                    cache_write=cache_write_tokens,
                     prompt_messages=messages,
                     response_json={"tool_call": function_name, "args": function_args},
                     edge_id=function_name

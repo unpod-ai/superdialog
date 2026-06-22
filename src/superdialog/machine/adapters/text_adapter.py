@@ -27,6 +27,8 @@ class LLMCallData:
     prompt_messages: list[dict]
     response_json: dict
     edge_id: str | None
+    cached: int = 0  # prompt-cache READ tokens (billable as llm_cached_tokens)
+    cache_write: int = 0  # prompt-cache WRITE/creation tokens (llm_cache_write_tokens)
 
 
 class TextAdapter:

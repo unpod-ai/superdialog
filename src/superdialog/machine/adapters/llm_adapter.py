@@ -44,6 +44,8 @@ class LLMCallData:
     prompt_messages: list[dict]
     response_json: dict
     edge_id: str | None
+    cached: int = 0  # prompt-cache READ tokens (billable as llm_cached_tokens)
+    cache_write: int = 0  # prompt-cache WRITE/creation tokens (llm_cache_write_tokens)
 
 
 def _coerce_numeric_strings(d: dict, skip_fields: set[str]) -> dict:
@@ -155,6 +157,8 @@ class LLMAdapter:
                     latency_ms=latency_ms,
                     tokens_in=int(result.metadata.get("prompt_tokens", 0) or 0),
                     tokens_out=int(result.metadata.get("completion_tokens", 0) or 0),
+                    cached=int(result.metadata.get("cache_read_tokens", 0) or 0),
+                    cache_write=int(result.metadata.get("cache_write_tokens", 0) or 0),
                     prompt_messages=messages,
                     response_json={"text": result.text},
                     edge_id=None,

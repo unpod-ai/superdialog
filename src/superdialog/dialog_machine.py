@@ -139,6 +139,11 @@ class DialogMachine:
         # Test seams: inject scripted Talker/Director so tests stay offline.
         self._talker_override: Any = None
         self._director_override: Any = None
+        # Billing/observability: per-LLM-call callback wired by the SDK via
+        # register_llm_callback; attached to the provider adapters at build time.
+        self._llm_callback: Any = None
+        self._pb_director: Any = None
+        self._pb_talker: Any = None
 
     def _init_graph(
         self,
@@ -167,6 +172,7 @@ class DialogMachine:
         self._adapter_mode: str = adapter
         self._machine: DialogStateMachine | None = None
         self._adapter: LLMAdapter | ToolCallAdapter | None = None
+        self._llm_callback: Any = None  # wired by register_llm_callback
         # Session-layer rehydration: queued until first turn / explicit start.
         self._pending_chat_ctx: Any = None
         self._pending_flow_state: Any = None
@@ -181,6 +187,27 @@ class DialogMachine:
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
+
+    def register_llm_callback(self, fn: Any) -> None:
+        """Register a per-LLM-call usage callback for both engines.
+
+        The SDK calls this so superdialog token usage (incl. cache read/write)
+        reaches the usage ledger. Playbook: attach to the provider adapters
+        (now if built, else at ``_ensure_backend``). Graph: attach to the
+        toolcall/llm adapter's ``_on_llm_complete`` (now if built, else the
+        adapter inherits it when the SDK re-attaches before streaming)."""
+        self._llm_callback = fn
+        if self._engine == "playbook":
+            for adptr in (self._pb_director, self._pb_talker):
+                if adptr is not None:
+                    try:
+                        adptr.on_llm_complete = fn
+                    except Exception:
+                        pass
+        else:
+            adapter = getattr(self, "_adapter", None)
+            if adapter is not None and hasattr(adapter, "_on_llm_complete"):
+                adapter._on_llm_complete = fn
 
     def _ensure_backend(self) -> Any:
         """Build the wrapped PlaybookAgent lazily on first use."""
@@ -197,10 +224,23 @@ class DialogMachine:
         director, talker = provider_adapters(resolve_llm(self._llm_uri or ""))
         if self._director_uri:
             director, _ = provider_adapters(resolve_llm(self._director_uri))
+        final_director = self._director_override or director
+        final_talker = self._talker_override or talker
+        # Attach the billing callback to whatever adapters are actually used so
+        # playbook LLM token usage reaches the SDK usage ledger (no-op for
+        # scripted test overrides — setting the attribute is harmless).
+        self._pb_director = final_director
+        self._pb_talker = final_talker
+        if self._llm_callback is not None:
+            for _adptr in (final_director, final_talker):
+                try:
+                    _adptr.on_llm_complete = self._llm_callback
+                except Exception:
+                    pass
         pb_kwargs: dict[str, Any] = {
             "playbook": pb,
-            "talker_llm": self._talker_override or talker,
-            "director_llm": self._director_override or director,
+            "talker_llm": final_talker,
+            "director_llm": final_director,
             "http": httpx_http,
             "python_tools": _python_tools_from(self._pb_tools),
             "barrier_timeout": self._barrier_timeout,
