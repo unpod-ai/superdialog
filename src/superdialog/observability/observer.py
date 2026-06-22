@@ -38,7 +38,12 @@ class Observer(Protocol):
     ) -> None: ...
 
     def on_flow_node(
-        self, trace_id: str, node_id: str, slots: dict[str, Any]
+        self,
+        trace_id: str,
+        node_id: str,
+        slots: dict[str, Any],
+        *,
+        prev_node: str | None = None,
     ) -> None: ...
 
     def on_voice_turn(
@@ -76,7 +81,12 @@ class NullObserver:
         return None
 
     def on_flow_node(
-        self, trace_id: str, node_id: str, slots: dict[str, Any]
+        self,
+        trace_id: str,
+        node_id: str,
+        slots: dict[str, Any],
+        *,
+        prev_node: str | None = None,
     ) -> None:
         return None
 
@@ -107,9 +117,15 @@ class LangfuseObserver:
 
     def on_session_start(self, session_id: str, metadata: dict[str, Any]) -> str:
         try:
+            playbook_id = metadata.get("playbook")
+            trace_name = (
+                f"voice_session:{playbook_id}"
+                if playbook_id
+                else f"voice_session:{metadata.get('agent_id') or session_id}"
+            )
             trace = self._client.trace(
                 id=session_id,
-                name="dialog-session",
+                name=trace_name,
                 metadata=metadata,
             )
             self._traces[trace.id] = trace
@@ -184,17 +200,61 @@ class LangfuseObserver:
             logger.debug("langfuse on_tool_call skipped: %s", exc)
 
     def on_flow_node(
-        self, trace_id: str, node_id: str, slots: dict[str, Any]
+        self,
+        trace_id: str,
+        node_id: str,
+        slots: dict[str, Any],
+        *,
+        prev_node: str | None = None,
     ) -> None:
+        # Meta-events (speech pipeline) pass prev_node=None and carry no graph
+        # position.  Skip flow_node + node_transition for them — they are already
+        # logged as user_turn / agent_turn / voice:opening_turn / voice:interruption
+        # spans by VoiceObserver.  Only real dialog graph nodes emit traversal spans.
+        _META = {"user_turn", "agent_turn", "opening_turn", "interruption"}
+        if node_id in _META:
+            return
+
         try:
             span = self._client.span(
                 trace_id=trace_id,
                 name="flow_node",
-                input={"node_id": node_id, "slots": slots},
+                input={
+                    "node_id": node_id,
+                    "prev_node": prev_node,
+                    "transition": f"{prev_node} → {node_id}" if prev_node else f"START → {node_id}",
+                    "slots": slots,
+                },
+                metadata={
+                    "node_id": node_id,
+                    "prev_node": prev_node,
+                    "is_first_node": prev_node is None,
+                },
             )
-            span.end()
+            span.end(output={"arrived_at": node_id, "from": prev_node, "slots_count": len(slots)})
         except Exception as exc:
             logger.debug("langfuse on_flow_node skipped: %s", exc)
+
+        if prev_node is not None:
+            try:
+                span = self._client.span(
+                    trace_id=trace_id,
+                    name="node_transition",
+                    input={
+                        "from_node": prev_node,
+                        "to_node": node_id,
+                        "transition": f"{prev_node} → {node_id}",
+                        "slots_at_transition": slots,
+                    },
+                    metadata={
+                        "from_node": prev_node,
+                        "to_node": node_id,
+                        "layer": "superdialog",
+                    },
+                )
+                span.end(output={"from_node": prev_node, "to_node": node_id})
+            except Exception as exc:
+                logger.debug("langfuse node_transition skipped: %s", exc)
 
     def on_voice_turn(
         self,
@@ -333,25 +393,65 @@ def build_observer(
     public_key: str | None = None,
     secret_key: str | None = None,
     host: str | None = None,
+    *,
+    enable_tracing: bool | None = None,
 ) -> "LangfuseObserver | NullObserver":
-    """Return a LangfuseObserver if keys are available, else NullObserver.
+    """Return a LangfuseObserver if tracing is enabled, else NullObserver.
 
-    Reads LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY / LANGFUSE_HOST from env
-    when not provided explicitly. Lazy-imports langfuse so the package is
-    optional.
+    Enable/disable priority:
+      1. ``enable_tracing`` kwarg (explicit caller override)
+      2. ``SUPERDIALOG_TRACING`` env var: ``"1"``/``"true"``/``"on"`` → enable,
+         ``"0"``/``"false"``/``"off"`` → disable, unset → auto-detect from keys
+      3. Auto-detect: enabled when keys are present
+
+    Key resolution order (first non-empty wins):
+      explicit kwargs → LANGFUSE_DIALOG_PUBLIC_KEY / LANGFUSE_DIALOG_SECRET_KEY
+      → LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY
     """
-    pk = public_key or os.environ.get("LANGFUSE_PUBLIC_KEY", "")
-    sk = secret_key or os.environ.get("LANGFUSE_SECRET_KEY", "")
+    # ── enable/disable gate ───────────────────────────────────────────────
+    if enable_tracing is None:
+        _env = os.environ.get("SUPERDIALOG_TRACING", "").strip().lower()
+        if _env in ("0", "false", "off", "no"):
+            logger.info("superdialog tracing disabled via SUPERDIALOG_TRACING=%s", _env)
+            return NullObserver()
+        if _env in ("1", "true", "on", "yes"):
+            enable_tracing = True
+        # else: auto-detect below
+
+    # ── key resolution ────────────────────────────────────────────────────
+    pk = (
+        public_key
+        or os.environ.get("LANGFUSE_DIALOG_PUBLIC_KEY")
+        or os.environ.get("LANGFUSE_PUBLIC_KEY", "")
+    )
+    sk = (
+        secret_key
+        or os.environ.get("LANGFUSE_DIALOG_SECRET_KEY")
+        or os.environ.get("LANGFUSE_SECRET_KEY", "")
+    )
     if not pk or not sk:
+        if enable_tracing:
+            logger.warning(
+                "superdialog tracing: SUPERDIALOG_TRACING=true but no Langfuse keys found "
+                "(set LANGFUSE_DIALOG_PUBLIC_KEY + LANGFUSE_DIALOG_SECRET_KEY); "
+                "using NullObserver"
+            )
+        else:
+            logger.debug("superdialog tracing: no keys — using NullObserver")
         return NullObserver()
+
     lf_host = host or os.environ.get("LANGFUSE_HOST", "https://cloud.langfuse.com")
     try:
         from langfuse import Langfuse
 
         client = Langfuse(public_key=pk, secret_key=sk, host=lf_host)
+        logger.info(
+            "superdialog tracing: LangfuseObserver active host=%s pk=%.8s…",
+            lf_host, pk,
+        )
         return LangfuseObserver(client)
     except Exception as exc:
-        logger.warning("langfuse unavailable (%s); using NullObserver", exc)
+        logger.warning("superdialog tracing: langfuse unavailable (%s); using NullObserver", exc)
         return NullObserver()
 
 

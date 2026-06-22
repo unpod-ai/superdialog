@@ -53,7 +53,10 @@ def _worst_sessions(report: EvalReport, k: int = 3) -> list[SessionMetrics]:
 
 
 def _reflect_messages(
-    doc: EditableDoc, report: EvalReport, k: int = 3
+    doc: EditableDoc,
+    report: EvalReport,
+    k: int = 3,
+    real_traces: "list[dict] | None" = None,
 ) -> list[dict[str, str]]:
     """Build the candidate-LLM prompt from the doc and the failing evidence."""
     fields_block = "\n".join(f"- {f.address}: {f.text!r}" for f in doc.fields())
@@ -70,6 +73,18 @@ def _reflect_messages(
         f"EDITABLE FIELDS:\n{fields_block}\n\n"
         f"WORST SESSIONS:\n" + "\n---\n".join(sessions)
     )
+    if real_traces:
+        try:
+            # Import lazily — supervoice may not be on the path in pure superdialog tests.
+            from playground.harness.langfuse_fetch import summarise_traces  # type: ignore[import]
+            real_block = summarise_traces(real_traces)
+        except ImportError:
+            real_block = f"(real_traces available: {len(real_traces)} calls)"
+        user += (
+            "\n\nREAL CALL DATA (production calls — these failure patterns take priority "
+            "over synthetic session results; ensure your edits address them first):\n"
+            + real_block
+        )
     return [
         {"role": "system", "content": _REFLECT_RULES},
         {"role": "user", "content": user},
@@ -152,14 +167,19 @@ async def propose_edits(
     candidate_llm: CompletesLLM,
     *,
     max_attempts: int = 3,
+    real_traces: "list[dict] | None" = None,
 ) -> tuple[EditableDoc, list[Edit]] | None:
     """Ask the candidate LLM for prose edits; validate; retry; None on failure.
 
     The candidate output is untrusted text: it is parsed and validated, never
     executed. ValidationError, MutationError and JSONDecodeError are all
     ValueError subclasses, so one except clause covers every reject path.
+
+    ``real_traces``: structured Langfuse trace dicts from ``langfuse_fetch``.
+    When provided they are injected into the reflection prompt so the LLM
+    can target real production failure patterns, not just synthetic ones.
     """
-    messages = _reflect_messages(doc, report)
+    messages = _reflect_messages(doc, report, real_traces=real_traces)
     for _ in range(max_attempts):
         raw = await candidate_llm.complete(messages)
         try:
@@ -193,6 +213,7 @@ async def optimize(
     n: int = 1,
     patience: int = 2,
     reflect_attempts: int = 3,
+    real_traces: "list[dict] | None" = None,
 ) -> OptimizeReport:
     """Paired-round reflective optimization. Returns the final incumbent.
 
@@ -214,7 +235,9 @@ async def optimize(
     stale = 0
     for round_no in range(1, rounds + 1):
         proposal = await propose_edits(
-            incumbent, last_report, candidate_llm, max_attempts=reflect_attempts
+            incumbent, last_report, candidate_llm,
+            max_attempts=reflect_attempts,
+            real_traces=real_traces,
         )
         if proposal is None:
             trace.append(
