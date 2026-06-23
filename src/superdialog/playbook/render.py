@@ -167,6 +167,12 @@ def render_view(
         chat.append({"role": entry.role, "content": entry.text})
         used += cost
     chat.reverse()
+    # Some providers (Anthropic) require at least one non-system message.
+    # When the transcript is empty (opening greeting) or the entire history
+    # was truncated by the token budget, inject a minimal placeholder so the
+    # message list is always valid for all providers.
+    if not chat:
+        chat = [{"role": "user", "content": "[start]"}]
     # Mark the stable prompt prefix (the persona, which leads ``system``) so the
     # provider seam can cache it. ``_system_block`` builds ``system`` as
     # "\n\n".join([pb.persona.strip(), ...]), so the persona is a true leading

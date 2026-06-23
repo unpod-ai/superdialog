@@ -236,11 +236,13 @@ def test_devanagari_budget_estimate() -> None:
 
 
 def test_render_edges() -> None:
-    # (a) tiny budget: system message always survives, transcript dropped
+    # (a) tiny budget: system survives, transcript dropped; placeholder injected
+    # so message list is never system-only (provider compatibility).
     pb, state = _setup()
     view = render_view(pb, state, token_budget=1)
-    assert len(view.messages) == 1
+    assert len(view.messages) == 2
     assert view.messages[0]["role"] == "system"
+    assert view.messages[1]["role"] == "user"
 
     # (b) no checkpoint: persona + grounding render, no "Current step"
     pb2 = Playbook.from_yaml(MINIMAL_YAML)
