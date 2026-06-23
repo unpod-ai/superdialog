@@ -155,8 +155,10 @@ class LangfuseObserver:
                 gen_kwargs["model_parameters"] = model_parameters
             gen = self._client.generation(**gen_kwargs)
             self._pending[gen.id] = (gen, trace_id)
+            print(f"[LANGFUSE-DIALOG] generation queued name={name!r} gen_id={gen.id!r} trace_id={trace_id!r}", flush=True)
             return gen.id
         except Exception as exc:
+            print(f"[LANGFUSE-DIALOG] generation FAILED name={name!r} exc={type(exc).__name__}: {exc}", flush=True)
             logger.debug("langfuse on_generation_start skipped: %s", exc)
             return ""
 
@@ -296,7 +298,9 @@ class LangfuseObserver:
     def flush(self) -> None:
         try:
             self._client.flush()
+            print(f"[LANGFUSE-DIALOG] flush ok pending={len(self._pending)}", flush=True)
         except Exception as exc:
+            print(f"[LANGFUSE-DIALOG] flush FAILED exc={type(exc).__name__}: {exc}", flush=True)
             logger.debug("langfuse flush skipped: %s", exc)
 
 

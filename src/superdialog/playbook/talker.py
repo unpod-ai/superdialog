@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+import traceback
 from typing import Any, AsyncIterator, Awaitable, Callable, Protocol
 
 import anyio
+
+_log = logging.getLogger(__name__)
 from pydantic import BaseModel
 
 from .models import Checkpoint, Playbook
@@ -147,7 +151,9 @@ class Talker:
                     text="", final=True, spoke_from_version=view.spoke_from_version
                 )
                 return
-            except Exception:
+            except Exception as _exc:
+                print(f"[TALKER-DBG] attempt={attempt} exception={type(_exc).__name__}: {_exc}", flush=True)
+                _log.error("[talker] LLM stream attempt=%d failed: %s\n%s", attempt, _exc, traceback.format_exc())
                 if attempt == 2:
                     yield SpeechChunk(
                         text=self._recovery_line,
