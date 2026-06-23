@@ -118,6 +118,15 @@ class LangfuseObserver:
     def on_session_start(self, session_id: str, metadata: dict[str, Any]) -> str:
         try:
             playbook_id = metadata.get("playbook")
+            agent_name = metadata.get("agent") or "unknown-agent"
+            mode = metadata.get("mode") or "unknown"
+            tags = [
+                "layer:superdialog",
+                f"mode:{mode}",
+                f"agent:{agent_name}",
+            ]
+            if playbook_id:
+                tags.append(f"playbook:{playbook_id}")
             trace_name = (
                 f"voice_session:{playbook_id}"
                 if playbook_id
@@ -126,6 +135,9 @@ class LangfuseObserver:
             trace = self._client.trace(
                 id=session_id,
                 name=trace_name,
+                user_id=metadata.get("call_id") or session_id,
+                session_id=session_id,
+                tags=tags,
                 metadata=metadata,
             )
             self._traces[trace.id] = trace
@@ -180,7 +192,12 @@ class LangfuseObserver:
                     "input": metadata.get("prompt_tokens") or metadata.get("input_tokens", 0),
                     "output": metadata.get("completion_tokens") or metadata.get("output_tokens", 0),
                 },
-                metadata=metadata,
+                metadata={
+                    **metadata,
+                    "layer": "superdialog",
+                    "cache_read_tokens": metadata.get("cache_read_tokens", 0),
+                    "cache_write_tokens": metadata.get("cache_write_tokens", 0),
+                },
             )
         except Exception as exc:
             logger.debug("langfuse on_generation_end skipped: %s", exc)
@@ -196,6 +213,7 @@ class LangfuseObserver:
                 trace_id=trace_id,
                 name=f"tool:{name}",
                 input=args,
+                metadata={"layer": "superdialog"},
             )
             span.end(output=str(result))
         except Exception as exc:
@@ -228,6 +246,7 @@ class LangfuseObserver:
                     "slots": slots,
                 },
                 metadata={
+                    "layer": "superdialog",
                     "node_id": node_id,
                     "prev_node": prev_node,
                     "is_first_node": prev_node is None,
@@ -249,9 +268,9 @@ class LangfuseObserver:
                         "slots_at_transition": slots,
                     },
                     metadata={
+                        "layer": "superdialog",
                         "from_node": prev_node,
                         "to_node": node_id,
-                        "layer": "superdialog",
                     },
                 )
                 span.end(output={"from_node": prev_node, "to_node": node_id})
@@ -267,10 +286,15 @@ class LangfuseObserver:
             span = self._client.span(
                 trace_id=trace_id,
                 name="voice_turn",
-                input={},
-                metadata=metrics,
+                input=metrics,
+                metadata={"layer": "superdialog", **metrics},
             )
-            span.end()
+            span.end(output={
+                "ttfa_ms": metrics.get("ttfa_ms") or metrics.get("ttfa"),
+                "asr_ms": metrics.get("asr_duration_ms") or metrics.get("asr_ms"),
+                "tts_ms": metrics.get("tts_duration_ms") or metrics.get("tts_ms"),
+                "e2e_ms": metrics.get("total_ms") or metrics.get("e2e_ms"),
+            })
         except Exception as exc:
             logger.debug("langfuse on_voice_turn skipped: %s", exc)
 
@@ -290,6 +314,7 @@ class LangfuseObserver:
                 name="error",
                 level="ERROR",
                 input={"error": message, **{k: v for k, v in (metadata or {}).items()}},
+                metadata={"layer": "superdialog", **(metadata or {})},
             )
             span.end(output={"error": message})
         except Exception as exc:
@@ -349,7 +374,8 @@ class TracingProvider:
         **opts: Any,
     ) -> CompletionResult:
         obs_id = self._observer.on_generation_start(
-            self._trace_id, self._gen_name("complete"), messages
+            self._trace_id, self._gen_name("complete"), messages,
+            model=self._model_uri,
         )
         text_out: str = ""
         tool_calls_out: list[dict[str, Any]] = []
@@ -373,7 +399,8 @@ class TracingProvider:
     ) -> AsyncIterator[StreamChunk]:
         import time
         obs_id = self._observer.on_generation_start(
-            self._trace_id, self._gen_name("stream"), messages
+            self._trace_id, self._gen_name("stream"), messages,
+            model=self._model_uri,
         )
         buffer: list[str] = []
         final_metadata: dict[str, Any] = {}
@@ -409,8 +436,7 @@ def build_observer(
       3. Auto-detect: enabled when keys are present
 
     Key resolution order (first non-empty wins):
-      explicit kwargs → LANGFUSE_DIALOG_PUBLIC_KEY / LANGFUSE_DIALOG_SECRET_KEY
-      → LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY
+      explicit kwargs → LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY
     """
     # ── enable/disable gate ───────────────────────────────────────────────
     if enable_tracing is None:
@@ -423,28 +449,20 @@ def build_observer(
         # else: auto-detect below
 
     # ── key resolution ────────────────────────────────────────────────────
-    pk = (
-        public_key
-        or os.environ.get("LANGFUSE_DIALOG_PUBLIC_KEY")
-        or os.environ.get("LANGFUSE_PUBLIC_KEY", "")
-    )
-    sk = (
-        secret_key
-        or os.environ.get("LANGFUSE_DIALOG_SECRET_KEY")
-        or os.environ.get("LANGFUSE_SECRET_KEY", "")
-    )
+    pk = public_key or os.environ.get("LANGFUSE_PUBLIC_KEY", "")
+    sk = secret_key or os.environ.get("LANGFUSE_SECRET_KEY", "")
     if not pk or not sk:
         if enable_tracing:
             logger.warning(
                 "superdialog tracing: SUPERDIALOG_TRACING=true but no Langfuse keys found "
-                "(set LANGFUSE_DIALOG_PUBLIC_KEY + LANGFUSE_DIALOG_SECRET_KEY); "
+                "(set LANGFUSE_PUBLIC_KEY + LANGFUSE_SECRET_KEY); "
                 "using NullObserver"
             )
         else:
             logger.debug("superdialog tracing: no keys — using NullObserver")
         return NullObserver()
 
-    lf_host = host or os.environ.get("LANGFUSE_HOST", "https://cloud.langfuse.com")
+    lf_host = host or os.environ.get("LANGFUSE_BASE_URL", "https://cloud.langfuse.com")
     try:
         from langfuse import Langfuse
 
