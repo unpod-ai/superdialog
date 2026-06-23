@@ -323,9 +323,7 @@ class LangfuseObserver:
     def flush(self) -> None:
         try:
             self._client.flush()
-            print(f"[LANGFUSE-DIALOG] flush ok pending={len(self._pending)}", flush=True)
         except Exception as exc:
-            print(f"[LANGFUSE-DIALOG] flush FAILED exc={type(exc).__name__}: {exc}", flush=True)
             logger.debug("langfuse flush skipped: %s", exc)
 
 
