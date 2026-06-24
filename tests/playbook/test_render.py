@@ -55,12 +55,14 @@ def test_system_message_cache_prefix_is_persona() -> None:
     # (b) the annotated prefix is a true leading substring of content.
     assert CACHE_PREFIX_KEY in sys_msg
     assert content.startswith(sys_msg[CACHE_PREFIX_KEY])
-    # (c) the prefix equals the persona source (stripped, as _system_block uses).
-    assert sys_msg[CACHE_PREFIX_KEY] == pb.persona.strip()
+    # (c) the prefix contains the persona (now larger: persona + static block + anchor).
+    assert pb.persona.strip() in sys_msg[CACHE_PREFIX_KEY]
 
 
 def test_budget_drops_old_transcript_before_guidance() -> None:
     pb, state = _setup()
+    from superdialog.playbook.models import GuidelineConfig
+    pb.guidelines = GuidelineConfig(channel="text")
     view = render_view(pb, state, token_budget=300)
     system = view.messages[0]["content"]
     assert "Collect naturally." in system  # guidance survives
@@ -233,6 +235,32 @@ def test_knowledge_base_jinja_degrades_to_raw_text() -> None:
 def test_devanagari_budget_estimate() -> None:
     """Byte-based estimate keeps Devanagari from voiding the token budget."""
     assert estimate_tokens("मुझे कल सुबह दस बजे का स्लॉट चाहिए") >= 22
+
+
+def test_voice_guideline_block_present_and_cache_prefix_extends() -> None:
+    from superdialog.llm.prompt_cache import CACHE_PREFIX_KEY
+    pb, state = _setup()  # MINIMAL_YAML: default guidelines (voice)
+    view = render_view(pb, state, token_budget=10_000)
+    sys_msg = view.messages[0]
+    content = sys_msg["content"]
+    assert "live phone call" in content.lower()
+    assert "CONVERSATIONAL LEADERSHIP" in content
+    prefix = sys_msg[CACHE_PREFIX_KEY]
+    assert content.startswith(prefix)
+    assert pb.persona.strip() in prefix
+    assert "live phone call" in prefix.lower()       # static block in prefix
+    assert "CURRENT DATE & TIME" in prefix            # anchor in prefix
+
+
+def test_text_channel_has_no_voice_block() -> None:
+    from superdialog.playbook.models import GuidelineConfig
+    pb = Playbook.from_yaml(MINIMAL_YAML).model_copy(
+        update={"guidelines": GuidelineConfig(channel="text")})
+    log = EventLog()
+    log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint="booking.collect", rule="init"))
+    state = ConversationState.fold(log, playbook=pb)
+    system = render_view(pb, state, token_budget=10_000).messages[0]["content"]
+    assert "live phone call" not in system.lower()
 
 
 def test_render_edges() -> None:

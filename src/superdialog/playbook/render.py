@@ -16,6 +16,7 @@ from jinja2.sandbox import SandboxedEnvironment
 from pydantic import BaseModel, Field
 
 from ..llm.prompt_cache import CACHE_PREFIX_KEY
+from ._guidelines import compose_guidelines, datetime_anchor_line
 from .expr import ExprError, evaluate
 from .models import Playbook
 from .state import ConversationState
@@ -89,11 +90,26 @@ def render_template(
         return text
 
 
-def _system_block(pb: Playbook, state: ConversationState) -> str:
+def _system_block(pb: Playbook, state: ConversationState) -> tuple[str, str]:
     ns = template_namespace(pb, state)
     cp = pb.checkpoint(state.checkpoint_id) if state.checkpoint_id else None
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    parts: list[str] = [pb.persona.strip(), f"Current date and time: {now}"]
+    blocks = compose_guidelines(
+        pb.guidelines,
+        has_summary=bool(state.summary),
+        handover=bool(cp and getattr(cp, "handover", False)),
+    )
+    now = state.now or datetime.now(timezone.utc)
+    anchor = datetime_anchor_line(now)
+    # persona + static guideline block + date anchor are session-constant, so
+    # together they form the stable cacheable prefix. Persona stays FIRST so the
+    # existing persona-leads invariant holds.
+    prefix_parts = [pb.persona.strip()]
+    if blocks.static:
+        prefix_parts.append(blocks.static)
+    prefix_parts.append(anchor)
+    cache_prefix = "\n\n".join(p for p in prefix_parts if p)
+
+    parts: list[str] = [cache_prefix]
     # "Direction" (steer) notes appear before step guidance so the guidance
     # text — which is more specific and may explicitly override the note —
     # lands later in the context and takes precedence with the LLM.
@@ -111,6 +127,8 @@ def _system_block(pb: Playbook, state: ConversationState) -> str:
             parts.append("Still needed: " + ", ".join(missing))
         if cp.never_say:
             parts.append("Never say: " + "; ".join(cp.never_say))
+    if blocks.handover:
+        parts.append(blocks.handover)
     if state.steering_note and state.steering_kind != "steer":
         label = "Correction" if state.steering_kind == "repair" else "Direction"
         parts.append(f"## {label} from supervisor\n{state.steering_note}")
@@ -124,6 +142,8 @@ def _system_block(pb: Playbook, state: ConversationState) -> str:
         parts.append("## Reference data\n" + view_lines)
     if state.summary:
         parts.append("## Earlier in this conversation\n" + state.summary)
+        if blocks.memory_guard:
+            parts.append(blocks.memory_guard)
     # Global knowledge base: answer off-flow questions in-context, then resume
     # the current step (the drift fix). Rendered through the same Jinja sandbox,
     # so an authoring typo degrades to raw text and never crashes the speaking
@@ -149,14 +169,14 @@ def _system_block(pb: Playbook, state: ConversationState) -> str:
         f"Only state facts present in {fact_sources}; "
         "if asked something not there, say you are checking."
     )
-    return "\n\n".join(p for p in parts if p)
+    return "\n\n".join(p for p in parts if p), cache_prefix
 
 
 def render_view(
     pb: Playbook, state: ConversationState, token_budget: int = 4000
 ) -> RenderedView:
     """Pack the Talker's view into ``token_budget`` estimated tokens."""
-    system = _system_block(pb, state)
+    system, cache_prefix = _system_block(pb, state)
     used = estimate_tokens(system)
     chat: list[dict[str, str]] = []
     # newest-first packing of transcript, then reverse to chronological
@@ -173,15 +193,13 @@ def render_view(
     # message list is always valid for all providers.
     if not chat:
         chat = [{"role": "user", "content": "[start]"}]
-    # Mark the stable prompt prefix (the persona, which leads ``system``) so the
-    # provider seam can cache it. ``_system_block`` builds ``system`` as
-    # "\n\n".join([pb.persona.strip(), ...]), so the persona is a true leading
-    # substring. The private key is stripped (or split into cache blocks) at the
-    # provider seam; ``content`` itself stays a bare string here.
+    # Mark the stable prompt prefix (persona + static guideline block + anchor,
+    # all session-constant) so the provider seam can cache it. The private key
+    # is stripped (or split into cache blocks) at the provider seam; ``content``
+    # itself stays a bare string here.
     sys_msg: dict[str, str] = {"role": "system", "content": system}
-    persona = pb.persona.strip()
-    if persona and system.startswith(persona):
-        sys_msg[CACHE_PREFIX_KEY] = persona
+    if cache_prefix and system.startswith(cache_prefix):
+        sys_msg[CACHE_PREFIX_KEY] = cache_prefix
     return RenderedView(
         messages=[sys_msg, *chat],
         spoke_from_version=state.version,
