@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -14,6 +15,7 @@ from .events import (
     ExternalEvent,
     ScratchpadEvent,
     SessionEndEvent,
+    SessionStartEvent,
     SlotWriteEvent,
     SteeringNoteEvent,
     SummaryEvent,
@@ -56,6 +58,7 @@ class ConversationState(BaseModel):
     """Derived snapshot of a conversation, computed by folding the event log."""
 
     version: int = 0
+    now: datetime | None = None  # per-call anchor from SessionStartEvent
     checkpoint_id: str | None = None
     checkpoint_entered_version: int = 0  # version of the AdvanceEvent that entered it
     # Append-only audit trail of exited checkpoints (revisits duplicate).
@@ -159,6 +162,11 @@ class ConversationState(BaseModel):
             elif isinstance(e, ExternalEvent):
                 if e.kind == "silence":
                     s.silence_count += 1
+            elif isinstance(e, SessionStartEvent):
+                try:
+                    s.now = datetime.fromisoformat(e.started_at)
+                except (ValueError, TypeError):
+                    s.now = None
             elif isinstance(e, SessionEndEvent):
                 s.ended, s.outcome = True, e.outcome
         return s

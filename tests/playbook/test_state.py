@@ -213,6 +213,24 @@ def test_steering_note_cleared_on_advance() -> None:
     assert state.steering_kind == "steer"
 
 
+def test_fold_sets_now_from_session_start() -> None:
+    from datetime import datetime
+    from superdialog.playbook.events import EventLog, SessionStartEvent
+    from superdialog.playbook.state import ConversationState
+
+    log = EventLog()
+    log.append(SessionStartEvent(started_at="2026-06-24T10:30:00+05:30",
+                                 timezone="Asia/Kolkata"))
+    state = ConversationState.fold(log)
+    assert isinstance(state.now, datetime)
+    assert state.now.year == 2026 and state.now.month == 6 and state.now.day == 24
+
+def test_fold_now_defaults_none_without_session_start() -> None:
+    from superdialog.playbook.events import EventLog
+    from superdialog.playbook.state import ConversationState
+    assert ConversationState.fold(EventLog()).now is None
+
+
 def test_gating_helpers() -> None:
     log = EventLog()
     log.append(
