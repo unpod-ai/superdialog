@@ -179,3 +179,15 @@ async def test_runtime_made_advances_excluded() -> None:
     report = await replay(log, pb, llm)
     assert report.stable
     assert report.advance_matches == 0 and report.diffs == []
+
+
+def test_anchor_is_stable_across_folds() -> None:
+    from superdialog.playbook.events import EventLog, SessionStartEvent
+    from superdialog.playbook.state import ConversationState
+
+    log = EventLog()
+    log.append(SessionStartEvent(started_at="2026-06-24T09:00:00+05:30",
+                                 timezone="Asia/Kolkata"))
+    a = ConversationState.fold(log).now
+    b = ConversationState.fold(log).now
+    assert a == b and a is not None  # folded from the log, never re-clocked
