@@ -66,6 +66,12 @@ class EnvWriteEvent(_Base):
     value: str
 
 
+class SessionStartEvent(_Base):
+    type: Literal["session_start"] = "session_start"
+    started_at: str = ""  # ISO-8601, tz-aware; the per-call date/time anchor
+    timezone: str = "UTC"
+
+
 class ScratchpadEvent(_Base):
     type: Literal["scratchpad"] = "scratchpad"
     text: str
@@ -105,6 +111,7 @@ Event = Annotated[
         ToolCallEvent,
         ToolResultEvent,
         EnvWriteEvent,
+        SessionStartEvent,
         ScratchpadEvent,
         SummaryEvent,
         ExternalEvent,

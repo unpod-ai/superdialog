@@ -88,3 +88,16 @@ def test_empty_round_trip() -> None:
     restored = EventLog.from_jsonl("")
     assert restored.version == 0
     assert not restored.events
+
+
+def test_session_start_event_round_trips() -> None:
+    from superdialog.playbook.events import EventLog, SessionStartEvent
+
+    log = EventLog()
+    log.append(SessionStartEvent(started_at="2026-06-24T10:30:00+05:30",
+                                 timezone="Asia/Kolkata"))
+    restored = EventLog.from_jsonl(log.to_jsonl())
+    e = restored.events[0]
+    assert e.type == "session_start"
+    assert e.started_at == "2026-06-24T10:30:00+05:30"
+    assert e.timezone == "Asia/Kolkata"
