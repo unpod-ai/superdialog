@@ -96,8 +96,12 @@ def _system_block(pb: Playbook, state: ConversationState) -> tuple[str, str]:
     blocks = compose_guidelines(
         pb.guidelines,
         has_summary=bool(state.summary),
+        # Checkpoint.handover lands in a later task; getattr default keeps this a
+        # safe no-op until then.
         handover=bool(cp and getattr(cp, "handover", False)),
     )
+    # state.now is session-frozen via runtime.start(); the wall-clock fallback is
+    # the degraded test path (not cache-stable).
     now = state.now or datetime.now(timezone.utc)
     anchor = datetime_anchor_line(now)
     # persona + static guideline block + date anchor are session-constant, so
