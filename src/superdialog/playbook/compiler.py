@@ -15,6 +15,7 @@ from superdialog.playbook.models import (
     AdvanceRule,
     Checkpoint,
     DispatchEntry,
+    GuidelineConfig,
     HandlerSpec,
     InterruptSpec,
     Journey,
@@ -1215,8 +1216,18 @@ class _Compiler:
             "judges per-checkpoint advance rules; hub routes are merged "
             "into each inbound checkpoint's advance_when"
         )
+        _tone = (
+            self.flow.agent_tone
+            if self.flow.agent_tone in ("professional", "casual")
+            else "professional"
+        )
+        guidelines = GuidelineConfig(
+            language=self.flow.agent_language or "en",
+            tone=_tone,
+        )
         pb = Playbook(
             persona=self._rw(self.flow.system_prompt),
+            guidelines=guidelines,
             journeys={
                 "main": Journey(
                     checkpoints=[

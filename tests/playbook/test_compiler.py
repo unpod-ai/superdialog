@@ -480,3 +480,44 @@ def test_neutral_gloss_is_not_stripped() -> None:
         target="main.t",
     )
     assert rule.judge == "llm"
+
+
+# -- guidelines threading -------------------------------------------------------
+
+
+def _minimal_flow(**kwargs) -> ConversationFlow:
+    """Return a minimal two-node ConversationFlow with the given extra fields."""
+    flow = _flow()
+    # mutate the two free-string fields before compiling
+    for key, val in kwargs.items():
+        object.__setattr__(flow, key, val)
+    return flow
+
+
+def test_agent_language_and_tone_threaded_into_guidelines() -> None:
+    """compile_flow threads agent_language/agent_tone into pb.guidelines."""
+    flow = _flow()
+    flow.agent_language = "hi"
+    flow.agent_tone = "casual"
+    pb = compile_flow(flow)
+    assert pb.guidelines.language == "hi"
+    assert pb.guidelines.tone == "casual"
+
+
+def test_empty_language_and_out_of_range_tone_use_safe_defaults() -> None:
+    """Empty/unmapped agent_tone → 'professional'; empty agent_language → 'en'."""
+    # empty strings → defaults
+    flow_empty = _flow()
+    flow_empty.agent_language = ""
+    flow_empty.agent_tone = ""
+    pb_empty = compile_flow(flow_empty)
+    assert pb_empty.guidelines.language == "en"
+    assert pb_empty.guidelines.tone == "professional"
+
+    # out-of-range free string → default tone, language passes through
+    flow_oor = _flow()
+    flow_oor.agent_language = "fr"
+    flow_oor.agent_tone = "friendly"
+    pb_oor = compile_flow(flow_oor)
+    assert pb_oor.guidelines.language == "fr"
+    assert pb_oor.guidelines.tone == "professional"
