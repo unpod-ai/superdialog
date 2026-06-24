@@ -127,7 +127,7 @@ def _is_non_english(language: str | list[str]) -> bool:
     langs = [language] if isinstance(language, str) else list(language)
     for raw in langs:
         s = (raw or "").strip().lower()
-        if s and not s.startswith("en") and s != "english":
+        if s and not s.startswith("en"):
             return True
     return False
 
@@ -162,6 +162,8 @@ def compose_guidelines(
         )
         static = header + "\n\n" + "\n\n".join(parts)
 
+    # Only the static voice spine is channel-gated; memory_guard/handover
+    # guidance is channel-neutral, so it's computed regardless of channel.
     memory_guard = MEMORY_GUARD.strip() if (cfg.memory_enabled and has_summary) else ""
     handover_text = HANDOVER_INSTRUCTIONS.strip() if handover else ""
     return GuidelineBlocks(static=static, memory_guard=memory_guard, handover=handover_text)
@@ -176,10 +178,11 @@ def datetime_anchor_line(now: datetime) -> str:
     )
 
 
+# Indian convention: DD/MM/YYYY (the "%d/%m/%Y" entry). MM/DD ambiguity is caller-side.
 _ABS_FORMATS = ("%Y-%m-%d", "%d %B %Y", "%d %b %Y", "%B %d %Y", "%b %d, %Y", "%d/%m/%Y")
 
 
-def normalize_date(value, now: datetime | None):
+def normalize_date(value: object, now: datetime | None):
     """Resolve a date value to an absolute ISO date string when possible.
 
     Relative words resolve against ``now``; common absolute formats canonicalize

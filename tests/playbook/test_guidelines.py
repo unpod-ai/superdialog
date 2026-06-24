@@ -27,8 +27,13 @@ def test_casual_tone_and_language_and_domain() -> None:
     b = compose_guidelines(GuidelineConfig(
         tone="casual", language="hi", call_type="support"))
     assert "Warm" in b.static                               # casual tone
-    assert "Language & Accent" in b.static or "code-switch" in b.static.lower()
+    assert "Language & Accent" in b.static
     assert "Customer Support Flows" in b.static             # domain pattern
+
+
+def test_followup_block_only_when_enabled() -> None:
+    assert "Follow-ups" in compose_guidelines(GuidelineConfig(followup_enabled=True)).static
+    assert "Follow-ups" not in compose_guidelines(GuidelineConfig()).static
 
 
 def test_memory_guard_only_when_enabled_and_summary() -> None:
