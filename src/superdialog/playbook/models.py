@@ -25,6 +25,19 @@ _YamlLoader.add_implicit_resolver(
 )
 
 
+class GuidelineConfig(BaseModel):
+    """Voice-guideline knobs. Every default reproduces pre-feature behavior."""
+
+    channel: Literal["voice", "text"] = "voice"
+    tone: Literal["professional", "casual"] = "professional"
+    # A language name ("English"), an ISO 639-1 code ("hi"), or a list.
+    language: str | list[str] = "en"
+    call_type: Literal["sales", "support", "booking"] | None = None
+    timezone: str = "UTC"  # IANA name; a model field, NOT an env var.
+    memory_enabled: bool = False
+    followup_enabled: bool = False
+
+
 class SlotSpec(BaseModel):
     type: Literal["str", "int", "float", "bool", "date", "enum", "array", "object"] = (
         "str"
@@ -156,6 +169,7 @@ class Policies(BaseModel):
 
 class Playbook(BaseModel):
     persona: str = ""
+    guidelines: GuidelineConfig = Field(default_factory=GuidelineConfig)
     journeys: dict[str, Journey] = Field(min_length=1)
     dispatch: list[DispatchEntry] = Field(default_factory=list)
     tools: list[ToolSpec] = Field(default_factory=list)

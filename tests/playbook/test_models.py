@@ -3,7 +3,7 @@ import textwrap
 import pytest
 from pydantic import ValidationError
 
-from superdialog.playbook.models import Playbook, RetrySpec
+from superdialog.playbook.models import GuidelineConfig, Playbook, RetrySpec
 
 MINIMAL_YAML = textwrap.dedent("""
     persona: "You are a booking assistant."
@@ -275,3 +275,39 @@ def test_load_compiles_a_flow_json_file(tmp_path) -> None:
     shutil.copy(src, dst)
     pb = Playbook.load(str(dst))
     assert len(pb.tools) > 0  # the golf flow's actions became tools
+
+
+def test_guideline_config_defaults_and_parsing() -> None:
+    pb = Playbook.from_yaml(MINIMAL_YAML)
+    # default: present, voice channel, professional tone, English
+    assert isinstance(pb.guidelines, GuidelineConfig)
+    assert pb.guidelines.channel == "voice"
+    assert pb.guidelines.tone == "professional"
+    assert pb.guidelines.language == "en"
+    assert pb.guidelines.call_type is None
+    assert pb.guidelines.timezone == "UTC"
+    assert pb.guidelines.memory_enabled is False
+    assert pb.guidelines.followup_enabled is False
+
+    pb2 = Playbook.from_yaml(MINIMAL_YAML.replace(
+        'persona: "You are a booking assistant."',
+        'persona: "You are a booking assistant."\n'
+        "guidelines: {channel: text, tone: casual, language: hi, "
+        "call_type: booking, timezone: Asia/Kolkata, memory_enabled: true, "
+        "followup_enabled: true}",
+    ))
+    assert pb2.guidelines.channel == "text"
+    assert pb2.guidelines.tone == "casual"
+    assert pb2.guidelines.language == "hi"
+    assert pb2.guidelines.call_type == "booking"
+    assert pb2.guidelines.timezone == "Asia/Kolkata"
+    assert pb2.guidelines.memory_enabled is True
+    assert pb2.guidelines.followup_enabled is True
+
+    # the language field also accepts a list form
+    pb3 = Playbook.from_yaml(MINIMAL_YAML.replace(
+        'persona: "You are a booking assistant."',
+        'persona: "You are a booking assistant."\n'
+        "guidelines: {language: [en, hi]}",
+    ))
+    assert pb3.guidelines.language == ["en", "hi"]
