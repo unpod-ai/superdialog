@@ -21,6 +21,22 @@ def test_voice_default_spine_present() -> None:
 def test_text_channel_suppresses_voice_spine() -> None:
     b = compose_guidelines(GuidelineConfig(channel="text"))
     assert b.static == ""
+    assert b.sections == []
+
+
+def test_sections_breakdown_tracks_active_chunks() -> None:
+    # default voice spine
+    assert compose_guidelines(GuidelineConfig()).sections == [
+        "voice_core", "leadership", "tone:professional"
+    ]
+    # full conditional set: casual tone, non-English, domain, followup
+    s = compose_guidelines(GuidelineConfig(
+        tone="casual", language="hi", call_type="support", followup_enabled=True
+    )).sections
+    assert s == [
+        "voice_core", "leadership", "tone:casual",
+        "language_accent", "followup", "domain:support", "multilingual",
+    ]
 
 
 def test_casual_tone_and_language_and_domain() -> None:

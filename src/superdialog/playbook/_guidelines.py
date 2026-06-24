@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .models import GuidelineConfig
 
@@ -121,6 +121,7 @@ class GuidelineBlocks(BaseModel):
     static: str = ""        # session-constant: voice spine + tone + language + domain
     memory_guard: str = ""  # rendered beside the summary section when present
     handover: str = ""      # rendered when a handover checkpoint is active
+    sections: list[str] = Field(default_factory=list)  # chunk names in `static`, for tracing
 
 
 def _is_non_english(language: str | list[str]) -> bool:
@@ -139,22 +140,33 @@ def compose_guidelines(
     handover: bool = False,
 ) -> GuidelineBlocks:
     """Build the guideline blocks deterministically from config + state flags."""
+    sections: list[str] = []  # chunk names included in `static`, in order, for tracing
     if cfg.channel == "text":
         # voice/TTS rules are wrong for a text channel; emit nothing static.
         static = ""
     else:
         parts = [VOICE_CORE.strip(), LEADERSHIP_RULES.strip()]
-        parts.append(TONE_CASUAL.strip() if cfg.tone == "casual" else TONE_PROFESSIONAL.strip())
+        sections += ["voice_core", "leadership"]
+        if cfg.tone == "casual":
+            parts.append(TONE_CASUAL.strip())
+            sections.append("tone:casual")
+        else:
+            parts.append(TONE_PROFESSIONAL.strip())
+            sections.append("tone:professional")
         non_english = _is_non_english(cfg.language)
         if non_english:
             parts.append(LANGUAGE_ACCENT.strip())
+            sections.append("language_accent")
         if cfg.followup_enabled:
             parts.append(FOLLOWUP.strip())
+            sections.append("followup")
         domain = _DOMAIN.get(cfg.call_type or "")
         if domain:
             parts.append(domain.strip())
+            sections.append(f"domain:{cfg.call_type}")
         if non_english:
             parts.append(MULTILINGUAL_PATTERNS.strip())
+            sections.append("multilingual")
         header = (
             "## DEFAULT VOICE GUIDELINES (baseline)\n"
             "Universal voice-call best practices. The business context and step "
@@ -166,7 +178,12 @@ def compose_guidelines(
     # guidance is channel-neutral, so it's computed regardless of channel.
     memory_guard = MEMORY_GUARD.strip() if (cfg.memory_enabled and has_summary) else ""
     handover_text = HANDOVER_INSTRUCTIONS.strip() if handover else ""
-    return GuidelineBlocks(static=static, memory_guard=memory_guard, handover=handover_text)
+    return GuidelineBlocks(
+        static=static,
+        memory_guard=memory_guard,
+        handover=handover_text,
+        sections=sections,
+    )
 
 
 def datetime_anchor_line(now: datetime) -> str:

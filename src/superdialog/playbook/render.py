@@ -110,13 +110,24 @@ def _system_block(pb: Playbook, state: ConversationState) -> tuple[str, str]:
     # (e.g. the playground's own _with_default_guidelines append).
     # Always-on console trace so guideline feeding is visible in every run.
     # print (not logging) so it shows even when the host (uvicorn/playground)
-    # hasn't configured an INFO-level root logger.
+    # hasn't configured an INFO-level root logger. `fed` enumerates every
+    # guideline chunk active this turn — the default voice spine sections plus
+    # the conditionals (memory/handover/date-discipline/strict) — so it's clear
+    # which planned guidelines are feeding and which are gated off.
+    fed = list(blocks.static and blocks.sections or [])
+    if blocks.memory_guard:
+        fed.append("memory_guard")
+    if blocks.handover:
+        fed.append("handover")
+    if cp and any(s.type == "date" for s in cp.slots.values()):
+        fed.append("date_discipline(director)")
+    if cp and (cp.say_verbatim is not None or getattr(cp, "strict", False)):
+        fed.append("strict_verbatim")
     print(
         f"[guidelines] checkpoint={state.checkpoint_id} "
-        f"channel={pb.guidelines.channel} voice_block={len(blocks.static)}chars "
-        f"memory_guard={bool(blocks.memory_guard)} handover={bool(blocks.handover)} "
-        f"anchor_from_log={state.now is not None} "
-        f"persona_already_has_guidelines={'DEFAULT VOICE GUIDELINES' in pb.persona}",
+        f"channel={pb.guidelines.channel} anchor_from_log={state.now is not None} "
+        f"persona_already_has_guidelines={'DEFAULT VOICE GUIDELINES' in pb.persona} "
+        f"fed={fed}",
         flush=True,
     )
     # persona + static guideline block + date anchor are session-constant, so
