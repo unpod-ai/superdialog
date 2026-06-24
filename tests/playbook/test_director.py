@@ -273,3 +273,51 @@ async def test_verdict_prompt_tool_results_empty_state() -> None:
     await Director(pb, llm).evaluate(state)
     system = llm.calls[0][0]["content"]
     assert "Tool results:\n(none)" in system
+
+
+def test_verdict_prompt_injects_date_discipline_when_date_slot() -> None:
+    from datetime import datetime, timezone  # noqa: F401
+    from superdialog.playbook.director import _verdict_prompt
+    from superdialog.playbook.events import (
+        EventLog, AdvanceEvent, SessionStartEvent, UtteranceEvent,
+    )
+    from superdialog.playbook.state import ConversationState
+
+    pb = Playbook.from_yaml(MINIMAL_YAML)  # booking.collect has a `date` slot
+    log = EventLog()
+    log.append(SessionStartEvent(started_at="2026-06-24T00:00:00+00:00", timezone="UTC"))
+    log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint="booking.collect", rule="init"))
+    log.append(UtteranceEvent(role="user", text="tomorrow"))
+    state = ConversationState.fold(log, playbook=pb)
+    cp = pb.checkpoint("booking.collect")
+    system = _verdict_prompt(pb, cp, state)[0]["content"]
+    assert "CURRENT DATE & TIME" in system
+    assert "absolute" in system.lower()
+
+
+def test_verdict_prompt_no_date_block_when_no_date_slot() -> None:
+    # A checkpoint with no date slot must not get the date block (and the
+    # _VERDICT_PREAMBLE prefix is unaffected).
+    import textwrap
+    from superdialog.playbook.director import _verdict_prompt, _VERDICT_PREAMBLE
+    from superdialog.playbook.events import EventLog, AdvanceEvent, SessionStartEvent, UtteranceEvent
+    from superdialog.playbook.state import ConversationState
+
+    pb = Playbook.from_yaml(textwrap.dedent('''
+        persona: "A."
+        journeys:
+          j:
+            checkpoints:
+              - id: ask
+                slots: {name: {type: str}}
+              - id: done
+                terminal: true
+    '''))
+    log = EventLog()
+    log.append(SessionStartEvent(started_at="2026-06-24T00:00:00+00:00", timezone="UTC"))
+    log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint="j.ask", rule="init"))
+    log.append(UtteranceEvent(role="user", text="hi"))
+    state = ConversationState.fold(log, playbook=pb)
+    msg = _verdict_prompt(pb, pb.checkpoint("j.ask"), state)[0]
+    assert "CURRENT DATE & TIME" not in msg["content"]
+    assert msg["content"].startswith(_VERDICT_PREAMBLE)  # cache prefix intact

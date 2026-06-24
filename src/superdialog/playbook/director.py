@@ -8,6 +8,7 @@ from typing import Any, Callable, Literal, Protocol
 from pydantic import BaseModel, Field
 
 from ..llm.prompt_cache import CACHE_PREFIX_KEY
+from ._guidelines import DATE_DISCIPLINE, datetime_anchor_line
 from .events import AdvanceEvent, Event, SlotWriteEvent, SteeringNoteEvent
 from .expr import ExprError, evaluate
 from .models import Checkpoint, Playbook, SlotSpec
@@ -84,6 +85,12 @@ def _verdict_prompt(
         )
         or "(none)"
     )
+    has_date = any(s.type == "date" for s in cp.slots.values())
+    date_block = ""
+    if has_date and state.now is not None:
+        date_block = (
+            "\n" + datetime_anchor_line(state.now) + "\n" + DATE_DISCIPLINE.strip() + "\n\n"
+        )
     known = {k: v.value for k, v in state.slots.items()}
     # Compact outcome summary only (ok/status), never the data payload:
     # result-dependent rules must be judged on what the tools actually did.
@@ -112,7 +119,8 @@ def _verdict_prompt(
         "SLOT RULE: Only extract a slot when the user EXPLICITLY states that value "
         "in this utterance. Never infer slots from ambiguous yes/no answers to "
         "unrelated questions.\n\n"
-        f"Current step: {cp.id} — goal: {cp.goal}\n"
+        + date_block
+        + f"Current step: {cp.id} — goal: {cp.goal}\n"
         f"Slots to extract:\n{slot_lines}\n"
         f"Already known: {json.dumps(known, default=str)}\n"
         f"Tool results:\n{tool_lines}\n"
