@@ -89,6 +89,8 @@ class Checkpoint(BaseModel):
     advance_when: list[AdvanceRule] = Field(default_factory=list)
     gate: Literal["soft", "hard"] = "hard"
     auto: bool = False  # speak verbatim once, then advance without user input
+    strict: bool = False  # speak say_verbatim word-for-word; never paraphrase via the LLM
+    handover: bool = False  # inject the handover summary instruction at this step
     pipeline: str | None = None
     on_enter: list[str] = Field(default_factory=list)  # tool ids
     on_failure: str | None = None  # checkpoint id

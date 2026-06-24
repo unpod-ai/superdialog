@@ -121,11 +121,17 @@ class Talker:
                 else None
             )
 
-        if cp is not None and cp.say_verbatim is not None:
-            text = render_template(cp.say_verbatim, self._pb, state)
-            yield SpeechChunk(
-                text=text.strip(), final=True, spoke_from_version=state.version
-            )
+        if cp is not None and (cp.say_verbatim is not None or cp.strict):
+            if cp.say_verbatim is not None:
+                text = render_template(cp.say_verbatim, self._pb, state)
+                yield SpeechChunk(
+                    text=text.strip(), final=True, spoke_from_version=state.version
+                )
+            else:
+                # strict but no verbatim authored: never improvise on a strict step.
+                yield SpeechChunk(
+                    text=self._recovery_line, final=True, spoke_from_version=state.version
+                )
             return
 
         view = render_view(self._pb, state, token_budget=self._budget)

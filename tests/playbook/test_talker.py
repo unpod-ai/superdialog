@@ -214,3 +214,53 @@ def test_default_hold_timeout_is_four_seconds() -> None:
     pb, _ = _state("booking.collect")
     talker = Talker(pb, StreamLLM([]))
     assert talker._hold_timeout == 4.0
+
+
+async def test_strict_checkpoint_speaks_verbatim_without_llm() -> None:
+    import textwrap
+    yaml_text = textwrap.dedent('''
+        persona: "Assistant."
+        journeys:
+          j:
+            checkpoints:
+              - id: greet
+                strict: true
+                say_verbatim: "Welcome to Villa Raag."
+                gate: hard
+              - id: done
+                terminal: true
+    ''')
+    pb = Playbook.from_yaml(yaml_text)
+    log = EventLog()
+    log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint="j.greet", rule="init"))
+    state = ConversationState.fold(log, playbook=pb)
+    llm = StreamLLM(["should not be called"])
+    chunks = [c async for c in Talker(pb, llm).speak(state)]
+    assert "".join(c.text for c in chunks) == "Welcome to Villa Raag."
+    assert llm.calls == 0
+
+
+async def test_strict_without_verbatim_does_not_call_llm() -> None:
+    # A strict checkpoint with NO say_verbatim must still not improvise via the
+    # LLM; it falls back to the recovery line.
+    import textwrap
+    from superdialog.playbook.talker import RECOVERY_LINE
+    yaml_text = textwrap.dedent('''
+        persona: "Assistant."
+        journeys:
+          j:
+            checkpoints:
+              - id: greet
+                strict: true
+                guidance: "say hi"
+              - id: done
+                terminal: true
+    ''')
+    pb = Playbook.from_yaml(yaml_text)
+    log = EventLog()
+    log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint="j.greet", rule="init"))
+    state = ConversationState.fold(log, playbook=pb)
+    llm = StreamLLM(["should not be called"])
+    chunks = [c async for c in Talker(pb, llm).speak(state)]
+    assert llm.calls == 0
+    assert RECOVERY_LINE in "".join(c.text for c in chunks)
