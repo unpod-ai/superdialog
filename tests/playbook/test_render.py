@@ -263,6 +263,28 @@ def test_text_channel_has_no_voice_block() -> None:
     assert "live phone call" not in system.lower()
 
 
+def test_handover_checkpoint_injects_handover_block() -> None:
+    import textwrap
+    yaml_text = textwrap.dedent('''
+        persona: "Assistant."
+        journeys:
+          j:
+            checkpoints:
+              - id: transfer
+                handover: true
+                guidance: "Connect to a human."
+              - id: done
+                terminal: true
+    ''')
+    pb = Playbook.from_yaml(yaml_text)
+    log = EventLog()
+    log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint="j.transfer", rule="init"))
+    state = ConversationState.fold(log, playbook=pb)
+    system = render_view(pb, state, token_budget=10_000).messages[0]["content"]
+    assert "Handover" in system
+    assert "summary" in system.lower()
+
+
 def test_render_edges() -> None:
     # (a) tiny budget: system survives, transcript dropped; placeholder injected
     # so message list is never system-only (provider compatibility).

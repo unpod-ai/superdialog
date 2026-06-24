@@ -303,6 +303,42 @@ Top-level fields, all on `superdialog.playbook.models.Playbook`:
 Every cross-reference (rule targets, pipeline ids, tool ids, `requires`
 keys) is validated at load time.
 
+### `guidelines:` — voice and channel configuration
+
+`guidelines:` is an optional top-level block that controls how the runtime
+injects speaking-style instructions. All fields have defaults, so existing
+playbooks that omit the block are unaffected.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `channel` | `voice` \| `text` | `voice` | Delivery channel. `voice` injects the baseline TTS/speaking-style block; `text` suppresses it. |
+| `tone` | `professional` \| `casual` | `professional` | Speaking tone injected as part of the voice block. |
+| `language` | str or list[str] | `en` | ISO 639-1 code(s) or language names. A non-English value adds the Language & Accent and Hinglish-examples blocks. |
+| `call_type` | `sales` \| `support` \| `booking` \| `none` | — | Adds a domain-specific pattern block (`## Pre-Sales Flows`, `## Customer Support Flows`, or `## Appointment Booking Flows`) to the voice guidelines. |
+| `timezone` | IANA tz string | `UTC` | The timezone used for the per-call date/time anchor injected into every Talker turn. |
+| `memory_enabled` | bool | `false` | When `true`, injects a "Using Past Context" guard beside the conversation summary when one is present. |
+| `followup_enabled` | bool | `false` | When `true`, injects the Follow-ups & Callbacks block. |
+
+**Voice channel behavior.** For `channel: voice` (the default), a baseline
+voice/TTS guideline block — covering one-thought-per-turn speaking style,
+conversational leadership, tone, and (when applicable) language/accent and
+domain patterns — is appended after the persona in every Talker system
+prompt. The block is session-constant and lands in the stable cache prefix
+alongside the persona and the date anchor. For `channel: text` the block is
+suppressed entirely.
+
+**Date/time anchor and date slots.** A `## CURRENT DATE & TIME` line (derived
+from `timezone`) is injected into every Talker turn so the agent resolves
+relative references ("tomorrow", "next Monday") to exact absolute dates.
+Slots declared with `type: date` default to `gate: hard` — the slot must be
+confirmed before it satisfies a rule's `requires` check. Set `gate: soft` on
+the slot to opt out of this default.
+
+**Handover checkpoints.** A checkpoint with `handover: true` causes the
+handover summary instruction to appear in that turn's system prompt: the agent
+is instructed to hand over a 1–2 sentence neutral summary (caller name, reason
+for calling, request) when transferring to a human.
+
 **How simple maps onto full** - useful when graduating a file:
 
 | Simple key | Compiles to |
