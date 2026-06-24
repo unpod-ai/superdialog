@@ -104,6 +104,21 @@ def _system_block(pb: Playbook, state: ConversationState) -> tuple[str, str]:
     # the degraded test path (not cache-stable).
     now = state.now or datetime.now(timezone.utc)
     anchor = datetime_anchor_line(now)
+    # Opt-in runtime trace (SUPERDIALOG_GUIDELINES_DEBUG=1): confirms the framework
+    # voice-guideline block + date anchor are actually fed into the Talker prompt,
+    # and flags double-injection when a persona already carries a guideline block
+    # (e.g. the playground's own _with_default_guidelines append).
+    # Always-on console trace so guideline feeding is visible in every run.
+    # print (not logging) so it shows even when the host (uvicorn/playground)
+    # hasn't configured an INFO-level root logger.
+    print(
+        f"[guidelines] checkpoint={state.checkpoint_id} "
+        f"channel={pb.guidelines.channel} voice_block={len(blocks.static)}chars "
+        f"memory_guard={bool(blocks.memory_guard)} handover={bool(blocks.handover)} "
+        f"anchor_from_log={state.now is not None} "
+        f"persona_already_has_guidelines={'DEFAULT VOICE GUIDELINES' in pb.persona}",
+        flush=True,
+    )
     # persona + static guideline block + date anchor are session-constant, so
     # together they form the stable cacheable prefix. Persona stays FIRST so the
     # existing persona-leads invariant holds.
