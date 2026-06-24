@@ -56,6 +56,16 @@ class SlotSpec(BaseModel):
     # hard-gated checkpoint. See capability ``dialogue-gate-policy``.
     gate: Literal["soft", "hard"] | None = None
 
+    @model_validator(mode="after")
+    def _date_defaults_hard(self) -> "SlotSpec":
+        # A date/time slot drives a booking; confirm-before-action is realized
+        # by a hard gate. Default it to hard so a date slot is hard even inside
+        # an explicitly-soft collection checkpoint. An author may still set
+        # `gate: soft` on the slot to override.
+        if self.type == "date" and self.gate is None:
+            self.gate = "hard"
+        return self
+
 
 class AdvanceRule(BaseModel):
     when: str

@@ -249,3 +249,41 @@ async def test_confidence_requested_only_when_fast_release() -> None:
     fast = CannedLLM({"slots": {}, "advance": None})
     await Director(pb, fast, fast_release=True).evaluate(state)
     assert "confidence" in fast.calls[0][0]["content"]
+
+
+# ---------------------------------------------------------------------------
+# Task 4.3 — date slot auto-hard-gate
+# ---------------------------------------------------------------------------
+
+
+def test_date_slot_auto_hard_even_in_soft_checkpoint() -> None:
+    import textwrap
+    yaml_text = textwrap.dedent('''
+        journeys:
+          j:
+            checkpoints:
+              - id: collect
+                gate: soft
+                slots:
+                  when: {type: date}
+              - id: done
+                terminal: true
+    ''')
+    pb = Playbook.from_yaml(yaml_text)
+    assert pb.checkpoint("j.collect").slots["when"].gate == "hard"
+
+
+def test_date_slot_explicit_soft_is_respected() -> None:
+    import textwrap
+    yaml_text = textwrap.dedent('''
+        journeys:
+          j:
+            checkpoints:
+              - id: collect
+                slots:
+                  when: {type: date, gate: soft}
+              - id: done
+                terminal: true
+    ''')
+    pb = Playbook.from_yaml(yaml_text)
+    assert pb.checkpoint("j.collect").slots["when"].gate == "soft"

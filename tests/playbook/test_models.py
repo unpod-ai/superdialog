@@ -15,7 +15,7 @@ MINIMAL_YAML = textwrap.dedent("""
             gate: soft
             slots:
               city: {type: str, required: true, invalidates: [course_id]}
-              date: {type: date, required: true}
+              date: {type: date, required: true, gate: soft}
             guidance: "Collect naturally."
             advance_when:
               - {when: "details complete", judge: llm, to: booking.confirm,
