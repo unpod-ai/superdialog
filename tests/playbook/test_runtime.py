@@ -279,6 +279,25 @@ async def test_hop_exhaustion_logged() -> None:
     )
 
 
+async def test_start_seeds_session_start_anchor() -> None:
+    from superdialog.playbook.events import SessionStartEvent
+    from superdialog.playbook.models import GuidelineConfig
+
+    base = Playbook.from_yaml(MINIMAL_YAML)
+    pb = base.model_copy(update={"guidelines": GuidelineConfig(timezone="Asia/Kolkata")})
+    rt = PlaybookRuntime(
+        pb,
+        director_llm=CannedLLM({"slots": {}, "advance": None, "note": None}),
+        http=FakeHttp([]),
+    )
+    await rt.start()
+    starts = [e for e in rt.log.events if isinstance(e, SessionStartEvent)]
+    assert len(starts) == 1
+    assert starts[0].timezone == "Asia/Kolkata"
+    assert rt.log.events[0].type == "session_start"
+    assert rt.state.now is not None and rt.state.now.tzinfo is not None
+
+
 async def test_degraded_path_still_applies_policies() -> None:
     class BadLLM:
         async def complete(self, messages, **kwargs) -> str:

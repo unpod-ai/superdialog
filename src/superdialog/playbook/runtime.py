@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
 
@@ -15,6 +17,7 @@ from .events import (
     EventLog,
     ExternalEvent,
     SessionEndEvent,
+    SessionStartEvent,
     SlotWriteEvent,
     SteeringNoteEvent,
     ToolResultEvent,
@@ -84,7 +87,15 @@ class PlaybookRuntime:
         self._state_cache_version = -1
 
     async def start(self) -> list[str]:
-        """Seed env, enter the initial checkpoint, and run to quiescence."""
+        """Seed the date anchor + env, enter the initial checkpoint, quiesce."""
+        tz_name = self._pb.guidelines.timezone or "UTC"
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz, tz_name = ZoneInfo("UTC"), "UTC"
+        self.log.append(
+            SessionStartEvent(started_at=datetime.now(tz).isoformat(), timezone=tz_name)
+        )
         for key, value in self._pb.env.items():
             self.log.append(EnvWriteEvent(key=key, value=value))
         pass_through: list[str] = []
