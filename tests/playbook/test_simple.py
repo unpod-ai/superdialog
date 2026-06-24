@@ -351,6 +351,23 @@ def test_interrupt_with_dangling_target_is_rejected() -> None:
         simple_to_playbook(doc)
 
 
+def test_simple_maps_memory_and_followup_toggles() -> None:
+    import yaml
+    from superdialog.playbook.simple import simple_to_playbook
+
+    doc = yaml.safe_load(SIMPLE)
+    # defaults: both off
+    assert simple_to_playbook(doc).guidelines.memory_enabled is False
+    assert simple_to_playbook(doc).guidelines.followup_enabled is False
+
+    doc2 = yaml.safe_load(SIMPLE)
+    doc2["memory_enabled"] = True
+    doc2["followup_enabled"] = True
+    pb = simple_to_playbook(doc2)
+    assert pb.guidelines.memory_enabled is True
+    assert pb.guidelines.followup_enabled is True
+
+
 def test_simple_maps_guideline_fields() -> None:
     import yaml
     from superdialog.playbook.simple import simple_to_playbook

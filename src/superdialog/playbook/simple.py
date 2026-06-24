@@ -66,6 +66,8 @@ class SimplePlaybook(BaseModel):
     tone: str = "professional"
     call_type: str | None = None
     timezone: str = "UTC"
+    memory_enabled: bool = False
+    followup_enabled: bool = False
 
 
 def is_simple_playbook(doc: Any) -> bool:
@@ -252,6 +254,8 @@ def simple_to_playbook(doc: dict[str, Any]) -> Playbook:
         language=sp.persona.language or "en",
         call_type=sp.call_type,
         timezone=sp.timezone,
+        memory_enabled=sp.memory_enabled,
+        followup_enabled=sp.followup_enabled,
     )
     return Playbook(
         persona=_build_persona(sp),
