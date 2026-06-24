@@ -280,3 +280,12 @@ def test_agent_explicit_hold_timeout_wins_over_policies() -> None:
         hold_timeout=1.5,
     )
     assert explicit._talker._hold_timeout == 1.5
+
+
+def test_apply_memory_seeds_summary_event() -> None:
+    from superdialog.playbook.events import SummaryEvent
+    agent = _agent()
+    agent.apply_memory("Caller is a returning member; last call was about a refund.")
+    summaries = [e for e in agent.runtime.log.events if isinstance(e, SummaryEvent)]
+    assert summaries and "returning member" in summaries[-1].text
+    assert agent.runtime.state.summary == summaries[-1].text

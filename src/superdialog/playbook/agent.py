@@ -23,7 +23,7 @@ from ..agent import TurnResult
 from ..chat_context import ChatContext, ChatMessage, Role
 from ..stream import StreamChunk, Turn
 from .director import CompletesLLM
-from .events import EventLog, UtteranceEvent
+from .events import EventLog, SummaryEvent, UtteranceEvent
 from .models import Playbook
 from .runtime import PlaybookRuntime
 from .state import ConversationState
@@ -172,6 +172,16 @@ class PlaybookAgent:
         if not text:
             return
         self.runtime.log.append(UtteranceEvent(role="system", text=text))
+
+    def apply_memory(self, summary: str) -> None:
+        """Seed prior-call context for a returning caller; takes effect next turn.
+
+        The cross-call digest is deployment-supplied; this is the framework hook
+        that surfaces it to the Talker (rendered under '## Earlier in this
+        conversation', guarded by the memory guidelines when
+        ``guidelines.memory_enabled`` is set)."""
+        if summary and summary.strip():
+            self.runtime.log.append(SummaryEvent(text=summary.strip()))
 
     @property
     def chat_ctx(self) -> ChatContext:
