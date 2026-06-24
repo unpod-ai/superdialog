@@ -5,7 +5,8 @@ __pycache__/
 .eggs/
 build/
 dist/
-
+*.log
+*.txt
 # Virtualenv / tooling caches
 .venv/
 .ruff_cache/
