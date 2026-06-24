@@ -19,7 +19,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field
 
-from .models import AdvanceRule, Checkpoint, InterruptSpec, Journey, Playbook, SlotSpec
+from .models import AdvanceRule, Checkpoint, GuidelineConfig, InterruptSpec, Journey, Playbook, SlotSpec
 
 
 class SimplePersona(BaseModel):
@@ -62,6 +62,10 @@ class SimplePlaybook(BaseModel):
     boundaries: list[str] = Field(default_factory=list)
     fallback_actions: dict[str, str] = Field(default_factory=dict)
     interrupts: list[SimpleInterrupt] = Field(default_factory=list)
+    channel: str = "voice"
+    tone: str = "professional"
+    call_type: str | None = None
+    timezone: str = "UTC"
 
 
 def is_simple_playbook(doc: Any) -> bool:
@@ -242,10 +246,18 @@ def simple_to_playbook(doc: dict[str, Any]) -> Playbook:
         )
         for i, intr in enumerate(sp.interrupts)
     ]
+    guidelines = GuidelineConfig(
+        channel=sp.channel,
+        tone=sp.tone,
+        language=sp.persona.language or "en",
+        call_type=sp.call_type,
+        timezone=sp.timezone,
+    )
     return Playbook(
         persona=_build_persona(sp),
         journeys={"main": Journey(checkpoints=checkpoints)},
         interrupts=interrupts,
+        guidelines=guidelines,
     )
 
 

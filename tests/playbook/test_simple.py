@@ -349,3 +349,20 @@ def test_interrupt_with_dangling_target_is_rejected() -> None:
     doc["interrupts"] = [{"when": "Caller says goodbye.", "to": "main.nope"}]
     with _pytest.raises(ValueError):
         simple_to_playbook(doc)
+
+
+def test_simple_maps_guideline_fields() -> None:
+    import yaml
+    from superdialog.playbook.simple import simple_to_playbook
+
+    doc = yaml.safe_load(SIMPLE)
+    doc["channel"] = "voice"
+    doc["tone"] = "casual"
+    doc["call_type"] = "support"
+    doc["timezone"] = "Asia/Kolkata"
+    doc["persona"] = {**doc.get("persona", {}), "language": "hi"}
+    pb = simple_to_playbook(doc)
+    assert pb.guidelines.tone == "casual"
+    assert pb.guidelines.call_type == "support"
+    assert pb.guidelines.timezone == "Asia/Kolkata"
+    assert pb.guidelines.language == "hi"  # lifted from persona.language
