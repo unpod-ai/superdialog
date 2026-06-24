@@ -39,6 +39,7 @@ PER_SLOT_YAML = textwrap.dedent("""
         checkpoints:
           - id: collect
             goal: "Collect name and phone"
+            gate: soft
             slots:
               name: {type: str}
               phone: {type: str, gate: hard}

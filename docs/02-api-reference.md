@@ -686,7 +686,7 @@ silent (no pass-through speech is fabricated for an absent listener).
 | `say_verbatim` | `str \| None` | Exact line (same Jinja namespace); bypasses the Talker LLM |
 | `never_say` | `list[str] = []` | Rendered into the Talker view as hard prohibitions |
 | `advance_when` | `list[AdvanceRule] = []` | Outcome gates (below) |
-| `gate` | `"soft" \| "hard" = "soft"` | Hard: Talker barriers on the Director; `requires` need *confirmed* slots |
+| `gate` | `"soft" \| "hard" = "hard"` | Default hard: Talker barriers on the Director, `requires` need *confirmed* slots. Set `soft` for free collection (provisional slots suffice, never blocks) |
 | `auto` | `bool = False` | Speak verbatim once, then advance via the first rule without user input |
 | `pipeline` | `str \| None` | Pipeline run once per entry; routes on `pipeline.ok` / `pipeline.failed` |
 | `on_enter` | `list[str] = []` | Tool ids executed on entry; failures are data, not exceptions |

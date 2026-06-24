@@ -12,6 +12,7 @@ MINIMAL_YAML = textwrap.dedent("""
         checkpoints:
           - id: collect
             goal: "Have city and date"
+            gate: soft
             slots:
               city: {type: str, required: true, invalidates: [course_id]}
               date: {type: date, required: true}

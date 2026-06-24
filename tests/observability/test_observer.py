@@ -64,7 +64,10 @@ def test_langfuse_observer_on_session_start_calls_trace():
 
     client.trace.assert_called_once_with(
         id="session-abc",
-        name="dialog-session",
+        name="voice_session:session-abc",
+        user_id="session-abc",
+        session_id="session-abc",
+        tags=["layer:superdialog", "mode:unknown", "agent:unknown-agent"],
         metadata={"source": "superdialog"},
     )
     assert result == "trace-id-123"
@@ -106,7 +109,14 @@ def test_langfuse_observer_on_generation_end_calls_end_on_generation():
     mock_gen.end.assert_called_once_with(
         output="hello world",
         usage={"input": 10, "output": 5},
-        metadata={"prompt_tokens": 10, "completion_tokens": 5, "latency_ms": 100.0},
+        metadata={
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "latency_ms": 100.0,
+            "layer": "superdialog",
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+        },
     )
 
 
@@ -220,7 +230,13 @@ async def test_tracing_provider_complete_calls_langfuse_observer():
     mock_gen.end.assert_called_once_with(
         output="response",
         usage={"input": 10, "output": 7},
-        metadata={"prompt_tokens": 10, "completion_tokens": 7},
+        metadata={
+            "prompt_tokens": 10,
+            "completion_tokens": 7,
+            "layer": "superdialog",
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+        },
     )
 
 
@@ -310,7 +326,7 @@ async def test_tracing_provider_role_prefixes_generation_name():
     names: list[str] = []
     original_start = observer.on_generation_start
 
-    def spy_start(trace_id, name, input_messages):
+    def spy_start(trace_id, name, input_messages, **kwargs):
         names.append(name)
         return original_start(trace_id, name, input_messages)
 

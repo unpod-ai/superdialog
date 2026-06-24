@@ -92,7 +92,10 @@ def test_collect_maps_to_str_slots_and_requires() -> None:
     collect = pb.checkpoint("main.collect")
     assert set(collect.slots) == {"name", "service"}
     assert all(s.type == "str" for s in collect.slots.values())
-    assert collect.advance_when[0].requires == ["name", "service"]
+    # simple.py intentionally sets requires=[] on advance rules (slots are
+    # extracted independently; requiring them blocks advance and bleeds a
+    # "still need X" note into the next Talker turn — see simple.py rationale).
+    assert collect.advance_when[0].requires == []
     assert pb.checkpoint("main.greet").advance_when[0].requires == []
 
 
@@ -198,7 +201,7 @@ def test_golden_fixture_compiles_and_validates() -> None:
     }
     cd = pb.checkpoint("main.collect_details")
     assert set(cd.slots) == {"name", "service"}
-    assert cd.advance_when[0].requires == ["name", "service"]
+    assert cd.advance_when[0].requires == []  # simple.py sets requires=[] by design
     assert cd.advance_when[0].to == "main.present_price"
     assert pb.checkpoint("main.confirm_booking").terminal is True
     assert "## Reference facts" in pb.persona

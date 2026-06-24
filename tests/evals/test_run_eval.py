@@ -19,8 +19,8 @@ from superdialog.machine.eval.evaluator import FlowEvaluator
 from superdialog.machine.eval.models import TestCorpus
 
 
-def pytest_addoption(parser: pytest.Parser) -> None:
-    parser.addoption("--corpus", default=None, help="Path to pre-generated corpus JSON")
+# NOTE: --corpus is registered in tests/evals/conftest.py (pytest ignores
+# pytest_addoption in a test module, which is why this option never took effect).
 
 
 @pytest.fixture

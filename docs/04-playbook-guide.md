@@ -455,7 +455,7 @@ single utterance can extract → advance → run a pipeline → advance again.
 **`requires` and gate semantics.** Every slot value carries a status,
 `provisional` or `confirmed`. The gate decides which counts:
 
-| | `gate: soft` (default) | `gate: hard` |
+| | `gate: soft` | `gate: hard` (default) |
 |---|---|---|
 | `requires` met when | keys are *filled* (either status) | keys are *confirmed* |
 | Director slot writes | `confirmed` | `provisional` |

@@ -23,15 +23,23 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     # tests/dialog_machine); registering it again here collides at collection.
     parser.addoption("--traversal", default=None, help="Path to traversal JSON file")
     parser.addoption("--model", default="gpt-4.1-mini", help="OpenAI model for eval LLM")
-
-
-_DEFAULT_FLOW = "/home/ankit/Downloads/Osho_Flow.json"
-_DEFAULT_TRAVERSAL = "/home/ankit/Unpod/super-sanyam/traversals/traversal_20260605_110725_1627.json"
+    # --corpus is consumed by test_run_eval's corpus_path fixture; pytest only
+    # honors pytest_addoption from a conftest/plugin, not from a test module, so
+    # it must be registered here (was previously declared in the test module and
+    # never took effect -> "no option named '--corpus'").
+    parser.addoption("--corpus", default=None, help="Path to pre-generated corpus JSON")
 
 
 @pytest.fixture
 def flow_path(request: pytest.FixtureRequest) -> str:
-    path = request.config.getoption("--flow") or _DEFAULT_FLOW
+    # These eval tests are manual integration harnesses (they hit a live LLM and
+    # need a real flow file). Skip unless an explicit --flow is provided, rather
+    # than falling back to a developer-machine path — so the default suite is
+    # deterministic and portable instead of running live whenever a hardcoded
+    # personal file happens to exist.
+    path = request.config.getoption("--flow")
+    if not path:
+        pytest.skip("--flow not provided")
     if not Path(path).exists():
         pytest.skip(f"flow file not found: {path}")
     return path
@@ -39,7 +47,9 @@ def flow_path(request: pytest.FixtureRequest) -> str:
 
 @pytest.fixture
 def traversal_path(request: pytest.FixtureRequest) -> str:
-    path = request.config.getoption("--traversal") or _DEFAULT_TRAVERSAL
+    path = request.config.getoption("--traversal")
+    if not path:
+        pytest.skip("--traversal not provided")
     if not Path(path).exists():
         pytest.skip(f"traversal file not found: {path}")
     return path

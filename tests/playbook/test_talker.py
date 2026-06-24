@@ -93,8 +93,7 @@ async def test_failure_retries_once_then_recovers() -> None:
 
 
 async def test_hard_gate_filler_then_speech() -> None:
-    # Rollback path (split_utterance=False): barrier BEFORE first token, filler
-    # on expiry. The default split path is covered in test_split_utterance.py.
+    # Hard gate: barrier BEFORE first token, filler on expiry.
     pb, state = _state("booking.confirm")
     event = anyio.Event()
 
@@ -107,7 +106,6 @@ async def test_hard_gate_filler_then_speech() -> None:
         StreamLLM([]),
         barrier_timeout=0.05,
         hold_timeout=10.0,
-        split_utterance=False,
     )
     received: list[str] = []
 
@@ -199,7 +197,6 @@ async def test_custom_speech_lines() -> None:
         filler="एक पल रुकिए",
         hold_line="H",
         recovery_line="R",
-        split_utterance=False,  # rollback path exercises the custom filler
     )
     received = [c.text async for c in talker.speak(state, director_done=never)]
     assert any("एक पल रुकिए" in t for t in received)

@@ -671,6 +671,13 @@ class _Compiler:
             self.checkpoints[node.id] = Checkpoint(
                 id=node.id,
                 goal=node.name,
+                # Legacy flows have no per-node confirmation barrier: advancement
+                # is criteria-driven. The Checkpoint model now defaults gate to
+                # "hard"; a conversational checkpoint that gates advance on
+                # `requires` slots would deadlock under that default (verdict
+                # slots stay provisional). Emit "soft" to preserve legacy
+                # behavior — risky slots opt into hard per-slot, not globally.
+                gate="soft",
                 slots=slots,
                 guidance=self._rw(node.instruction or ""),
                 say_verbatim=(self._rw(node.static_text) if node.static_text else None),
