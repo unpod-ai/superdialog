@@ -133,6 +133,29 @@ def _is_non_english(language: str | list[str]) -> bool:
     return False
 
 
+def _gender_block(gender: str) -> str:
+    """Gendered self-reference rules for gendered languages; empty for neutral.
+
+    Hindi/Marathi/etc. inflect verbs, adjectives, and participles by the
+    SPEAKER's gender (करूँगी vs करूँगा). The LLM otherwise guesses from the
+    persona name; this pins it to the agent's actual gender (sourced from the
+    selected voice profile) so speech matches the voice.
+    """
+    if gender == "female":
+        forms = "Use feminine forms: करूँगी, कर रही हूँ, मैंने ... की, बताती हूँ."
+    elif gender == "male":
+        forms = "Use masculine forms: करूँगा, कर रहा हूँ, मैंने ... किया, बताता हूँ."
+    else:
+        return ""
+    return (
+        "## Speaker Gender\n"
+        f"You are a {gender} agent. In gendered languages (Hindi, Marathi, Gujarati, "
+        f"Punjabi, Hinglish) ALWAYS use {gender}-gender verb, adjective, and participle "
+        "forms when referring to YOURSELF — consistently for the entire call. "
+        f"{forms} Never switch your own gender mid-call."
+    )
+
+
 def compose_guidelines(
     cfg: GuidelineConfig,
     *,
@@ -157,6 +180,11 @@ def compose_guidelines(
         if non_english:
             parts.append(LANGUAGE_ACCENT.strip())
             sections.append("language_accent")
+        # Gendered grammar only matters in gendered languages; gate on non-English.
+        gender_block = _gender_block(cfg.gender) if non_english else ""
+        if gender_block:
+            parts.append(gender_block)
+            sections.append(f"gender:{cfg.gender}")
         if cfg.followup_enabled:
             parts.append(FOLLOWUP.strip())
             sections.append("followup")

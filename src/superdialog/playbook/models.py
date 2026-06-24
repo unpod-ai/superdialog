@@ -36,6 +36,10 @@ class GuidelineConfig(BaseModel):
     timezone: str = "UTC"  # IANA name; a model field, NOT an env var.
     memory_enabled: bool = False
     followup_enabled: bool = False
+    # Speaker gender — the single source of truth for gendered grammar. Wired
+    # from the selected voice profile's gender so the agent's verb/adjective
+    # forms (करूँगी vs करूँगा) match the voice. "neutral" emits no gender block.
+    gender: Literal["male", "female", "neutral"] = "neutral"
 
 
 class SlotSpec(BaseModel):

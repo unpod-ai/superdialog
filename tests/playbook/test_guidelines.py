@@ -47,6 +47,24 @@ def test_casual_tone_and_language_and_domain() -> None:
     assert "Customer Support Flows" in b.static             # domain pattern
 
 
+def test_gender_block_matches_voice_in_gendered_language() -> None:
+    # female + Hindi -> feminine grammar block + section
+    bf = compose_guidelines(GuidelineConfig(gender="female", language="hi"))
+    assert "Speaker Gender" in bf.static and "feminine" in bf.static and "करूँगी" in bf.static
+    assert "gender:female" in bf.sections
+    # male + Hindi -> masculine
+    bm = compose_guidelines(GuidelineConfig(gender="male", language="hi"))
+    assert "masculine" in bm.static and "करूँगा" in bm.static
+    assert "gender:male" in bm.sections
+    # neutral -> no gender block
+    bn = compose_guidelines(GuidelineConfig(gender="neutral", language="hi"))
+    assert "Speaker Gender" not in bn.static
+    assert not any(s.startswith("gender:") for s in bn.sections)
+    # English -> no gendered grammar needed, so no block even with gender set
+    be = compose_guidelines(GuidelineConfig(gender="female", language="en"))
+    assert "Speaker Gender" not in be.static
+
+
 def test_followup_block_only_when_enabled() -> None:
     assert "Follow-ups" in compose_guidelines(GuidelineConfig(followup_enabled=True)).static
     assert "Follow-ups" not in compose_guidelines(GuidelineConfig()).static
