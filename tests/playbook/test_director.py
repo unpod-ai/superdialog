@@ -295,6 +295,24 @@ def test_verdict_prompt_injects_date_discipline_when_date_slot() -> None:
     assert "absolute" in system.lower()
 
 
+async def test_date_slot_normalized_to_absolute() -> None:
+    from superdialog.playbook.events import (
+        EventLog, AdvanceEvent, SessionStartEvent, UtteranceEvent, SlotWriteEvent,
+    )
+    from superdialog.playbook.state import ConversationState
+
+    pb = Playbook.from_yaml(MINIMAL_YAML)
+    log = EventLog()
+    log.append(SessionStartEvent(started_at="2026-06-24T00:00:00+00:00", timezone="UTC"))
+    log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint="booking.collect", rule="init"))
+    log.append(UtteranceEvent(role="user", text="Pune tomorrow"))
+    state = ConversationState.fold(log, playbook=pb)
+    llm = CannedLLM({"slots": {"city": "Pune", "date": "tomorrow"}, "advance": None, "note": None})
+    decision = await Director(pb, llm).evaluate(state)
+    writes = {e.key: e.value for e in decision.events if isinstance(e, SlotWriteEvent)}
+    assert writes["date"] == "2026-06-25"  # normalized against the anchor
+
+
 def test_verdict_prompt_no_date_block_when_no_date_slot() -> None:
     # A checkpoint with no date slot must not get the date block (and the
     # _VERDICT_PREAMBLE prefix is unaffected).

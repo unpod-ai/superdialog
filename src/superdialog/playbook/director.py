@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any, Callable, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
 from ..llm.prompt_cache import CACHE_PREFIX_KEY
-from ._guidelines import DATE_DISCIPLINE, datetime_anchor_line
+from ._guidelines import DATE_DISCIPLINE, datetime_anchor_line, normalize_date
 from .events import AdvanceEvent, Event, SlotWriteEvent, SteeringNoteEvent
 from .expr import ExprError, evaluate
 from .models import Checkpoint, Playbook, SlotSpec
@@ -49,16 +50,20 @@ _CASTS: dict[str, Callable[[Any], Any]] = {
 _INVALID = object()  # sentinel: value failed validation; skip the write
 
 
-def _coerce_slot(value: Any, spec: SlotSpec) -> Any:
+def _coerce_slot(value: Any, spec: SlotSpec, now: datetime | None = None) -> Any:
     """Cast a verdict value to the spec's type; return ``_INVALID`` on failure.
 
-    Enum values must be members of ``spec.values``. Sticky confirmed garbage is
-    worse than a missed extraction, so invalid values are skipped entirely.
+    Enum values must be members of ``spec.values``. Date values are normalized
+    to an absolute calendar date against the call anchor (``now``). Sticky
+    confirmed garbage is worse than a missed extraction, so invalid values are
+    skipped entirely.
     """
     if spec.type == "enum":
         return value if spec.values and value in spec.values else _INVALID
+    if spec.type == "date":
+        return normalize_date(value, now)
     cast = _CASTS.get(spec.type)
-    if cast is None:  # date/array/object: stored as extracted
+    if cast is None:  # array/object: stored as extracted
         return value
     try:
         return cast(value)
@@ -324,7 +329,7 @@ class Director:
             slot_spec = cp.slots.get(key)
             if slot_spec is None or slot_spec.authoritative:
                 continue  # reject slots not defined in current checkpoint, or authoritative
-            coerced = _coerce_slot(value, slot_spec)
+            coerced = _coerce_slot(value, slot_spec, state.now)
             if coerced is _INVALID:
                 continue  # bad cast / enum miss: treat as not extracted
             events.append(
