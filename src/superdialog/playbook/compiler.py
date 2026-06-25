@@ -924,6 +924,16 @@ class _Compiler:
                 f"pipeline.failed routes to {fallback}"
             )
         cp_id = f"{src}__{edge_id}"
+        # `src__edge_id` is the canonical id for this branch. The signature
+        # dedup above only catches an identical plan; the SAME edge reached
+        # with a different plan signature (e.g. via a distinct fallback/landing
+        # context) lands here again. The checkpoints dict would just overwrite,
+        # but `intermediates`/`chain_pipelines` are lists — re-appending would
+        # emit the same checkpoint id twice in the journey (duplicate-id crash).
+        # Reuse the first lowering.
+        if cp_id in self.checkpoints:
+            self._chain_by_sig[sig] = cp_id
+            return cp_id
         pipe = PipelineSpec(id=f"{cp_id}_pipe", steps=plan.steps)
         self.chain_pipelines.append(pipe)
         self.checkpoints[cp_id] = Checkpoint(
