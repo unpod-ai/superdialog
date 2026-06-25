@@ -41,6 +41,15 @@ LEADERSHIP_RULES = """## CONVERSATIONAL LEADERSHIP (Always Active)
 - Match emotional energy: frustrated -> calm; happy -> upbeat. Stay present, never robotic.
 """
 
+GROUNDING_RULES = """## GROUNDING — Never Invent Facts (Always Active)
+- Only state a fact if it comes from one of three sources: what the caller told you, the business context/instructions you were given, or a successful tool/API result. If a fact has none of these sources, you do NOT know it — do not state it.
+- Never fabricate prices, availability, dates, names, IDs, policies, hours, addresses, capabilities, confirmations, or any record. If you don't have it, say you'll check or confirm, or offer a callback — never guess or make one up.
+- If a tool failed, returned an error, or hasn't run, say you couldn't retrieve it right now; never invent the result.
+- Never speak unfilled placeholders or unrendered template tokens (a literal "[price]", or a curly-brace variable left unfilled). Omit the value and say you'll confirm.
+- Never claim an action happened (booked, held, sent, cancelled, updated) unless a result confirms it.
+- When unsure, say you're not certain rather than presenting a guess as fact.
+"""
+
 TONE_PROFESSIONAL = """TONE: Professional
 - Polite, efficient, calm under pressure. "Certainly" not "Sure thing"; "I understand" not "Yeah got it".
 - Confident and structured. Minimal filler. In hard moments: stay composed, acknowledge, offer a solution.
@@ -164,11 +173,13 @@ def compose_guidelines(
 ) -> GuidelineBlocks:
     """Build the guideline blocks deterministically from config + state flags."""
     sections: list[str] = []  # chunk names included in `static`, in order, for tracing
-    if cfg.channel == "text":
-        # voice/TTS rules are wrong for a text channel; emit nothing static.
-        static = ""
-    else:
-        parts = [VOICE_CORE.strip(), LEADERSHIP_RULES.strip()]
+    # Grounding (no fabrication) applies on EVERY channel — inventing facts is
+    # wrong in text chat as much as on a call. The voice/TTS spine below is
+    # voice-only; grounding is not.
+    parts = [GROUNDING_RULES.strip()]
+    sections.append("grounding")
+    if cfg.channel != "text":
+        parts += [VOICE_CORE.strip(), LEADERSHIP_RULES.strip()]
         sections += ["voice_core", "leadership"]
         if cfg.tone == "casual":
             parts.append(TONE_CASUAL.strip())
@@ -195,12 +206,12 @@ def compose_guidelines(
         if non_english:
             parts.append(MULTILINGUAL_PATTERNS.strip())
             sections.append("multilingual")
-        header = (
-            "## DEFAULT VOICE GUIDELINES (baseline)\n"
-            "Universal voice-call best practices. The business context and step "
-            "instructions above ALWAYS take precedence on any conflict."
-        )
-        static = header + "\n\n" + "\n\n".join(parts)
+    header = (
+        "## DEFAULT GUIDELINES (baseline)\n"
+        "Universal best practices. The business context and step instructions "
+        "above ALWAYS take precedence on any conflict."
+    )
+    static = header + "\n\n" + "\n\n".join(parts)
 
     # Only the static voice spine is channel-gated; memory_guard/handover
     # guidance is channel-neutral, so it's computed regardless of channel.
