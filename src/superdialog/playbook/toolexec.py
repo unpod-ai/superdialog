@@ -228,6 +228,13 @@ class ToolExecutor:
                 args={"url": _redact_url(url), "body": _redact(body or {})},
             )
         )
+        # Terminal trace of the REAL rendered request (event log url is redacted).
+        # Dev visibility for tool/API calls during pg-stack runs.
+        print(
+            f"[tool] → {spec.id} {spec.method} {url}"
+            + (f" body={body}" if body else ""),
+            flush=True,
+        )
         try:
             status, data = await self._http(
                 method=spec.method,
@@ -237,6 +244,7 @@ class ToolExecutor:
                 timeout=spec.timeout,
             )
         except Exception as exc:
+            print(f"[tool] ✗ {spec.id} ERROR {type(exc).__name__}: {exc}", flush=True)
             events.append(
                 ToolResultEvent(
                     tool=spec.id,
@@ -247,6 +255,11 @@ class ToolExecutor:
             )
             return events
         ok = 200 <= status < 300
+        print(
+            f"[tool] ← {spec.id} {status} {'ok' if ok else 'FAIL'} "
+            f"→{spec.store_response_as or '-'} {str(data)[:300]}",
+            flush=True,
+        )
         result = ToolResultEvent(
             tool=spec.id,
             store_as=spec.store_response_as,
