@@ -91,6 +91,9 @@ def _dig(data: Any, path: str) -> Any:
     for part in path.split("."):
         if isinstance(cur, dict):
             cur = cur.get(part)
+        elif isinstance(cur, list) and part.lstrip("-").isdigit():
+            idx = int(part)
+            cur = cur[idx] if -len(cur) <= idx < len(cur) else None
         else:
             return None
     return cur
@@ -274,6 +277,15 @@ class ToolExecutor:
                 value = _dig(data, path)
                 if value is not None:
                     events.append(EnvWriteEvent(key=env_key, value=str(value)))
+                else:
+                    # Path missed the response shape (e.g. `data.x` against a
+                    # flat body). env stays unset and downstream tools render
+                    # an empty header/arg — silently. Surface it.
+                    print(
+                        f"[tool] ⚠ {spec.id} env_updates '{env_key}': "
+                        f"path '{path}' not found in response — env unset",
+                        flush=True,
+                    )
         return events
 
 

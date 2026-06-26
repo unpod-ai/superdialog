@@ -82,6 +82,7 @@ FOLLOWUP = """## Follow-ups & Callbacks
 
 DATE_DISCIPLINE = """## Date & Time Discipline
 - A "## CURRENT DATE & TIME" line gives today's anchor. Resolve EVERY relative reference against it ("tomorrow"/"kal", "Monday", "in 2 days") to an exact absolute date (weekday + DD Month YYYY).
+- To state an age or how long ago a date was, compute it FROM the anchor date above (anchor year − stated year, adjusted for month/day). NEVER assume the current year from your own knowledge or training data — a child born in August 2019 is about 6 years old when the anchor says 2026, not 3–4.
 - "tomorrow" is exactly ONE day after today; never resolve a future booking to a past date.
 - ALWAYS confirm the resolved absolute date back before booking.
 - Never invent a date/time the caller did not state. Once captured and confirmed, it is FIXED unless they explicitly reschedule.
