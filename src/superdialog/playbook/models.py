@@ -40,6 +40,12 @@ class GuidelineConfig(BaseModel):
     # from the selected voice profile's gender so the agent's verb/adjective
     # forms (करूँगी vs करूँगा) match the voice. "neutral" emits no gender block.
     gender: Literal["male", "female", "neutral"] = "neutral"
+    # Optional per-role LLM overrides (provider/model URI, e.g. "openai/gpt-4o").
+    # superdialog runs a routing Director and a speaking Talker; these let an
+    # authoring harness pin a different model per role. ``None`` (the default)
+    # preserves today's behavior: both roles use the agent's configured model.
+    director_model: str | None = None
+    talker_model: str | None = None
 
 
 class SlotSpec(BaseModel):
@@ -93,7 +99,9 @@ class Checkpoint(BaseModel):
     advance_when: list[AdvanceRule] = Field(default_factory=list)
     gate: Literal["soft", "hard"] = "hard"
     auto: bool = False  # speak verbatim once, then advance without user input
-    strict: bool = False  # speak say_verbatim word-for-word; never paraphrase via the LLM
+    strict: bool = (
+        False  # speak say_verbatim word-for-word; never paraphrase via the LLM
+    )
     handover: bool = False  # inject the handover summary instruction at this step
     pipeline: str | None = None
     on_enter: list[str] = Field(default_factory=list)  # tool ids
@@ -183,9 +191,40 @@ class Policies(BaseModel):
     hold_timeout: float = Field(default=4.0, gt=0)
 
 
+class PronunciationSpec(BaseModel):
+    """An authored pronunciation rule (additive; backward compatible).
+
+    Mirrors the runtime ``PronunciationRule`` shape so authored entries are
+    directly consumable by the voice runtime's ``PronunciationManager``.
+    Respelling-first (``respelling`` → runtime ``replacement``); IPA is advisory.
+    """
+
+    word: str
+    language: str = "en"
+    respelling: str | None = None
+    ipa: str | None = None
+    provider: str | None = None
+    context: Literal["auto", "force", "skip"] = "auto"
+    enabled: bool = True
+
+    def to_rule(self) -> dict[str, Any]:
+        """Map to the runtime ``PronunciationRule`` field names."""
+        return {
+            "word": self.word,
+            "language": self.language,
+            "provider": self.provider,
+            "replacement": self.respelling,
+            "ipa": self.ipa,
+            "enabled": self.enabled,
+            "context": self.context,
+        }
+
+
 class Playbook(BaseModel):
     persona: str = ""
     guidelines: GuidelineConfig = Field(default_factory=GuidelineConfig)
+    # Authored pronunciation rules (additive; empty preserves prior behavior).
+    pronunciations: list[PronunciationSpec] = Field(default_factory=list)
     journeys: dict[str, Journey] = Field(min_length=1)
     dispatch: list[DispatchEntry] = Field(default_factory=list)
     tools: list[ToolSpec] = Field(default_factory=list)
@@ -368,5 +407,9 @@ class Playbook(BaseModel):
     def load(cls, path: str) -> "Playbook":
         with open(path, encoding="utf-8") as fh:
             text = fh.read()
-        pb = cls.from_yaml(text) if path.endswith((".yaml", ".yml")) else cls.from_json(text)
+        pb = (
+            cls.from_yaml(text)
+            if path.endswith((".yaml", ".yml"))
+            else cls.from_json(text)
+        )
         return pb.model_copy(update={"source_path": path})

@@ -3,7 +3,12 @@ import textwrap
 import pytest
 from pydantic import ValidationError
 
-from superdialog.playbook.models import GuidelineConfig, Playbook, RetrySpec
+from superdialog.playbook.models import (
+    GuidelineConfig,
+    Playbook,
+    PronunciationSpec,
+    RetrySpec,
+)
 
 MINIMAL_YAML = textwrap.dedent("""
     persona: "You are a booking assistant."
@@ -124,13 +129,11 @@ def test_empty_journeys_rejected() -> None:
     with pytest.raises(ValueError):
         Playbook(journeys={})
     with pytest.raises(ValueError):
-        Playbook.from_yaml(
-            textwrap.dedent("""
+        Playbook.from_yaml(textwrap.dedent("""
                 journeys:
                   booking:
                     checkpoints: []
-            """)
-        )
+            """))
 
 
 def test_duplicate_ids_rejected() -> None:
@@ -177,15 +180,13 @@ def test_requires_keys_validated() -> None:
 
 def test_dotted_journey_name_rejected() -> None:
     with pytest.raises(ValueError, match=r"a\.b"):
-        Playbook.from_yaml(
-            textwrap.dedent("""
+        Playbook.from_yaml(textwrap.dedent("""
                 journeys:
                   a.b:
                     checkpoints:
                       - id: only
                         terminal: true
-            """)
-        )
+            """))
 
 
 def test_reserved_pipeline_store_key_rejected() -> None:
@@ -289,13 +290,15 @@ def test_guideline_config_defaults_and_parsing() -> None:
     assert pb.guidelines.memory_enabled is False
     assert pb.guidelines.followup_enabled is False
 
-    pb2 = Playbook.from_yaml(MINIMAL_YAML.replace(
-        'persona: "You are a booking assistant."',
-        'persona: "You are a booking assistant."\n'
-        "guidelines: {channel: text, tone: casual, language: hi, "
-        "call_type: booking, timezone: Asia/Kolkata, memory_enabled: true, "
-        "followup_enabled: true}",
-    ))
+    pb2 = Playbook.from_yaml(
+        MINIMAL_YAML.replace(
+            'persona: "You are a booking assistant."',
+            'persona: "You are a booking assistant."\n'
+            "guidelines: {channel: text, tone: casual, language: hi, "
+            "call_type: booking, timezone: Asia/Kolkata, memory_enabled: true, "
+            "followup_enabled: true}",
+        )
+    )
     assert pb2.guidelines.channel == "text"
     assert pb2.guidelines.tone == "casual"
     assert pb2.guidelines.language == "hi"
@@ -305,9 +308,74 @@ def test_guideline_config_defaults_and_parsing() -> None:
     assert pb2.guidelines.followup_enabled is True
 
     # the language field also accepts a list form
-    pb3 = Playbook.from_yaml(MINIMAL_YAML.replace(
-        'persona: "You are a booking assistant."',
-        'persona: "You are a booking assistant."\n'
-        "guidelines: {language: [en, hi]}",
-    ))
+    pb3 = Playbook.from_yaml(
+        MINIMAL_YAML.replace(
+            'persona: "You are a booking assistant."',
+            'persona: "You are a booking assistant."\n'
+            "guidelines: {language: [en, hi]}",
+        )
+    )
     assert pb3.guidelines.language == ["en", "hi"]
+
+
+# --- additive: pronunciations (task 8.1/8.3) -----------------------------
+
+
+def test_pronunciations_default_empty_back_compat() -> None:
+    # existing playbooks (no pronunciations key) are unaffected
+    pb = Playbook.from_yaml(MINIMAL_YAML)
+    assert pb.pronunciations == []
+
+
+def test_pronunciations_parsed_and_map_to_runtime_rule() -> None:
+    yaml_text = MINIMAL_YAML + textwrap.dedent("""
+        pronunciations:
+          - {word: Cartesia, language: en, respelling: car-TEE-zha,
+             ipa: "/karˈtiːʒə/"}
+          - {word: Sure, language: hi, respelling: Shoor, context: force}
+        """)
+    pb = Playbook.from_yaml(yaml_text)
+    assert [p.word for p in pb.pronunciations] == ["Cartesia", "Sure"]
+
+    rule = pb.pronunciations[0].to_rule()
+    # field names match the runtime PronunciationRule (respelling → replacement)
+    assert rule == {
+        "word": "Cartesia",
+        "language": "en",
+        "provider": None,
+        "replacement": "car-TEE-zha",
+        "ipa": "/karˈtiːʒə/",
+        "enabled": True,
+        "context": "auto",
+    }
+    assert pb.pronunciations[1].to_rule()["context"] == "force"
+
+
+def test_pronunciation_spec_defaults() -> None:
+    spec = PronunciationSpec(word="Acme")
+    assert spec.language == "en"
+    assert spec.enabled is True
+    assert spec.context == "auto"
+    assert spec.respelling is None and spec.ipa is None
+
+
+# --- additive: per-role model overrides (task 9.1/9.3) -------------------
+
+
+def test_role_model_overrides_default_none_back_compat() -> None:
+    pb = Playbook.from_yaml(MINIMAL_YAML)
+    assert pb.guidelines.director_model is None
+    assert pb.guidelines.talker_model is None
+
+
+def test_role_model_overrides_parsed_when_present() -> None:
+    pb = Playbook.from_yaml(
+        MINIMAL_YAML.replace(
+            'persona: "You are a booking assistant."',
+            'persona: "You are a booking assistant."\n'
+            "guidelines: {director_model: openai/gpt-4o, "
+            "talker_model: openai/gpt-4o-mini}",
+        )
+    )
+    assert pb.guidelines.director_model == "openai/gpt-4o"
+    assert pb.guidelines.talker_model == "openai/gpt-4o-mini"
