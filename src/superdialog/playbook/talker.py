@@ -158,8 +158,12 @@ class Talker:
                 )
                 return
             except Exception as _exc:
-                print(f"[TALKER-DBG] attempt={attempt} exception={type(_exc).__name__}: {_exc}", flush=True)
-                _log.error("[talker] LLM stream attempt=%d failed: %s\n%s", attempt, _exc, traceback.format_exc())
+                _log.error(
+                    "[talker] LLM stream attempt=%d failed: %s\n%s",
+                    attempt,
+                    _exc,
+                    traceback.format_exc(),
+                )
                 if attempt == 2:
                     yield SpeechChunk(
                         text=self._recovery_line,

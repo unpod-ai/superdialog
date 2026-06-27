@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from typing import Any, Callable, Literal, Protocol
 
@@ -49,6 +50,31 @@ _CASTS: dict[str, Callable[[Any], Any]] = {
 
 _INVALID = object()  # sentinel: value failed validation; skip the write
 
+_TIME_RE = re.compile(r"^\s*(\d{1,2})(?::(\d{2}))?\s*([ap]\.?m\.?)?\s*$", re.IGNORECASE)
+
+
+def normalize_time(value: Any) -> Any:
+    """Normalize a spoken/clock time to ``HH:MM`` 24h; ``_INVALID`` if unparseable.
+
+    Handles '9 AM'->'09:00', '9:30 pm'->'21:30', '14:30'->'14:30', '9'->'09:00'.
+    Word forms ('nine AM') aren't parsed — Soniox emits digits; an unparseable
+    value is skipped rather than written as garbage.
+    """
+    if value is None:
+        return _INVALID
+    m = _TIME_RE.match(str(value).strip())
+    if not m:
+        return _INVALID
+    hh, mm = int(m.group(1)), int(m.group(2) or 0)
+    ap = (m.group(3) or "").lower().replace(".", "")
+    if ap == "pm" and hh != 12:
+        hh += 12
+    elif ap == "am" and hh == 12:
+        hh = 0
+    if not (0 <= hh <= 23 and 0 <= mm <= 59):
+        return _INVALID
+    return f"{hh:02d}:{mm:02d}"
+
 
 def _coerce_slot(value: Any, spec: SlotSpec, now: datetime | None = None) -> Any:
     """Cast a verdict value to the spec's type; return ``_INVALID`` on failure.
@@ -62,6 +88,8 @@ def _coerce_slot(value: Any, spec: SlotSpec, now: datetime | None = None) -> Any
         return value if spec.values and value in spec.values else _INVALID
     if spec.type == "date":
         return normalize_date(value, now)
+    if spec.type == "time":
+        return normalize_time(value)
     cast = _CASTS.get(spec.type)
     if cast is None:  # array/object: stored as extracted
         return value
@@ -97,6 +125,35 @@ def _verdict_prompt(
             "\n" + datetime_anchor_line(state.now) + "\n" + DATE_DISCIPLINE.strip() + "\n\n"
         )
     known = {k: v.value for k, v in state.slots.items()}
+    # Candidate resolution: for slots with `resolve_from`, hand the LLM the live
+    # list of name->id pairs so it can map the caller's spoken name (with STT
+    # drift) to the canonical id — the one value the user never utters verbatim.
+    resolve_lines = []
+    for _k, _s in cp.slots.items():
+        rf = _s.resolve_from
+        if rf is None:
+            continue
+        res = state.tool_results.get(rf.result)
+        data = getattr(res, "data", None) if res is not None else None
+        items = data.get(rf.list_field) if isinstance(data, dict) else None
+        if not isinstance(items, list):
+            continue
+        pairs = [
+            f'"{it.get(rf.name_field)}" -> {it.get(rf.id_field)}'
+            for it in items
+            if isinstance(it, dict) and it.get(rf.id_field)
+        ]
+        if pairs:
+            resolve_lines.append(f"- {_k}: " + "; ".join(pairs))
+    resolve_block = (
+        "\nCANDIDATE RESOLUTION: for the slots below the caller speaks a NAME, "
+        "never the id. Match what the caller said (tolerating speech-to-text "
+        "drift and partial/approximate names) to ONE listed entry and output its "
+        "id as that slot's value. Never invent an id; omit the slot if no "
+        "candidate clearly matches.\n" + "\n".join(resolve_lines) + "\n"
+        if resolve_lines
+        else ""
+    )
     # Compact outcome summary only (ok/status), never the data payload:
     # result-dependent rules must be judged on what the tools actually did.
     tool_lines = (
@@ -123,11 +180,13 @@ def _verdict_prompt(
         "contained in it; only report what the user actually communicated.\n"
         "SLOT RULE: Only extract a slot when the user EXPLICITLY states that value "
         "in this utterance. Never infer slots from ambiguous yes/no answers to "
-        "unrelated questions.\n\n"
+        "unrelated questions. Exception: slots listed under CANDIDATE RESOLUTION "
+        "below — set those by matching the caller's spoken name to a candidate id.\n\n"
         + date_block
         + f"Current step: {cp.id} — goal: {cp.goal}\n"
         f"Slots to extract:\n{slot_lines}\n"
-        f"Already known: {json.dumps(known, default=str)}\n"
+        + resolve_block
+        + f"Already known: {json.dumps(known, default=str)}\n"
         f"Tool results:\n{tool_lines}\n"
         f"Advance rules:\n{rule_lines}\n"
         f"Interrupts:\n{interrupt_lines}"

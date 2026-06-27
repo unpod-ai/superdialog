@@ -42,12 +42,33 @@ class GuidelineConfig(BaseModel):
     gender: Literal["male", "female", "neutral"] = "neutral"
 
 
+class ResolveFrom(BaseModel):
+    """Where the Director sources candidate values for a slot it cannot extract
+    from raw speech (e.g. an opaque id the user never utters verbatim).
+
+    The verdict prompt renders ``"<name>" -> <id>`` pairs pulled from
+    ``state.tool_results[result].data[list_field]`` so the LLM maps the spoken
+    name to the canonical id itself against the live list — no fuzzy code and no
+    domain alias table in the engine. Field names are supplied by the playbook,
+    keeping this generic across any name->id lookup.
+    """
+
+    result: str  # tool_results key holding the candidate list
+    list_field: str = "items"  # path under .data holding the candidate list
+    name_field: str = "name"  # human-spoken field
+    id_field: str = "id"  # canonical id field to output
+
+
 class SlotSpec(BaseModel):
-    type: Literal["str", "int", "float", "bool", "date", "enum", "array", "object"] = (
-        "str"
-    )
+    type: Literal[
+        "str", "int", "float", "bool", "date", "time", "enum", "array", "object"
+    ] = "str"
     required: bool = False
     values: list[str] | None = None  # enum members
+    # Candidate source for id-like slots the user never speaks verbatim. When
+    # set, the Director is given the live list and resolves the spoken value to
+    # the matching id (see ResolveFrom).
+    resolve_from: ResolveFrom | None = None
     # only the Director may write; never asserted unless present
     authoritative: bool = False
     invalidates: list[str] = Field(default_factory=list)
@@ -142,6 +163,7 @@ class ToolSpec(BaseModel):
     body: dict[str, Any] = Field(default_factory=dict)
     store_response_as: str | None = None
     env_updates: dict[str, str] = Field(default_factory=dict)  # env key -> result path
+    slot_updates: dict[str, str] = Field(default_factory=dict)  # slot key -> result path
     run_once: bool = False
     when: str | None = None  # expr over state; skip when falsy
     timeout: float = 30.0

@@ -20,9 +20,11 @@ class PipelineResult(BaseModel):
 def _refold(state: ConversationState, events: list[Event]) -> ConversationState:
     """Overlay pipeline-internal events so later steps see results/env updates.
 
-    Invariant: pipeline events never contain SlotWriteEvents (ToolExecutor
-    emits only ToolCall/ToolResult/EnvWrite), so slots are deliberately not
-    overlaid here.
+    Only results and env are overlaid. A tool's ``slot_updates`` may emit a
+    SlotWriteEvent, but slots are deliberately NOT overlaid mid-pipeline (slot
+    confirmation is the Director's domain); such writes land when the caller
+    applies ``result.events`` to the log at pipeline end. A later step needing
+    the value within the same pipeline should read it from env, not the slot.
     """
     log = EventLog()
     for e in events:
