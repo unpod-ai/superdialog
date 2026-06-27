@@ -16,7 +16,7 @@ from jinja2.sandbox import SandboxedEnvironment
 from pydantic import BaseModel, Field
 
 from ..llm.prompt_cache import CACHE_PREFIX_KEY
-from ._guidelines import compose_guidelines, datetime_anchor_line
+from ._guidelines import DATE_DISCIPLINE, compose_guidelines, datetime_anchor_line
 from .expr import ExprError, evaluate
 from .models import Playbook
 from .state import ConversationState
@@ -119,8 +119,7 @@ def _system_block(pb: Playbook, state: ConversationState) -> tuple[str, str]:
         fed.append("memory_guard")
     if blocks.handover:
         fed.append("handover")
-    if cp and any(s.type == "date" for s in cp.slots.values()):
-        fed.append("date_discipline(director)")
+    fed.append("date_discipline")  # always fed to the Talker (cache prefix)
     if cp and (cp.say_verbatim is not None or getattr(cp, "strict", False)):
         fed.append("strict_verbatim")
     print(
@@ -137,6 +136,10 @@ def _system_block(pb: Playbook, state: ConversationState) -> tuple[str, str]:
     if blocks.static:
         prefix_parts.append(blocks.static)
     prefix_parts.append(anchor)
+    # DATE_DISCIPLINE feeds the Talker unconditionally: the anchor line alone
+    # doesn't stop weaker models computing ages/durations from their training-prior
+    # year (born-2019 → "3–4 yrs"). It's session-constant, so the cache prefix holds.
+    prefix_parts.append(DATE_DISCIPLINE.strip())
     cache_prefix = "\n\n".join(p for p in prefix_parts if p)
 
     parts: list[str] = [cache_prefix]

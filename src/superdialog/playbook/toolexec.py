@@ -16,7 +16,13 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from jinja2 import TemplateError, Undefined
 from jinja2.sandbox import SandboxedEnvironment
 
-from .events import EnvWriteEvent, Event, ToolCallEvent, ToolResultEvent
+from .events import (
+    EnvWriteEvent,
+    Event,
+    SlotWriteEvent,
+    ToolCallEvent,
+    ToolResultEvent,
+)
 from .expr import ExprError, evaluate
 from .models import SlotSpec, ToolSpec
 from .state import ConversationState
@@ -91,6 +97,9 @@ def _dig(data: Any, path: str) -> Any:
     for part in path.split("."):
         if isinstance(cur, dict):
             cur = cur.get(part)
+        elif isinstance(cur, list) and part.lstrip("-").isdigit():
+            idx = int(part)
+            cur = cur[idx] if -len(cur) <= idx < len(cur) else None
         else:
             return None
     return cur
@@ -228,6 +237,13 @@ class ToolExecutor:
                 args={"url": _redact_url(url), "body": _redact(body or {})},
             )
         )
+        # Terminal trace of the REAL rendered request (event log url is redacted).
+        # Dev visibility for tool/API calls during pg-stack runs.
+        print(
+            f"[tool] → {spec.id} {spec.method} {url}"
+            + (f" body={body}" if body else ""),
+            flush=True,
+        )
         try:
             status, data = await self._http(
                 method=spec.method,
@@ -237,6 +253,7 @@ class ToolExecutor:
                 timeout=spec.timeout,
             )
         except Exception as exc:
+            print(f"[tool] ✗ {spec.id} ERROR {type(exc).__name__}: {exc}", flush=True)
             events.append(
                 ToolResultEvent(
                     tool=spec.id,
@@ -247,6 +264,11 @@ class ToolExecutor:
             )
             return events
         ok = 200 <= status < 300
+        print(
+            f"[tool] ← {spec.id} {status} {'ok' if ok else 'FAIL'} "
+            f"→{spec.store_response_as or '-'} {str(data)[:300]}",
+            flush=True,
+        )
         result = ToolResultEvent(
             tool=spec.id,
             store_as=spec.store_response_as,
@@ -261,6 +283,38 @@ class ToolExecutor:
                 value = _dig(data, path)
                 if value is not None:
                     events.append(EnvWriteEvent(key=env_key, value=str(value)))
+                else:
+                    # Path missed the response shape (e.g. `data.x` against a
+                    # flat body). env stays unset and downstream tools render
+                    # an empty header/arg — silently. Surface it.
+                    print(
+                        f"[tool] ⚠ {spec.id} env_updates '{env_key}': "
+                        f"path '{path}' not found in response — env unset",
+                        flush=True,
+                    )
+            # slot_updates: write a resolved value straight into a slot (e.g. a
+            # name->id lookup the Director can't resolve itself). Applied to the
+            # log at pipeline end (state is an event-fold), so downstream nodes
+            # read the fresh value; NOT folded mid-pipeline (see pipeline._refold)
+            # so a later step in the same pipeline should read it from env, not
+            # the slot. Status confirmed: a tool resolution is authoritative.
+            for slot_key, path in spec.slot_updates.items():
+                value = _dig(data, path)
+                if value is not None:
+                    events.append(
+                        SlotWriteEvent(
+                            key=slot_key,
+                            value=value,
+                            status="confirmed",
+                            by="tool",
+                        )
+                    )
+                else:
+                    print(
+                        f"[tool] ⚠ {spec.id} slot_updates '{slot_key}': "
+                        f"path '{path}' not found in response — slot unset",
+                        flush=True,
+                    )
         return events
 
 

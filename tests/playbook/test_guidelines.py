@@ -20,21 +20,25 @@ def test_voice_default_spine_present() -> None:
 
 def test_text_channel_suppresses_voice_spine() -> None:
     b = compose_guidelines(GuidelineConfig(channel="text"))
-    assert b.static == ""
-    assert b.sections == []
+    # voice/TTS spine suppressed on text, but grounding still applies everywhere
+    assert "voice_core" not in b.sections and "On a live phone call" not in b.static
+    assert b.sections == ["grounding"]
+    assert "Never Invent Facts" in b.static
 
 
 def test_sections_breakdown_tracks_active_chunks() -> None:
-    # default voice spine
+    # default voice spine (grounding leads, fed on every channel)
     assert compose_guidelines(GuidelineConfig()).sections == [
-        "voice_core", "leadership", "tone:professional"
+        "grounding", "voice_core", "leadership", "tone:professional"
     ]
+    # text channel: grounding still applies, voice spine omitted
+    assert compose_guidelines(GuidelineConfig(channel="text")).sections == ["grounding"]
     # full conditional set: casual tone, non-English, domain, followup
     s = compose_guidelines(GuidelineConfig(
         tone="casual", language="hi", call_type="support", followup_enabled=True
     )).sections
     assert s == [
-        "voice_core", "leadership", "tone:casual",
+        "grounding", "voice_core", "leadership", "tone:casual",
         "language_accent", "followup", "domain:support", "multilingual",
     ]
 

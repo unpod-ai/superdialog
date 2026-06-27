@@ -63,7 +63,9 @@ def test_budget_drops_old_transcript_before_guidance() -> None:
     pb, state = _setup()
     from superdialog.playbook.models import GuidelineConfig
     pb.guidelines = GuidelineConfig(channel="text")
-    view = render_view(pb, state, token_budget=300)
+    # budget leaves room for guidance + summary + the always-on grounding block,
+    # but not all 30 transcript turns — so oldest must still be dropped.
+    view = render_view(pb, state, token_budget=450)
     system = view.messages[0]["content"]
     assert "Collect naturally." in system  # guidance survives
     texts = [m["content"] for m in view.messages[1:]]
