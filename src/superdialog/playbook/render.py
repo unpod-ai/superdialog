@@ -129,6 +129,15 @@ def _system_block(pb: Playbook, state: ConversationState) -> tuple[str, str]:
         f"fed={fed}",
         flush=True,
     )
+    # Per-turn brain-side trace (slot KEYS only — never values, so PII like
+    # name/dob never reaches stdout). `version` is the event-log counter, NOT
+    # the bridge turn_id; true cross-process correlation is a later follow-up.
+    print(
+        f"[turn-trace] side=brain version={state.version} "
+        f"checkpoint={state.checkpoint_id} fed={fed} "
+        f"slots={sorted(state.slots.keys())}",
+        flush=True,
+    )
     # persona + static guideline block + date anchor are session-constant, so
     # together they form the stable cacheable prefix. Persona stays FIRST so the
     # existing persona-leads invariant holds.

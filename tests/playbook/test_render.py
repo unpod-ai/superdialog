@@ -317,3 +317,17 @@ def test_render_edges() -> None:
     system3 = view3.messages[0]["content"]
     assert "Correction" in system3
     assert "Direction" not in system3
+
+
+def test_render_emits_brain_turn_trace_keys_only(capsys) -> None:
+    pb, state = _setup()
+    render_view(pb, state, token_budget=10_000)
+    out = capsys.readouterr().out
+    trace_line = next(
+        (line for line in out.splitlines() if "[turn-trace] side=brain" in line),
+        None,
+    )
+    assert trace_line is not None
+    assert "city" in trace_line       # slot KEY present
+    assert "Pune" not in trace_line   # slot VALUE never emitted (PII)
+    assert f"version={state.version}" in trace_line
