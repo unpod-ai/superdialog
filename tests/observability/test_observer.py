@@ -453,3 +453,40 @@ def test_dialog_machine_set_observer_playbook_engine_guard():
     machine.set_observer(observer, "trace-playbook")
     # Verify the machine is still in playbook mode
     assert machine._engine == "playbook"
+
+
+# ── PII redaction (#0) ─────────────────────────────────────────────────────────
+
+
+def test_redact_slots_masks_pii_keeps_others():
+    from superdialog.observability.observer import redact_slots
+
+    out = redact_slots({"name": "Amanpreet", "dob": "1986-06-04", "city": "Pune"})
+    assert out == {"name": "[REDACTED]", "dob": "[REDACTED]", "city": "Pune"}
+
+
+def test_redact_slots_passes_empty_values_through():
+    from superdialog.observability.observer import redact_slots
+
+    out = redact_slots({"name": "", "email": None})
+    assert out == {"name": "", "email": None}
+
+
+def test_redact_slots_honors_env_extra_fields(monkeypatch):
+    from superdialog.observability.observer import redact_slots
+
+    monkeypatch.setenv("SUPERDIALOG_REDACT_FIELDS", "city, member_id")
+    out = redact_slots({"city": "Pune", "member_id": "M-1", "topic": "career"})
+    assert out == {"city": "[REDACTED]", "member_id": "[REDACTED]", "topic": "career"}
+
+
+def test_on_flow_node_redacts_slots_in_span_input():
+    client = MagicMock()
+    obs = LangfuseObserver(client)
+    obs.on_flow_node(
+        "trace-1", "collect", {"name": "Amanpreet", "city": "Pune"}, prev_node="greet"
+    )
+    flow_call = client.span.call_args_list[0]  # first span is flow_node
+    slots = flow_call.kwargs["input"]["slots"]
+    assert slots["name"] == "[REDACTED]"
+    assert slots["city"] == "Pune"

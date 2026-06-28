@@ -11,6 +11,57 @@ from ..llm.provider import CompletionResult, LLMProvider, StreamChunk
 logger = logging.getLogger(__name__)
 
 
+_DEFAULT_REDACT_KEYS = frozenset(
+    {
+        "name",
+        "first_name",
+        "last_name",
+        "full_name",
+        "fullname",
+        "dob",
+        "date_of_birth",
+        "birthdate",
+        "birthday",
+        "email",
+        "phone",
+        "phone_number",
+        "mobile",
+        "address",
+        "ssn",
+        "aadhaar",
+        "aadhar",
+        "pan",
+        "passport",
+        "account_number",
+        "card_number",
+        "cvv",
+        "otp",
+        "password",
+        "pin",
+    }
+)
+
+
+def _redact_keys() -> frozenset[str]:
+    """Default PII keys plus any from SUPERDIALOG_REDACT_FIELDS (CSV)."""
+    extra = os.environ.get("SUPERDIALOG_REDACT_FIELDS", "")
+    extra_keys = {k.strip().lower() for k in extra.split(",") if k.strip()}
+    return _DEFAULT_REDACT_KEYS | extra_keys
+
+
+def redact_slots(slots: dict[str, Any]) -> dict[str, Any]:
+    """Mask PII slot values before they reach an external trace sink.
+
+    Keys match case-insensitively against the redaction set; empty/None values
+    pass through unchanged so "[REDACTED]" only marks a real value that existed.
+    """
+    keys = _redact_keys()
+    return {
+        k: ("[REDACTED]" if k.lower() in keys and v not in (None, "") else v)
+        for k, v in slots.items()
+    }
+
+
 @runtime_checkable
 class Observer(Protocol):
     """Backend-agnostic sink for session / LLM observability."""
@@ -243,7 +294,7 @@ class LangfuseObserver:
                     "node_id": node_id,
                     "prev_node": prev_node,
                     "transition": f"{prev_node} → {node_id}" if prev_node else f"START → {node_id}",
-                    "slots": slots,
+                    "slots": redact_slots(slots),
                 },
                 metadata={
                     "layer": "superdialog",
@@ -265,7 +316,7 @@ class LangfuseObserver:
                         "from_node": prev_node,
                         "to_node": node_id,
                         "transition": f"{prev_node} → {node_id}",
-                        "slots_at_transition": slots,
+                        "slots_at_transition": redact_slots(slots),
                     },
                     metadata={
                         "layer": "superdialog",
@@ -481,4 +532,5 @@ __all__ = [
     "Observer",
     "TracingProvider",
     "build_observer",
+    "redact_slots",
 ]
