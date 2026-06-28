@@ -38,6 +38,17 @@ _DEFAULT_REDACT_KEYS = frozenset(
         "otp",
         "password",
         "pin",
+        "upi",
+        "upi_id",
+        "vpa",
+        "gstin",
+        "voter_id",
+        "epic",
+        "driving_license",
+        "pincode",
+        "father_name",
+        "mother_name",
+        "guardian_name",
     }
 )
 
@@ -52,12 +63,22 @@ def _redact_keys() -> frozenset[str]:
 def redact_slots(slots: dict[str, Any]) -> dict[str, Any]:
     """Mask PII slot values before they reach an external trace sink.
 
-    Keys match case-insensitively against the redaction set; empty/None values
-    pass through unchanged so "[REDACTED]" only marks a real value that existed.
+    A key is PII if its whole lowercased form is in the redaction set, or any
+    underscore/hyphen-delimited token of it is (so ``customer_name`` is caught
+    via ``name`` without false-positiving ``username``). Empty/None values pass
+    through unchanged so "[REDACTED]" only marks a real value that existed.
     """
     keys = _redact_keys()
+
+    def _is_pii(key: str) -> bool:
+        low = key.lower()
+        if low in keys:
+            return True
+        tokens = set(low.replace("-", "_").split("_"))
+        return bool(keys & tokens)
+
     return {
-        k: ("[REDACTED]" if k.lower() in keys and v not in (None, "") else v)
+        k: ("[REDACTED]" if _is_pii(k) and v not in (None, "") else v)
         for k, v in slots.items()
     }
 

@@ -490,3 +490,41 @@ def test_on_flow_node_redacts_slots_in_span_input():
     slots = flow_call.kwargs["input"]["slots"]
     assert slots["name"] == "[REDACTED]"
     assert slots["city"] == "Pune"
+
+
+def test_redact_slots_is_case_insensitive():
+    from superdialog.observability.observer import redact_slots
+
+    out = redact_slots({"Name": "X", "PAN": "Y", "topic": "z"})
+    assert out == {"Name": "[REDACTED]", "PAN": "[REDACTED]", "topic": "z"}
+
+
+def test_redact_slots_matches_composite_keys():
+    from superdialog.observability.observer import redact_slots
+
+    out = redact_slots(
+        {
+            "customer_name": "A",
+            "mobile_number": "B",
+            "father_name": "C",
+            "username": "carol",
+            "filename": "x.pdf",
+        }
+    )
+    assert out["customer_name"] == "[REDACTED]"
+    assert out["mobile_number"] == "[REDACTED]"
+    assert out["father_name"] == "[REDACTED]"
+    assert out["username"] == "carol"
+    assert out["filename"] == "x.pdf"
+
+
+def test_on_flow_node_redacts_slots_at_transition_span():
+    client = MagicMock()
+    obs = LangfuseObserver(client)
+    obs.on_flow_node(
+        "trace-1", "collect", {"name": "Amanpreet", "city": "Pune"}, prev_node="greet"
+    )
+    transition_call = client.span.call_args_list[1]  # second span is node_transition
+    slots = transition_call.kwargs["input"]["slots_at_transition"]
+    assert slots["name"] == "[REDACTED]"
+    assert slots["city"] == "Pune"
