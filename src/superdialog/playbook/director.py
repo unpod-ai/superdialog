@@ -50,6 +50,11 @@ _CASTS: dict[str, Callable[[Any], Any]] = {
 
 _INVALID = object()  # sentinel: value failed validation; skip the write
 
+_RECOVER_NOTE = (
+    "The caller is frustrated or repeating themselves — do NOT end the call. "
+    "Acknowledge the confusion, correct course, and keep helping."
+)
+
 _TIME_RE = re.compile(r"^\s*(\d{1,2})(?::(\d{2}))?\s*([ap]\.?m\.?)?\s*$", re.IGNORECASE)
 
 
@@ -468,6 +473,19 @@ class Director:
             )
             if rule is not None:
                 if self._requires_met(rule.requires, cp, peek):
+                    # End-on-frustration guard: if the engine just flagged a
+                    # re-ask (repair note in flight), a verdict that advances to
+                    # a terminal checkpoint is almost certainly reading caller
+                    # frustration as closure. Recover instead of hanging up.
+                    if (
+                        self._pb.checkpoint(rule.to).terminal
+                        and state.steering_kind == "repair"
+                        and state.steering_note
+                    ):
+                        events.append(
+                            SteeringNoteEvent(text=_RECOVER_NOTE, kind="repair")
+                        )
+                        return DirectorDecision(events=events)
                     for k, v in rule.set.items():
                         events.append(
                             SlotWriteEvent(

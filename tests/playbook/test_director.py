@@ -7,6 +7,7 @@ from superdialog.playbook.events import (
     EventLog,
     SessionStartEvent,
     SlotWriteEvent,
+    SteeringNoteEvent,
     ToolResultEvent,
     UtteranceEvent,
 )
@@ -189,6 +190,40 @@ async def test_hard_gate_not_self_attesting() -> None:
 
 async def test_hard_gate_advances_once_slot_confirmed() -> None:
     """Pre-confirmed requires (e.g. by a tool) do let the verdict advance."""
+    pb = Playbook.from_yaml(HARD_GATE_YAML)
+    state = _hard_state(pb)
+    state.slots["otp"] = SlotValue(
+        value="4242", status="confirmed", by="tool", version=1
+    )
+    llm = CannedLLM({"slots": {}, "advance": "pay.done", "note": None})
+    decision = await Director(pb, llm).evaluate(state)
+    adv = [e for e in decision.events if isinstance(e, AdvanceEvent)]
+    assert adv and adv[0].to_checkpoint == "pay.done"
+
+
+async def test_terminal_advance_blocked_while_repair_active() -> None:
+    """A repair note in flight means caller frustration, not closure: a verdict
+    advancing to a terminal checkpoint is suppressed in favour of a recovery note."""
+    pb = Playbook.from_yaml(HARD_GATE_YAML)
+    state = _hard_state(pb)
+    state.slots["otp"] = SlotValue(
+        value="4242", status="confirmed", by="tool", version=1
+    )
+    state.steering_note = "you re-asked the code"
+    state.steering_kind = "repair"
+    llm = CannedLLM({"slots": {}, "advance": "pay.done", "note": None})
+    decision = await Director(pb, llm).evaluate(state)
+    assert not [e for e in decision.events if isinstance(e, AdvanceEvent)]
+    recover = [
+        e
+        for e in decision.events
+        if isinstance(e, SteeringNoteEvent) and e.kind == "repair"
+    ]
+    assert recover and "do NOT end" in recover[0].text
+
+
+async def test_terminal_advance_proceeds_without_repair() -> None:
+    """Backward compat: with no repair note, a normal close still ends the call."""
     pb = Playbook.from_yaml(HARD_GATE_YAML)
     state = _hard_state(pb)
     state.slots["otp"] = SlotValue(
