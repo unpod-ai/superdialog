@@ -129,11 +129,13 @@ def test_empty_journeys_rejected() -> None:
     with pytest.raises(ValueError):
         Playbook(journeys={})
     with pytest.raises(ValueError):
-        Playbook.from_yaml(textwrap.dedent("""
+        Playbook.from_yaml(
+            textwrap.dedent("""
                 journeys:
                   booking:
                     checkpoints: []
-            """))
+            """)
+        )
 
 
 def test_duplicate_ids_rejected() -> None:
@@ -180,13 +182,15 @@ def test_requires_keys_validated() -> None:
 
 def test_dotted_journey_name_rejected() -> None:
     with pytest.raises(ValueError, match=r"a\.b"):
-        Playbook.from_yaml(textwrap.dedent("""
+        Playbook.from_yaml(
+            textwrap.dedent("""
                 journeys:
                   a.b:
                     checkpoints:
                       - id: only
                         terminal: true
-            """))
+            """)
+        )
 
 
 def test_reserved_pipeline_store_key_rejected() -> None:
@@ -311,8 +315,7 @@ def test_guideline_config_defaults_and_parsing() -> None:
     pb3 = Playbook.from_yaml(
         MINIMAL_YAML.replace(
             'persona: "You are a booking assistant."',
-            'persona: "You are a booking assistant."\n'
-            "guidelines: {language: [en, hi]}",
+            'persona: "You are a booking assistant."\nguidelines: {language: [en, hi]}',
         )
     )
     assert pb3.guidelines.language == ["en", "hi"]
@@ -379,3 +382,38 @@ def test_role_model_overrides_parsed_when_present() -> None:
     )
     assert pb.guidelines.director_model == "openai/gpt-4o"
     assert pb.guidelines.talker_model == "openai/gpt-4o-mini"
+
+
+# --- additive: opt-in multi_entity + checkpoint-level entity (wave 3 task 1) ---
+
+_MULTI_ENTITY_PB = textwrap.dedent("""
+    multi_entity: true
+    journeys:
+      main:
+        checkpoints:
+          - id: a
+            entity: partner
+            slots: {date_of_birth: {type: date}}
+""")
+
+
+def test_multi_entity_and_checkpoint_entity_parse() -> None:
+    pb = Playbook.from_yaml(_MULTI_ENTITY_PB)
+    assert pb.multi_entity is True
+    assert pb.checkpoint("main.a").entity == "partner"
+
+
+def test_entity_defaults_caller_and_multi_entity_off() -> None:
+    pb = Playbook.from_yaml(
+        "journeys: {main: {checkpoints: [{id: a, slots: {x: {}}}]}}"
+    )
+    assert pb.multi_entity is False
+    assert pb.checkpoint("main.a").entity == "caller"
+
+
+def test_invalid_entity_identifier_rejected() -> None:
+    with pytest.raises(ValidationError):
+        Playbook.from_yaml(
+            "journeys: {main: {checkpoints: "
+            "[{id: a, entity: '2partner', slots: {x: {}}}]}}"
+        )

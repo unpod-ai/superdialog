@@ -7,7 +7,7 @@ import re
 from typing import Any, Literal, Union
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class _YamlLoader(yaml.SafeLoader):
@@ -110,9 +110,15 @@ class AdvanceRule(BaseModel):
         return f"{self.judge}:{self.to}"
 
 
+_ENTITY_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
+
+
 class Checkpoint(BaseModel):
     id: str
     goal: str = ""
+    # Which person this checkpoint's slots describe; safe as a storage-key
+    # prefix. Defaults to "caller" so single-entity playbooks are unchanged.
+    entity: str = "caller"
     slots: dict[str, SlotSpec] = Field(default_factory=dict)
     guidance: str = ""  # may contain Jinja over {slots, views, results}
     say_verbatim: str | None = None  # same Jinja namespace; bypasses the Talker LLM
@@ -130,6 +136,15 @@ class Checkpoint(BaseModel):
     terminal: bool = False
     outcome: str | None = None
     turn_budget: int | None = None
+
+    @field_validator("entity")
+    @classmethod
+    def _entity_is_safe_key_prefix(cls, v: str) -> str:
+        if not _ENTITY_RE.match(v):
+            raise ValueError(
+                f"entity {v!r} must match [a-z_][a-z0-9_]* (safe key prefix)"
+            )
+        return v
 
 
 class Journey(BaseModel):
@@ -244,6 +259,8 @@ class PronunciationSpec(BaseModel):
 
 class Playbook(BaseModel):
     persona: str = ""
+    # Opt-in: scope slot storage/lookups per checkpoint entity. Off ⇒ today.
+    multi_entity: bool = False
     guidelines: GuidelineConfig = Field(default_factory=GuidelineConfig)
     # Authored pronunciation rules (additive; empty preserves prior behavior).
     pronunciations: list[PronunciationSpec] = Field(default_factory=list)
