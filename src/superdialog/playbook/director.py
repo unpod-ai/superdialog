@@ -128,7 +128,16 @@ def _verdict_prompt(
             + DATE_DISCIPLINE.strip()
             + "\n\n"
         )
-    known = {k: v.value for k, v in state.slots.items()}
+    known: Any = {k: v.value for k, v in state.slots.items()}
+    if pb.multi_entity:
+        # Group by entity so the LLM sees whose value each known slot is and
+        # never asks "whose date of birth?". Keys are de-namespaced under each
+        # entity. (Off ⇒ the flat dict above, byte-identical to today.)
+        grouped: dict[str, dict[str, Any]] = {}
+        for k, v in state.slots.items():
+            bare = k.split(":", 1)[1] if v.entity != "caller" and ":" in k else k
+            grouped.setdefault(v.entity, {})[bare] = v.value
+        known = grouped
     # Candidate resolution: for slots with `resolve_from`, hand the LLM the live
     # list of name->id pairs so it can map the caller's spoken name (with STT
     # drift) to the canonical id — the one value the user never utters verbatim.
@@ -187,6 +196,7 @@ def _verdict_prompt(
         "unrelated questions. Exception: slots listed under CANDIDATE RESOLUTION "
         "below — set those by matching the caller's spoken name to a candidate id.\n\n"
         + date_block
+        + (f"You are collecting details for: {cp.entity}\n" if pb.multi_entity else "")
         + f"Current step: {cp.id} — goal: {cp.goal}\n"
         f"Slots to extract:\n{slot_lines}\n"
         + resolve_block

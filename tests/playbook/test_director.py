@@ -450,3 +450,28 @@ async def test_single_entity_director_unchanged() -> None:
     writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
     assert {e.key for e in writes} == {"city", "date"}
     assert all(e.entity == "caller" for e in writes)
+
+
+def test_verdict_prompt_states_entity_when_multi_entity() -> None:
+    from superdialog.playbook.director import _verdict_prompt
+
+    pb, _log, state = _partner_state("12 July 1986")
+    cp = pb.checkpoint("main.collect_partner")
+    system = _verdict_prompt(pb, cp, state)[0]["content"]
+    # (a) the LLM is told whose details this checkpoint collects
+    assert "You are collecting details for: partner" in system
+    # (b) the known view groups by entity so it never asks "whose?": the
+    # caller's already-confirmed DOB is shown labeled, distinct from partner's.
+    assert "caller" in system and "1986-06-04" in system
+
+
+def test_verdict_prompt_flat_when_not_multi_entity() -> None:
+    # multi_entity off ⇒ byte-identical: no entity line, flat "Already known".
+    from superdialog.playbook.director import _verdict_prompt
+
+    pb, state = _state()
+    cp = pb.checkpoint("booking.collect")
+    system = _verdict_prompt(pb, cp, state)[0]["content"]
+    assert "You are collecting details for:" not in system
+    assert '"Already known"' not in system  # grouping not introduced
+    assert "Already known: " in system  # today's flat shape
