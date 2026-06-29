@@ -110,7 +110,7 @@ class AdvanceRule(BaseModel):
         return f"{self.judge}:{self.to}"
 
 
-_ENTITY_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
+_ENTITY_RE = re.compile(r"^[a-z_][a-z0-9_]*\Z")
 
 
 class Checkpoint(BaseModel):
@@ -186,7 +186,9 @@ class ToolSpec(BaseModel):
     body: dict[str, Any] = Field(default_factory=dict)
     store_response_as: str | None = None
     env_updates: dict[str, str] = Field(default_factory=dict)  # env key -> result path
-    slot_updates: dict[str, str] = Field(default_factory=dict)  # slot key -> result path
+    slot_updates: dict[str, str] = Field(
+        default_factory=dict
+    )  # slot key -> result path
     run_once: bool = False
     when: str | None = None  # expr over state; skip when falsy
     timeout: float = 30.0

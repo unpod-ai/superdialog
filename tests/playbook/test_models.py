@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from superdialog.playbook.models import (
+    Checkpoint,
     GuidelineConfig,
     Playbook,
     PronunciationSpec,
@@ -417,3 +418,10 @@ def test_invalid_entity_identifier_rejected() -> None:
             "journeys: {main: {checkpoints: "
             "[{id: a, entity: '2partner', slots: {x: {}}}]}}"
         )
+
+
+def test_trailing_newline_entity_rejected() -> None:
+    # `$` matches before a trailing newline; an entity is a storage-key prefix
+    # so "caller\n" must be rejected (regression for the `\Z` anchor fix).
+    with pytest.raises(ValidationError):
+        Checkpoint(id="a", entity="caller\n")
