@@ -27,6 +27,7 @@ class SlotWriteEvent(_Base):
     value: Any
     status: Literal["provisional", "confirmed"]
     by: Literal["talker", "director", "tool", "compiler"]
+    entity: str = "caller"  # whose slot; "caller" stays backward compatible
 
 
 class AdvanceEvent(_Base):

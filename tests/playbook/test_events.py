@@ -117,3 +117,16 @@ def test_session_start_event_round_trips() -> None:
     assert e.type == "session_start"
     assert e.started_at == "2026-06-24T10:30:00+05:30"
     assert e.timezone == "Asia/Kolkata"
+
+
+def test_slot_write_event_carries_entity() -> None:
+    from superdialog.playbook.events import SlotWriteEvent
+
+    e = SlotWriteEvent(
+        key="dob", value="x", status="confirmed", by="director", entity="partner"
+    )
+    assert e.entity == "partner"
+    assert (
+        SlotWriteEvent(key="dob", value="x", status="confirmed", by="director").entity
+        == "caller"
+    )  # default

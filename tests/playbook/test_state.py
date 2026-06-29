@@ -283,3 +283,16 @@ def test_language_updates_on_genuine_switch() -> None:
 def test_language_none_when_never_reported() -> None:
     s = _fold(UtteranceEvent(role="user", text="hello"))
     assert s.language is None  # backward compatible: no directive rendered
+
+
+def test_slot_value_carries_entity_default_caller() -> None:
+    from superdialog.playbook.state import SlotValue
+
+    sv = SlotValue(value="x", status="confirmed", by="director", version=1)
+    assert sv.entity == "caller"  # default, backward compatible
+    assert (
+        SlotValue(
+            value="x", status="confirmed", by="director", version=1, entity="partner"
+        ).entity
+        == "partner"
+    )

@@ -33,6 +33,7 @@ class SlotValue(BaseModel):
     status: Literal["provisional", "confirmed"]
     by: str
     version: int
+    entity: str = "caller"  # whose slot; "caller" stays backward compatible
 
 
 class ToolResult(BaseModel):
