@@ -411,6 +411,8 @@ class Director:
                     and e.status == "provisional"
                 ):
                     continue
+                # TODO(Task 4): set entity=e.entity here once _ekey entity-scoped
+                # key resolution lands, else this transient peek drops entity.
                 peek.slots[e.key] = SlotValue(
                     value=e.value,
                     status=e.status,
