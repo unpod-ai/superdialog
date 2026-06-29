@@ -5,6 +5,7 @@ from superdialog.playbook.director import Director
 from superdialog.playbook.events import (
     AdvanceEvent,
     EventLog,
+    SessionStartEvent,
     SlotWriteEvent,
     ToolResultEvent,
     UtteranceEvent,
@@ -279,14 +280,21 @@ def test_verdict_prompt_injects_date_discipline_when_date_slot() -> None:
     from datetime import datetime, timezone  # noqa: F401
     from superdialog.playbook.director import _verdict_prompt
     from superdialog.playbook.events import (
-        EventLog, AdvanceEvent, SessionStartEvent, UtteranceEvent,
+        EventLog,
+        AdvanceEvent,
+        SessionStartEvent,
+        UtteranceEvent,
     )
     from superdialog.playbook.state import ConversationState
 
     pb = Playbook.from_yaml(MINIMAL_YAML)  # booking.collect has a `date` slot
     log = EventLog()
-    log.append(SessionStartEvent(started_at="2026-06-24T00:00:00+00:00", timezone="UTC"))
-    log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint="booking.collect", rule="init"))
+    log.append(
+        SessionStartEvent(started_at="2026-06-24T00:00:00+00:00", timezone="UTC")
+    )
+    log.append(
+        AdvanceEvent(from_checkpoint=None, to_checkpoint="booking.collect", rule="init")
+    )
     log.append(UtteranceEvent(role="user", text="tomorrow"))
     state = ConversationState.fold(log, playbook=pb)
     cp = pb.checkpoint("booking.collect")
@@ -297,17 +305,27 @@ def test_verdict_prompt_injects_date_discipline_when_date_slot() -> None:
 
 async def test_date_slot_normalized_to_absolute() -> None:
     from superdialog.playbook.events import (
-        EventLog, AdvanceEvent, SessionStartEvent, UtteranceEvent, SlotWriteEvent,
+        EventLog,
+        AdvanceEvent,
+        SessionStartEvent,
+        UtteranceEvent,
+        SlotWriteEvent,
     )
     from superdialog.playbook.state import ConversationState
 
     pb = Playbook.from_yaml(MINIMAL_YAML)
     log = EventLog()
-    log.append(SessionStartEvent(started_at="2026-06-24T00:00:00+00:00", timezone="UTC"))
-    log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint="booking.collect", rule="init"))
+    log.append(
+        SessionStartEvent(started_at="2026-06-24T00:00:00+00:00", timezone="UTC")
+    )
+    log.append(
+        AdvanceEvent(from_checkpoint=None, to_checkpoint="booking.collect", rule="init")
+    )
     log.append(UtteranceEvent(role="user", text="Pune tomorrow"))
     state = ConversationState.fold(log, playbook=pb)
-    llm = CannedLLM({"slots": {"city": "Pune", "date": "tomorrow"}, "advance": None, "note": None})
+    llm = CannedLLM(
+        {"slots": {"city": "Pune", "date": "tomorrow"}, "advance": None, "note": None}
+    )
     decision = await Director(pb, llm).evaluate(state)
     writes = {e.key: e.value for e in decision.events if isinstance(e, SlotWriteEvent)}
     assert writes["date"] == "2026-06-25"  # normalized against the anchor
@@ -318,10 +336,16 @@ def test_verdict_prompt_no_date_block_when_no_date_slot() -> None:
     # _VERDICT_PREAMBLE prefix is unaffected).
     import textwrap
     from superdialog.playbook.director import _verdict_prompt, _VERDICT_PREAMBLE
-    from superdialog.playbook.events import EventLog, AdvanceEvent, SessionStartEvent, UtteranceEvent
+    from superdialog.playbook.events import (
+        EventLog,
+        AdvanceEvent,
+        SessionStartEvent,
+        UtteranceEvent,
+    )
     from superdialog.playbook.state import ConversationState
 
-    pb = Playbook.from_yaml(textwrap.dedent('''
+    pb = Playbook.from_yaml(
+        textwrap.dedent("""
         persona: "A."
         journeys:
           j:
@@ -330,12 +354,99 @@ def test_verdict_prompt_no_date_block_when_no_date_slot() -> None:
                 slots: {name: {type: str}}
               - id: done
                 terminal: true
-    '''))
+    """)
+    )
     log = EventLog()
-    log.append(SessionStartEvent(started_at="2026-06-24T00:00:00+00:00", timezone="UTC"))
+    log.append(
+        SessionStartEvent(started_at="2026-06-24T00:00:00+00:00", timezone="UTC")
+    )
     log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint="j.ask", rule="init"))
     log.append(UtteranceEvent(role="user", text="hi"))
     state = ConversationState.fold(log, playbook=pb)
     msg = _verdict_prompt(pb, pb.checkpoint("j.ask"), state)[0]
     assert "CURRENT DATE & TIME" not in msg["content"]
     assert msg["content"].startswith(_VERDICT_PREAMBLE)  # cache prefix intact
+
+
+_PARTNER_YAML = textwrap.dedent("""
+    multi_entity: true
+    persona: "You collect details."
+    journeys:
+      main:
+        checkpoints:
+          - id: collect_partner
+            entity: partner
+            gate: soft
+            slots:
+              date_of_birth: {type: date, required: true, gate: soft}
+            advance_when:
+              - {when: "dob given", judge: llm, to: main.done,
+                 requires: [date_of_birth]}
+          - id: done
+            terminal: true
+            outcome: confirmed
+""")
+
+
+def _partner_state(text: str) -> tuple[Playbook, EventLog, ConversationState]:
+    """At the partner checkpoint with the caller's DOB already confirmed."""
+    pb = Playbook.from_yaml(_PARTNER_YAML)
+    log = EventLog()
+    log.append(
+        SessionStartEvent(started_at="2026-06-24T00:00:00+00:00", timezone="UTC")
+    )
+    log.append(
+        AdvanceEvent(
+            from_checkpoint=None, to_checkpoint="main.collect_partner", rule="init"
+        )
+    )
+    log.append(
+        SlotWriteEvent(
+            key="date_of_birth",
+            value="1986-06-04",
+            status="confirmed",
+            by="director",
+            entity="caller",
+        )
+    )
+    log.append(UtteranceEvent(role="user", text=text))
+    return pb, log, ConversationState.fold(log, playbook=pb)
+
+
+async def test_director_tags_extraction_with_checkpoint_entity() -> None:
+    pb, log, state = _partner_state("12 July 1986")
+    llm = CannedLLM(
+        {
+            "slots": {"date_of_birth": "12 July 1986"},
+            "advance": "main.done",
+            "note": None,
+        }
+    )
+    decision = await Director(pb, llm).evaluate(state)
+    writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
+    assert writes and all(e.entity == "partner" for e in writes)
+    # Fold the Director's events onto the seeded log: partner DOB stored,
+    # caller DOB intact (no clobber).
+    for e in decision.events:
+        log.append(e)
+    final = ConversationState.fold(log, playbook=pb)
+    assert final.slot_value("date_of_birth", entity="partner") == "1986-07-12"
+    assert final.slot_value("date_of_birth", entity="caller") == "1986-06-04"
+    adv = [e for e in decision.events if isinstance(e, AdvanceEvent)]
+    assert adv and adv[0].to_checkpoint == "main.done"
+
+
+async def test_single_entity_director_unchanged() -> None:
+    # Backward compat: a non-multi-entity flow writes bare 'caller' keys.
+    pb, state = _state()
+    llm = CannedLLM(
+        {
+            "slots": {"city": "Pune", "date": "2026-06-11"},
+            "advance": "booking.confirm",
+            "note": None,
+        }
+    )
+    decision = await Director(pb, llm).evaluate(state)
+    writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
+    assert {e.key for e in writes} == {"city", "date"}
+    assert all(e.entity == "caller" for e in writes)

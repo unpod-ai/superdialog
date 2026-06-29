@@ -14,7 +14,7 @@ from ._guidelines import DATE_DISCIPLINE, datetime_anchor_line, normalize_date
 from .events import AdvanceEvent, Event, SlotWriteEvent, SteeringNoteEvent
 from .expr import ExprError, evaluate
 from .models import Checkpoint, Playbook, SlotSpec
-from .state import ConversationState, SlotValue
+from .state import ConversationState, SlotValue, _ekey
 
 #: Fixed leading instruction preamble of the verdict system prompt. Stable
 #: across every turn (no step/slots/transcript), so it is the cacheable prefix
@@ -122,7 +122,11 @@ def _verdict_prompt(
     date_block = ""
     if has_date and state.now is not None:
         date_block = (
-            "\n" + datetime_anchor_line(state.now) + "\n" + DATE_DISCIPLINE.strip() + "\n\n"
+            "\n"
+            + datetime_anchor_line(state.now)
+            + "\n"
+            + DATE_DISCIPLINE.strip()
+            + "\n\n"
         )
     known = {k: v.value for k, v in state.slots.items()}
     # Candidate resolution: for slots with `resolve_from`, hand the LLM the live
@@ -310,9 +314,9 @@ class Director:
         """Per-slot gate: hard slots must be confirmed, others merely filled."""
         for key in requires:
             if self._slot_gate(key, cp) == "hard":
-                if not state.confirmed([key]):
+                if not state.confirmed([key], entity=cp.entity):
                     return False
-            elif not state.filled([key]):
+            elif not state.filled([key], entity=cp.entity):
                 return False
         return True
 
@@ -331,7 +335,13 @@ class Director:
                 fired = False
             if fired and self._requires_met(rule.requires, cp, state):
                 events: list[Event] = [
-                    SlotWriteEvent(key=k, value=v, status="confirmed", by="director")
+                    SlotWriteEvent(
+                        key=k,
+                        value=v,
+                        status="confirmed",
+                        by="director",
+                        entity=cp.entity,
+                    )
                     for k, v in rule.set.items()
                 ]
                 events.append(
@@ -397,6 +407,7 @@ class Director:
                     value=coerced,
                     status=self._write_status(key, cp, confidence),
                     by="director",
+                    entity=cp.entity,
                 )
             )
         # apply slot writes to a copy so requires sees them (fold semantics:
@@ -404,20 +415,20 @@ class Director:
         peek = state.model_copy(deep=True)
         for e in events:
             if isinstance(e, SlotWriteEvent):
-                existing = peek.slots.get(e.key)
+                skey = _ekey(e.entity, e.key)
+                existing = peek.slots.get(skey)
                 if (
                     existing
                     and existing.status == "confirmed"
                     and e.status == "provisional"
                 ):
                     continue
-                # TODO(Task 4): set entity=e.entity here once _ekey entity-scoped
-                # key resolution lands, else this transient peek drops entity.
-                peek.slots[e.key] = SlotValue(
+                peek.slots[skey] = SlotValue(
                     value=e.value,
                     status=e.status,
                     by="director",
                     version=peek.version,
+                    entity=e.entity,
                 )
 
         interrupt_id = verdict.get("interrupt")
@@ -450,7 +461,11 @@ class Director:
                     for k, v in rule.set.items():
                         events.append(
                             SlotWriteEvent(
-                                key=k, value=v, status="confirmed", by="director"
+                                key=k,
+                                value=v,
+                                status="confirmed",
+                                by="director",
+                                entity=cp.entity,
                             )
                         )
                     events.append(
