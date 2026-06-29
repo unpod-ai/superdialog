@@ -89,6 +89,32 @@ class RenderedView(BaseModel):
     spoke_from_version: int = 0
 
 
+def _active_slots(pb: Playbook, state: ConversationState) -> dict[str, Any]:
+    """Slots under flat names for the *current* checkpoint's entity.
+
+    When ``not pb.multi_entity`` this is exactly today's
+    ``{k: v.value for k, v in state.slots.items()}`` (caller slots are stored
+    bare). When multi_entity, the active entity's namespaced slots are exposed
+    under stripped flat names overlaying the caller's, so ``{{ slots.dob }}``
+    at the partner checkpoint resolves to the partner's value.
+    """
+    flat = {k: v.value for k, v in state.slots.items()}
+    if not pb.multi_entity:
+        return flat
+    cp = pb.checkpoint(state.checkpoint_id) if state.checkpoint_id else None
+    entity = cp.entity if cp else "caller"
+    if entity == "caller":
+        # caller keeps bare keys; drop any namespaced slots from the flat view
+        return {k: v for k, v in flat.items() if ":" not in k}
+    prefix = f"{entity}:"
+    # caller bare slots, overlaid by the active entity's stripped slots
+    slots = {k: v for k, v in flat.items() if ":" not in k}
+    for k, v in flat.items():
+        if k.startswith(prefix):
+            slots[k[len(prefix) :]] = v
+    return slots
+
+
 def template_namespace(pb: Playbook, state: ConversationState) -> dict[str, Any]:
     """Build the {slots, views, results} namespace for Jinja templates."""
     views: dict[str, Any] = {}
@@ -102,7 +128,7 @@ def template_namespace(pb: Playbook, state: ConversationState) -> dict[str, Any]
         except ExprError:
             views[name] = None
     return {
-        "slots": {k: v.value for k, v in state.slots.items()},
+        "slots": _active_slots(pb, state),
         "views": views,
         "results": {
             k: {"ok": r.ok, "status": r.status, "data": r.data, "error": r.error}
@@ -131,6 +157,24 @@ def render_template(
         # speaking path: degrade to the raw text, which surfaces the
         # un-rendered template in transcripts as the debugging signal.
         return text
+
+
+def _known_info(pb: Playbook, state: ConversationState) -> str:
+    """Body of the "Known information" block.
+
+    Off (or single-entity): today's flat list verbatim. When multi_entity,
+    group slots by ``SlotValue.entity`` under ``caller:`` / ``partner:``
+    headers, with keys stripped of their entity prefix under each.
+    """
+    if not pb.multi_entity:
+        return "\n".join(f"- {k}: {v.value}" for k, v in state.slots.items())
+    by_entity: dict[str, list[str]] = {}
+    for k, v in state.slots.items():
+        bare = k.split(":", 1)[1] if ":" in k else k
+        by_entity.setdefault(v.entity, []).append(f"  - {bare}: {v.value}")
+    return "\n".join(
+        f"{entity}:\n" + "\n".join(lines) for entity, lines in by_entity.items()
+    )
 
 
 def _system_block(pb: Playbook, state: ConversationState) -> tuple[str, str]:
@@ -220,8 +264,7 @@ def _system_block(pb: Playbook, state: ConversationState) -> tuple[str, str]:
     if state.language:
         parts.append(_language_directive(state.language))
     if state.slots:
-        slot_lines = "\n".join(f"- {k}: {v.value}" for k, v in state.slots.items())
-        parts.append("## Known information\n" + slot_lines)
+        parts.append("## Known information\n" + _known_info(pb, state))
     view_lines = "\n".join(
         f"- {k}: {v}" for k, v in ns["views"].items() if v not in (None, [], {})
     )

@@ -375,3 +375,73 @@ def test_render_emits_brain_turn_trace_keys_only(capsys) -> None:
     assert "city" in trace_line  # slot KEY present
     assert "Pune" not in trace_line  # slot VALUE never emitted (PII)
     assert f"version={state.version}" in trace_line
+
+
+_MULTI_ENTITY_YAML = textwrap.dedent("""
+    persona: "Numerology assistant."
+    multi_entity: true
+    journeys:
+      main:
+        checkpoints:
+          - id: collect_self
+            entity: caller
+            goal: "Collect the caller's DOB."
+            guidance: "Your DOB is {{ slots.date_of_birth }}."
+            slots: {date_of_birth: {type: date}}
+          - id: collect_partner
+            entity: partner
+            goal: "Collect the partner's DOB."
+            guidance: "Partner DOB is {{ slots.date_of_birth }}."
+            slots: {date_of_birth: {type: date}}
+""")
+
+
+def _state_two_entities(
+    pb: Playbook, at: str = "main.collect_self"
+) -> ConversationState:
+    """Caller DOB + partner DOB in state, parked at the given checkpoint."""
+    log = EventLog()
+    log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint=at, rule="init"))
+    log.append(
+        SlotWriteEvent(
+            key="date_of_birth",
+            value="1986-06-04",
+            status="confirmed",
+            by="director",
+            entity="caller",
+        )
+    )
+    log.append(
+        SlotWriteEvent(
+            key="date_of_birth",
+            value="1986-07-12",
+            status="confirmed",
+            by="director",
+            entity="partner",
+        )
+    )
+    return ConversationState.fold(log, playbook=pb)
+
+
+def test_known_information_groups_by_entity() -> None:
+    pb = Playbook.from_yaml(_MULTI_ENTITY_YAML)
+    state = _state_two_entities(pb)
+    system = render_view(pb, state, token_budget=10_000).messages[0]["content"]
+    assert "caller:" in system and "partner:" in system
+    assert "1986-06-04" in system and "1986-07-12" in system
+
+
+def test_current_entity_flat_template_resolution() -> None:
+    # at the partner checkpoint, {{ slots.date_of_birth }} resolves to partner's
+    pb = Playbook.from_yaml(_MULTI_ENTITY_YAML)
+    state = _state_two_entities(pb, at="main.collect_partner")
+    system = render_view(pb, state, token_budget=10_000).messages[0]["content"]
+    assert "Partner DOB is 1986-07-12." in system  # current-entity flattening
+
+
+def test_single_entity_render_byte_identical() -> None:
+    # multi_entity off → Known information is the flat list, unchanged
+    pb, state = _setup()
+    system = render_view(pb, state, token_budget=10_000).messages[0]["content"]
+    assert "## Known information\n- " in system  # today's flat shape
+    assert "- city: Pune" in system
