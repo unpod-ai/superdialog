@@ -62,6 +62,7 @@ def test_system_message_cache_prefix_is_persona() -> None:
 def test_budget_drops_old_transcript_before_guidance() -> None:
     pb, state = _setup()
     from superdialog.playbook.models import GuidelineConfig
+
     pb.guidelines = GuidelineConfig(channel="text")
     # budget leaves room for guidance + summary + the always-on grounding block,
     # but not all 30 transcript turns — so oldest must still be dropped.
@@ -191,7 +192,9 @@ _KB_YAML = textwrap.dedent("""
 
 def _kb_state(pb: Playbook) -> ConversationState:
     log = EventLog()
-    log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint="j.collect", rule="init"))
+    log.append(
+        AdvanceEvent(from_checkpoint=None, to_checkpoint="j.collect", rule="init")
+    )
     return ConversationState.fold(log, playbook=pb)
 
 
@@ -241,6 +244,7 @@ def test_devanagari_budget_estimate() -> None:
 
 def test_voice_guideline_block_present_and_cache_prefix_extends() -> None:
     from superdialog.llm.prompt_cache import CACHE_PREFIX_KEY
+
     pb, state = _setup()  # MINIMAL_YAML: default guidelines (voice)
     view = render_view(pb, state, token_budget=10_000)
     sys_msg = view.messages[0]
@@ -250,16 +254,20 @@ def test_voice_guideline_block_present_and_cache_prefix_extends() -> None:
     prefix = sys_msg[CACHE_PREFIX_KEY]
     assert content.startswith(prefix)
     assert pb.persona.strip() in prefix
-    assert "live phone call" in prefix.lower()       # static block in prefix
-    assert "CURRENT DATE & TIME" in prefix            # anchor in prefix
+    assert "live phone call" in prefix.lower()  # static block in prefix
+    assert "CURRENT DATE & TIME" in prefix  # anchor in prefix
 
 
 def test_text_channel_has_no_voice_block() -> None:
     from superdialog.playbook.models import GuidelineConfig
+
     pb = Playbook.from_yaml(MINIMAL_YAML).model_copy(
-        update={"guidelines": GuidelineConfig(channel="text")})
+        update={"guidelines": GuidelineConfig(channel="text")}
+    )
     log = EventLog()
-    log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint="booking.collect", rule="init"))
+    log.append(
+        AdvanceEvent(from_checkpoint=None, to_checkpoint="booking.collect", rule="init")
+    )
     state = ConversationState.fold(log, playbook=pb)
     system = render_view(pb, state, token_budget=10_000).messages[0]["content"]
     assert "live phone call" not in system.lower()
@@ -267,7 +275,8 @@ def test_text_channel_has_no_voice_block() -> None:
 
 def test_handover_checkpoint_injects_handover_block() -> None:
     import textwrap
-    yaml_text = textwrap.dedent('''
+
+    yaml_text = textwrap.dedent("""
         persona: "Assistant."
         journeys:
           j:
@@ -277,10 +286,12 @@ def test_handover_checkpoint_injects_handover_block() -> None:
                 guidance: "Connect to a human."
               - id: done
                 terminal: true
-    ''')
+    """)
     pb = Playbook.from_yaml(yaml_text)
     log = EventLog()
-    log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint="j.transfer", rule="init"))
+    log.append(
+        AdvanceEvent(from_checkpoint=None, to_checkpoint="j.transfer", rule="init")
+    )
     state = ConversationState.fold(log, playbook=pb)
     system = render_view(pb, state, token_budget=10_000).messages[0]["content"]
     assert "Handover" in system
@@ -319,6 +330,39 @@ def test_render_edges() -> None:
     assert "Direction" not in system3
 
 
+def _state_with_language(language: str | None) -> tuple[Playbook, ConversationState]:
+    pb, state = _setup()
+    state.language = language
+    return pb, state
+
+
+def test_language_directive_rendered_when_set() -> None:
+    pb, state = _state_with_language("hi")
+    system = render_view(pb, state, token_budget=10_000).messages[0]["content"]
+    assert "Caller language" in system
+    assert "Hinglish" in system
+
+
+def test_language_directive_absent_when_unset() -> None:
+    pb, state = _state_with_language(None)
+    system = render_view(pb, state, token_budget=10_000).messages[0]["content"]
+    assert "Caller language" not in system
+
+
+def test_language_directive_is_outside_cache_prefix() -> None:
+    pb, state = _state_with_language("hi")
+    sys_msg = render_view(pb, state, token_budget=10_000).messages[0]
+    assert "Caller language" not in sys_msg[CACHE_PREFIX_KEY]
+
+
+def test_cache_prefix_identical_across_languages() -> None:
+    pb_en, state_en = _state_with_language("en")
+    pb_hi, state_hi = _state_with_language("hi")
+    en = render_view(pb_en, state_en, token_budget=10_000).messages[0]
+    hi = render_view(pb_hi, state_hi, token_budget=10_000).messages[0]
+    assert en[CACHE_PREFIX_KEY] == hi[CACHE_PREFIX_KEY]
+
+
 def test_render_emits_brain_turn_trace_keys_only(capsys) -> None:
     pb, state = _setup()
     render_view(pb, state, token_budget=10_000)
@@ -328,6 +372,6 @@ def test_render_emits_brain_turn_trace_keys_only(capsys) -> None:
         None,
     )
     assert trace_line is not None
-    assert "city" in trace_line       # slot KEY present
-    assert "Pune" not in trace_line   # slot VALUE never emitted (PII)
+    assert "city" in trace_line  # slot KEY present
+    assert "Pune" not in trace_line  # slot VALUE never emitted (PII)
     assert f"version={state.version}" in trace_line

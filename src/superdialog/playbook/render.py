@@ -29,6 +29,49 @@ from .state import ConversationState
 _jinja = SandboxedEnvironment(undefined=ChainableUndefined, autoescape=False)
 
 
+_LANGUAGE_NAMES = {
+    "en": "English",
+    "hi": "Hindi",
+    "pa": "Punjabi",
+    "ur": "Urdu",
+    "ta": "Tamil",
+    "te": "Telugu",
+    "kn": "Kannada",
+    "ml": "Malayalam",
+    "mr": "Marathi",
+    "gu": "Gujarati",
+    "bn": "Bengali",
+    "or": "Odia",
+}
+
+
+def _language_directive(language: str) -> str:
+    """Per-turn 'reply in the caller's detected language' block.
+
+    Rendered OUTSIDE the cached prefix (language is per-turn), so a switch
+    never invalidates the prompt cache. Reinforces VOICE_CORE's language
+    rule with the bridge-detected language as a concrete, current signal.
+    """
+    code = language.split("-")[0].strip().lower()
+    name = _LANGUAGE_NAMES.get(code, language)
+    head = "## Caller language (this turn)\n"
+    if code == "hi":
+        return head + (
+            "The caller is speaking Hindi. Reply in natural Hinglish (Hindi "
+            "with English technical terms), not pure English. Do not switch "
+            "languages unless the caller does."
+        )
+    if code == "en":
+        return head + (
+            "The caller is speaking English. Reply in English. Do not switch "
+            "languages unless the caller does."
+        )
+    return head + (
+        f"The caller is speaking {name}. Reply in {name}; keep professional "
+        "terms in English. Do not switch languages unless the caller does."
+    )
+
+
 def estimate_tokens(text: str) -> int:
     """Cheap token estimate: ~4 UTF-8 bytes per token, floor of 1.
 
@@ -134,8 +177,8 @@ def _system_block(pb: Playbook, state: ConversationState) -> tuple[str, str]:
     # the bridge turn_id; true cross-process correlation is a later follow-up.
     print(
         f"[turn-trace] side=brain version={state.version} "
-        f"checkpoint={state.checkpoint_id} fed={fed} "
-        f"slots={sorted(state.slots.keys())}",
+        f"checkpoint={state.checkpoint_id} lang={state.language or '-'} "
+        f"fed={fed} slots={sorted(state.slots.keys())}",
         flush=True,
     )
     # persona + static guideline block + date anchor are session-constant, so
@@ -174,6 +217,8 @@ def _system_block(pb: Playbook, state: ConversationState) -> tuple[str, str]:
     if state.steering_note and state.steering_kind != "steer":
         label = "Correction" if state.steering_kind == "repair" else "Direction"
         parts.append(f"## {label} from supervisor\n{state.steering_note}")
+    if state.language:
+        parts.append(_language_directive(state.language))
     if state.slots:
         slot_lines = "\n".join(f"- {k}: {v.value}" for k, v in state.slots.items())
         parts.append("## Known information\n" + slot_lines)
