@@ -120,8 +120,8 @@ class PlaybookRuntime:
         ``language`` is the bridge-detected language of this turn; it is
         stamped on the recorded utterance and folds into the sticky
         ``state.language``. When ``record=False`` the append is skipped, so
-        ``language`` is dropped (the streaming agent's own append does not yet
-        carry it — wiring that path is a separate follow-up task).
+        ``language`` is dropped here (the streaming agent carries language on
+        its own append — see ``PlaybookAgent._stream_turn``).
         """
         if record:
             self.log.append(UtteranceEvent(role="user", text=text, language=language))
