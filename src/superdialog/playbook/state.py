@@ -132,6 +132,7 @@ class ConversationState(BaseModel):
                     status=e.status,
                     by=e.by,
                     version=e.version,
+                    entity=e.entity,
                 )
                 if spec and not unchanged:
                     for dep in spec.invalidates:

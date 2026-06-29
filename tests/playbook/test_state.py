@@ -296,3 +296,25 @@ def test_slot_value_carries_entity_default_caller() -> None:
         ).entity
         == "partner"
     )
+
+
+def test_fold_propagates_entity_from_event_to_slot_value() -> None:
+    log = EventLog()
+    log.append(
+        SlotWriteEvent(
+            key="dob",
+            value="1986-07-12",
+            status="confirmed",
+            by="director",
+            entity="partner",
+        )
+    )
+    state = ConversationState.fold(log)
+    assert state.slots["dob"].entity == "partner"  # carried through fold
+
+
+def test_fold_entity_defaults_caller_backward_compatible() -> None:
+    log = EventLog()
+    log.append(SlotWriteEvent(key="dob", value="x", status="confirmed", by="director"))
+    state = ConversationState.fold(log)
+    assert state.slots["dob"].entity == "caller"  # unchanged: single-entity
