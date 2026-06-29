@@ -18,6 +18,7 @@ class UtteranceEvent(_Base):
     role: Literal["user", "assistant", "system"]
     text: str
     spoke_from_version: int | None = None  # Talker: state version it rendered
+    language: str | None = None  # bridge-detected language of this turn (user turns)
 
 
 class SlotWriteEvent(_Base):

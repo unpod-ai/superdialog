@@ -90,12 +90,28 @@ def test_empty_round_trip() -> None:
     assert not restored.events
 
 
+def test_utterance_event_carries_language() -> None:
+    e = UtteranceEvent(role="user", text="namaste", language="hi")
+    assert e.language == "hi"
+    assert UtteranceEvent(role="user", text="hi").language is None  # default
+
+
+def test_utterance_language_round_trips_jsonl() -> None:
+    log = EventLog()
+    log.append(UtteranceEvent(role="user", text="x", language="hi"))
+    restored = EventLog.from_jsonl(log.to_jsonl())
+    assert restored.events[0].language == "hi"
+
+
 def test_session_start_event_round_trips() -> None:
     from superdialog.playbook.events import EventLog, SessionStartEvent
 
     log = EventLog()
-    log.append(SessionStartEvent(started_at="2026-06-24T10:30:00+05:30",
-                                 timezone="Asia/Kolkata"))
+    log.append(
+        SessionStartEvent(
+            started_at="2026-06-24T10:30:00+05:30", timezone="Asia/Kolkata"
+        )
+    )
     restored = EventLog.from_jsonl(log.to_jsonl())
     e = restored.events[0]
     assert e.type == "session_start"
