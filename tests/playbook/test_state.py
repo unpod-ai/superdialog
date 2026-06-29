@@ -219,15 +219,20 @@ def test_fold_sets_now_from_session_start() -> None:
     from superdialog.playbook.state import ConversationState
 
     log = EventLog()
-    log.append(SessionStartEvent(started_at="2026-06-24T10:30:00+05:30",
-                                 timezone="Asia/Kolkata"))
+    log.append(
+        SessionStartEvent(
+            started_at="2026-06-24T10:30:00+05:30", timezone="Asia/Kolkata"
+        )
+    )
     state = ConversationState.fold(log)
     assert isinstance(state.now, datetime)
     assert state.now.year == 2026 and state.now.month == 6 and state.now.day == 24
 
+
 def test_fold_now_defaults_none_without_session_start() -> None:
     from superdialog.playbook.events import EventLog
     from superdialog.playbook.state import ConversationState
+
     assert ConversationState.fold(EventLog()).now is None
 
 
@@ -244,3 +249,37 @@ def test_gating_helpers() -> None:
     assert state.confirmed(["city"]) is False
     assert state.slot_value("city") == "Pune"
     assert state.slot_value("missing") is None
+
+
+def _fold(*events: UtteranceEvent) -> ConversationState:
+    log = EventLog()
+    for e in events:
+        log.append(e)
+    return ConversationState.fold(log)
+
+
+def test_language_follows_bridge_detection() -> None:
+    s = _fold(UtteranceEvent(role="user", text="namaste", language="hi"))
+    assert s.language == "hi"
+
+
+def test_language_sticky_against_missing_signal() -> None:
+    # turn 2 reports no language -> keep the last known one (no flip-flop)
+    s = _fold(
+        UtteranceEvent(role="user", text="namaste", language="hi"),
+        UtteranceEvent(role="user", text="batao", language=None),
+    )
+    assert s.language == "hi"
+
+
+def test_language_updates_on_genuine_switch() -> None:
+    s = _fold(
+        UtteranceEvent(role="user", text="namaste", language="hi"),
+        UtteranceEvent(role="user", text="english is fine", language="en"),
+    )
+    assert s.language == "en"
+
+
+def test_language_none_when_never_reported() -> None:
+    s = _fold(UtteranceEvent(role="user", text="hello"))
+    assert s.language is None  # backward compatible: no directive rendered

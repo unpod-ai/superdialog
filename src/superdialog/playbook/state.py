@@ -76,6 +76,7 @@ class ConversationState(BaseModel):
     ended: bool = False
     outcome: str | None = None
     user_turns_in_checkpoint: int = 0
+    language: str | None = None  # sticky reply language; adheres to the bridge
 
     @classmethod
     def fold(
@@ -105,6 +106,14 @@ class ConversationState(BaseModel):
                 )
                 if e.role == "user":
                     s.user_turns_in_checkpoint += 1
+                    if e.language:
+                        # Adhere to the bridge's per-turn detection; sticky
+                        # against a missing signal so an undetected turn never
+                        # flips us.
+                        # ponytail: trusts the bridge's script thresholds; add
+                        # N-turn hysteresis only if [turn-trace] shows
+                        # oscillation.
+                        s.language = e.language
             elif isinstance(e, SlotWriteEvent):
                 spec = specs.get(e.key)
                 if spec and spec.authoritative and e.by == "talker":
