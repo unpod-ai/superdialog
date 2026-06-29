@@ -2,7 +2,6 @@ from datetime import datetime, timezone
 
 from superdialog.playbook.models import GuidelineConfig
 from superdialog.playbook._guidelines import (
-    DATE_DISCIPLINE,
     compose_guidelines,
     datetime_anchor_line,
     normalize_date,
@@ -11,10 +10,10 @@ from superdialog.playbook._guidelines import (
 
 def test_voice_default_spine_present() -> None:
     b = compose_guidelines(GuidelineConfig())
-    assert "live phone call" in b.static.lower()           # VOICE_CORE
-    assert "CONVERSATIONAL LEADERSHIP" in b.static          # LEADERSHIP_RULES
-    assert "Professional" in b.static                       # tone
-    assert b.memory_guard == ""                             # off by default
+    assert "live phone call" in b.static.lower()  # VOICE_CORE
+    assert "CONVERSATIONAL LEADERSHIP" in b.static  # LEADERSHIP_RULES
+    assert "Professional" in b.static  # tone
+    assert b.memory_guard == ""  # off by default
     assert b.handover == ""
 
 
@@ -29,32 +28,64 @@ def test_text_channel_suppresses_voice_spine() -> None:
 def test_sections_breakdown_tracks_active_chunks() -> None:
     # default voice spine (grounding leads, fed on every channel)
     assert compose_guidelines(GuidelineConfig()).sections == [
-        "grounding", "voice_core", "leadership", "tone:professional"
+        "grounding",
+        "voice_core",
+        "leadership",
+        "tone:professional",
+        "end_discipline",
     ]
     # text channel: grounding still applies, voice spine omitted
     assert compose_guidelines(GuidelineConfig(channel="text")).sections == ["grounding"]
     # full conditional set: casual tone, non-English, domain, followup
-    s = compose_guidelines(GuidelineConfig(
-        tone="casual", language="hi", call_type="support", followup_enabled=True
-    )).sections
+    s = compose_guidelines(
+        GuidelineConfig(
+            tone="casual", language="hi", call_type="support", followup_enabled=True
+        )
+    ).sections
     assert s == [
-        "grounding", "voice_core", "leadership", "tone:casual",
-        "language_accent", "followup", "domain:support", "multilingual",
+        "grounding",
+        "voice_core",
+        "leadership",
+        "tone:casual",
+        "language_accent",
+        "followup",
+        "domain:support",
+        "multilingual",
+        "end_discipline",
     ]
 
 
+def test_end_discipline_present_on_voice() -> None:
+    blocks = compose_guidelines(GuidelineConfig(channel="voice"))
+    assert (
+        "not a request to end" in blocks.static.lower()
+        or "frustration" in blocks.static.lower()
+    )
+    assert "end_discipline" in blocks.sections
+
+
+def test_end_discipline_absent_on_text() -> None:
+    blocks = compose_guidelines(GuidelineConfig(channel="text"))
+    assert "end_discipline" not in blocks.sections
+
+
 def test_casual_tone_and_language_and_domain() -> None:
-    b = compose_guidelines(GuidelineConfig(
-        tone="casual", language="hi", call_type="support"))
-    assert "Warm" in b.static                               # casual tone
+    b = compose_guidelines(
+        GuidelineConfig(tone="casual", language="hi", call_type="support")
+    )
+    assert "Warm" in b.static  # casual tone
     assert "Language & Accent" in b.static
-    assert "Customer Support Flows" in b.static             # domain pattern
+    assert "Customer Support Flows" in b.static  # domain pattern
 
 
 def test_gender_block_matches_voice_in_gendered_language() -> None:
     # female + Hindi -> feminine grammar block + section
     bf = compose_guidelines(GuidelineConfig(gender="female", language="hi"))
-    assert "Speaker Gender" in bf.static and "feminine" in bf.static and "करूँगी" in bf.static
+    assert (
+        "Speaker Gender" in bf.static
+        and "feminine" in bf.static
+        and "करूँगी" in bf.static
+    )
     assert "gender:female" in bf.sections
     # male + Hindi -> masculine
     bm = compose_guidelines(GuidelineConfig(gender="male", language="hi"))
@@ -70,7 +101,10 @@ def test_gender_block_matches_voice_in_gendered_language() -> None:
 
 
 def test_followup_block_only_when_enabled() -> None:
-    assert "Follow-ups" in compose_guidelines(GuidelineConfig(followup_enabled=True)).static
+    assert (
+        "Follow-ups"
+        in compose_guidelines(GuidelineConfig(followup_enabled=True)).static
+    )
     assert "Follow-ups" not in compose_guidelines(GuidelineConfig()).static
 
 

@@ -88,6 +88,12 @@ DATE_DISCIPLINE = """## Date & Time Discipline
 - Never invent a date/time the caller did not state. Once captured and confirmed, it is FIXED unless they explicitly reschedule.
 """
 
+END_DISCIPLINE = """## Ending the Call
+- Frustration is NOT a request to end. "I already told you", "you're not listening", an annoyed tone, or the caller repeating themselves means they are UNHAPPY, not finished — acknowledge it, fix the confusion, and keep helping. Never respond to frustration with a goodbye.
+- End ONLY on an explicit close ("thanks, bye", "that's all", "nothing else, thanks") or after you ask and they confirm there's nothing else.
+- Before ending, briefly check there's nothing else you can help with.
+"""
+
 HANDOVER_INSTRUCTIONS = """## Handover
 When transferring to a human, hand over a 1-2 sentence summary: the caller's name, their reason for calling, and their request. Neutral tone, no assumptions, no extra detail.
 """
@@ -120,18 +126,47 @@ _DOMAIN = {
 }
 
 _NON_ENGLISH_CODES = {
-    "hi", "hindi", "hinglish", "pa", "punjabi", "ta", "tamil", "te", "telugu",
-    "mr", "marathi", "gu", "gujarati", "bn", "bengali", "kn", "kannada", "ml",
-    "malayalam", "ur", "urdu", "or", "odia", "es", "fr", "de", "pt", "ar",
-    "zh", "ja", "ko",
+    "hi",
+    "hindi",
+    "hinglish",
+    "pa",
+    "punjabi",
+    "ta",
+    "tamil",
+    "te",
+    "telugu",
+    "mr",
+    "marathi",
+    "gu",
+    "gujarati",
+    "bn",
+    "bengali",
+    "kn",
+    "kannada",
+    "ml",
+    "malayalam",
+    "ur",
+    "urdu",
+    "or",
+    "odia",
+    "es",
+    "fr",
+    "de",
+    "pt",
+    "ar",
+    "zh",
+    "ja",
+    "ko",
 }
 
 
 class GuidelineBlocks(BaseModel):
-    static: str = ""        # session-constant: voice spine + tone + language + domain
+    static: str = ""  # session-constant: voice spine + tone + language + domain
     memory_guard: str = ""  # rendered beside the summary section when present
-    handover: str = ""      # rendered when a handover checkpoint is active
-    sections: list[str] = Field(default_factory=list)  # chunk names in `static`, for tracing
+    handover: str = ""  # rendered when a handover checkpoint is active
+    sections: list[str] = Field(
+        default_factory=list
+    )  # chunk names in `static`, for tracing
 
 
 def _is_non_english(language: str | list[str]) -> bool:
@@ -207,6 +242,8 @@ def compose_guidelines(
         if non_english:
             parts.append(MULTILINGUAL_PATTERNS.strip())
             sections.append("multilingual")
+        parts.append(END_DISCIPLINE.strip())
+        sections.append("end_discipline")
     header = (
         "## DEFAULT GUIDELINES (baseline)\n"
         "Universal best practices. The business context and step instructions "
