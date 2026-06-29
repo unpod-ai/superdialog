@@ -77,6 +77,15 @@ async def test_streaming_turn_yields_real_chunks() -> None:
     assert chunks[-1].done
 
 
+async def test_turn_stamps_caller_language() -> None:
+    agent = _agent()
+    async for _ in agent.stream_turn("namaste", language="hi"):
+        pass
+    users = [e for e in agent.event_log.events if getattr(e, "role", None) == "user"]
+    assert users[-1].language == "hi"
+    assert agent.runtime.state.language == "hi"
+
+
 async def test_chat_ctx_round_trip() -> None:
     agent = _agent()
     await agent.turn("hello")
@@ -284,6 +293,7 @@ def test_agent_explicit_hold_timeout_wins_over_policies() -> None:
 
 def test_apply_memory_seeds_summary_event() -> None:
     from superdialog.playbook.events import SummaryEvent
+
     agent = _agent()
     agent.apply_memory("Caller is a returning member; last call was about a refund.")
     summaries = [e for e in agent.runtime.log.events if isinstance(e, SummaryEvent)]

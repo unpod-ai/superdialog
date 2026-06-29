@@ -42,8 +42,8 @@ class _LLMTimer:
 
     def __init__(self, inner: Any) -> None:
         self._inner = inner
-        self.latencies_ms: list[float] = []          # every call, flat
-        self._turn_buckets: list[list[float]] = []   # per turn, list of call durations
+        self.latencies_ms: list[float] = []  # every call, flat
+        self._turn_buckets: list[list[float]] = []  # per turn, list of call durations
         self._current_bucket: list[float] | None = None
 
     def begin_turn(self) -> None:
@@ -64,7 +64,9 @@ class _LLMTimer:
         self._record((time.perf_counter() - t0) * 1000)
         return result
 
-    async def stream(self, messages: list[dict[str, str]], **kw: Any) -> AsyncIterator[str]:
+    async def stream(
+        self, messages: list[dict[str, str]], **kw: Any
+    ) -> AsyncIterator[str]:
         t0 = time.perf_counter()
         try:
             async for chunk in self._inner.stream(messages, **kw):
@@ -82,7 +84,7 @@ class _LLMTimer:
             "calls": len(s),
             "mean_ms": round(sum(s) / len(s), 1),
             "p95_ms": round(s[int(len(s) * 0.95)], 1),
-            "per_turn_ms": per_turn,   # index 0 = turn 1; total LLM ms per user turn
+            "per_turn_ms": per_turn,  # index 0 = turn 1; total LLM ms per user turn
         }
 
 
@@ -128,7 +130,9 @@ class PlaybookAgent:
                 else playbook.policies.hold_timeout
             ),
         )
-        self._traversal_dir: Path | None = Path(traversal_dir) if traversal_dir else None
+        self._traversal_dir: Path | None = (
+            Path(traversal_dir) if traversal_dir else None
+        )
         self._traversal_source = traversal_source or (
             playbook.source_path and Path(playbook.source_path).name or ""
         )
@@ -145,27 +149,33 @@ class PlaybookAgent:
         text: str,
         *,
         stream: bool = False,
+        language: str | None = None,
     ) -> TurnResult | AsyncIterator[StreamChunk]:
         """Process one user turn; stream chunks live when ``stream=True``.
 
         When stream=True the coroutine returns an AsyncIterator — callers must
         ``await`` before iterating: ``async for chunk in await agent.turn(t, stream=True)``.
         Prefer ``agent.stream_turn(text)`` which requires no ``await``.
+
+        ``language`` is the bridge-detected language of this turn; it is
+        stamped on the user utterance so the reply adheres to the caller.
         """
         if stream:
-            return self._stream_turn(text)
+            return self._stream_turn(text, language)
         final = Turn(text="")
-        async for chunk in self._stream_turn(text):
+        async for chunk in self._stream_turn(text, language):
             if chunk.done and chunk.turn is not None:
                 final = chunk.turn
         return TurnResult(text=final.text, metadata=final.metadata)
 
-    def stream_turn(self, text: str) -> AsyncIterator[StreamChunk]:
+    def stream_turn(
+        self, text: str, language: str | None = None
+    ) -> AsyncIterator[StreamChunk]:
         """Stream one user turn — use as: ``async for chunk in agent.stream_turn(text)``.
 
         No ``await`` needed: returns the async iterator directly.
         """
-        return self._stream_turn(text)
+        return self._stream_turn(text, language)
 
     def assist(self, text: str) -> None:
         """Push a system-level note into the log; takes effect next turn."""
@@ -216,7 +226,9 @@ class PlaybookAgent:
 
     # ---- internals ------------------------------------------------------------
 
-    async def _stream_turn(self, text: str) -> AsyncIterator[StreamChunk]:
+    async def _stream_turn(
+        self, text: str, language: str | None = None
+    ) -> AsyncIterator[StreamChunk]:
         """Talker chunks live, then pass-through, then the done chunk.
 
         Barge-in semantics: aborting this generator (host ``aclose()`` or
@@ -262,7 +274,9 @@ class PlaybookAgent:
         # renders a transcript that ends at THIS turn (not the previous one).
         # run_director runs on_user_text with record=False to avoid a
         # double-append.
-        self.runtime.log.append(UtteranceEvent(role="user", text=text))
+        self.runtime.log.append(
+            UtteranceEvent(role="user", text=text, language=language)
+        )
         entry_cp = self.runtime.state.checkpoint_id
 
         # Start the Director concurrently so it is (usually) quiescent by the
