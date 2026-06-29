@@ -103,7 +103,9 @@ class PlaybookRuntime:
         pass_through.extend(await self._quiesce())
         return pass_through
 
-    async def on_user_text(self, text: str, *, record: bool = True) -> list[str]:
+    async def on_user_text(
+        self, text: str, *, record: bool = True, language: str | None = None
+    ) -> list[str]:
         """Process one user utterance: Director verdict, policies, quiescence.
 
         Returning implies the runtime is quiescent: all hops and policies have
@@ -116,7 +118,7 @@ class PlaybookRuntime:
         folded ``self.state``, so skipping the append is safe.
         """
         if record:
-            self.log.append(UtteranceEvent(role="user", text=text))
+            self.log.append(UtteranceEvent(role="user", text=text, language=language))
         decision = await self._director.evaluate(self.state)
         pass_through: list[str] = []
         if decision.degraded:

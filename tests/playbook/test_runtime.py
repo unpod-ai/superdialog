@@ -71,6 +71,13 @@ async def test_silence_policy_prompts_then_routes() -> None:
     assert rt.state.checkpoint_id == "booking.close"
 
 
+async def test_on_user_text_stamps_language() -> None:
+    rt = _runtime({"slots": {}, "advance": None, "note": None})
+    await rt.start()
+    await rt.on_user_text("namaste", language="hi")
+    assert rt.state.language == "hi"
+
+
 async def test_degraded_director_is_logged_not_fatal() -> None:
     class BadLLM:
         async def complete(self, messages, **kwargs) -> str:
@@ -284,7 +291,9 @@ async def test_start_seeds_session_start_anchor() -> None:
     from superdialog.playbook.models import GuidelineConfig
 
     base = Playbook.from_yaml(MINIMAL_YAML)
-    pb = base.model_copy(update={"guidelines": GuidelineConfig(timezone="Asia/Kolkata")})
+    pb = base.model_copy(
+        update={"guidelines": GuidelineConfig(timezone="Asia/Kolkata")}
+    )
     rt = PlaybookRuntime(
         pb,
         director_llm=CannedLLM({"slots": {}, "advance": None, "note": None}),
