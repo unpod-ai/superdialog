@@ -310,7 +310,8 @@ def test_fold_propagates_entity_from_event_to_slot_value() -> None:
         )
     )
     state = ConversationState.fold(log)
-    assert state.slots["dob"].entity == "partner"  # carried through fold
+    # partner namespaces; entity is carried through fold
+    assert state.slots["partner:dob"].entity == "partner"
 
 
 def test_fold_entity_defaults_caller_backward_compatible() -> None:
@@ -318,3 +319,29 @@ def test_fold_entity_defaults_caller_backward_compatible() -> None:
     log.append(SlotWriteEvent(key="dob", value="x", status="confirmed", by="director"))
     state = ConversationState.fold(log)
     assert state.slots["dob"].entity == "caller"  # unchanged: single-entity
+
+
+def _w(key: str, val: object, entity: str = "caller") -> SlotWriteEvent:
+    return SlotWriteEvent(
+        key=key, value=val, status="confirmed", by="director", entity=entity
+    )
+
+
+def test_partner_value_does_not_clobber_caller() -> None:
+    log = EventLog()
+    log.append(_w("date_of_birth", "1986-06-04", "caller"))
+    log.append(_w("date_of_birth", "1986-07-12", "partner"))
+    s = ConversationState.fold(log)
+    assert s.slot_value("date_of_birth", entity="caller") == "1986-06-04"
+    assert s.slot_value("date_of_birth", entity="partner") == "1986-07-12"
+    assert s.confirmed(["date_of_birth"], entity="partner") is True
+    assert s.filled(["date_of_birth"], entity="partner") is True
+
+
+def test_caller_storage_is_bare_key_backward_compatible() -> None:
+    log = EventLog()
+    log.append(_w("date_of_birth", "1986-06-04"))  # caller
+    s = ConversationState.fold(log)
+    assert "date_of_birth" in s.slots  # bare key, exactly as today
+    assert "caller:date_of_birth" not in s.slots
+    assert s.slot_value("date_of_birth") == "1986-06-04"  # default entity=caller

@@ -26,6 +26,13 @@ from .events import (
 from .models import Playbook, SlotSpec
 
 
+def _ekey(entity: str, key: str) -> str:
+    """Composite storage key. 'caller' keeps the BARE key so single-entity
+    playbooks (multi_entity off, entity defaults 'caller') store exactly as
+    today — backward compatible. Other entities namespace: 'partner:dob'."""
+    return key if entity == "caller" else f"{entity}:{key}"
+
+
 class SlotValue(BaseModel):
     """A slot's current value plus its provenance and confirmation status."""
 
@@ -119,7 +126,8 @@ class ConversationState(BaseModel):
                 spec = specs.get(e.key)
                 if spec and spec.authoritative and e.by == "talker":
                     continue  # authoritative slots are Director/tool-only
-                existing = s.slots.get(e.key)
+                skey = _ekey(e.entity, e.key)
+                existing = s.slots.get(skey)
                 if (
                     existing
                     and existing.status == "confirmed"
@@ -127,7 +135,7 @@ class ConversationState(BaseModel):
                 ):
                     continue  # never downgrade
                 unchanged = existing is not None and existing.value == e.value
-                s.slots[e.key] = SlotValue(
+                s.slots[skey] = SlotValue(
                     value=copy.deepcopy(e.value),
                     status=e.status,
                     by=e.by,
@@ -137,7 +145,7 @@ class ConversationState(BaseModel):
                 if spec and not unchanged:
                     for dep in spec.invalidates:
                         if dep != e.key:
-                            s.slots.pop(dep, None)
+                            s.slots.pop(_ekey(e.entity, dep), None)
                             s.tool_results.pop(dep, None)
             elif isinstance(e, AdvanceEvent):
                 if e.from_checkpoint:
@@ -183,17 +191,19 @@ class ConversationState(BaseModel):
         return s
 
     # convenience used by expr judge and renderer
-    def slot_value(self, key: str) -> Any:
+    def slot_value(self, key: str, entity: str = "caller") -> Any:
         """Return the slot's value, or None when the slot is unset."""
-        sv = self.slots.get(key)
+        sv = self.slots.get(_ekey(entity, key))
         return sv.value if sv else None
 
-    def confirmed(self, keys: list[str]) -> bool:
+    def confirmed(self, keys: list[str], entity: str = "caller") -> bool:
         """True when every key is filled with a confirmed value."""
         return all(
-            k in self.slots and self.slots[k].status == "confirmed" for k in keys
+            _ekey(entity, k) in self.slots
+            and self.slots[_ekey(entity, k)].status == "confirmed"
+            for k in keys
         )
 
-    def filled(self, keys: list[str]) -> bool:
+    def filled(self, keys: list[str], entity: str = "caller") -> bool:
         """True when every key has a value (provisional or confirmed)."""
-        return all(k in self.slots for k in keys)
+        return all(_ekey(entity, k) in self.slots for k in keys)
