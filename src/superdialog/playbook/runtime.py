@@ -116,6 +116,11 @@ class PlaybookRuntime:
         state (so the Talker sees the current turn), then calls this with
         ``record=False`` to avoid a double-append. Everything below reads the
         folded ``self.state``, so skipping the append is safe.
+
+        ``language`` is the bridge-detected language of this turn; it is
+        stamped on the recorded utterance and folds into the sticky
+        ``state.language``. It is ignored when ``record=False`` (the streaming
+        agent stamps language on its own append instead — see PlaybookAgent).
         """
         if record:
             self.log.append(UtteranceEvent(role="user", text=text, language=language))

@@ -78,6 +78,24 @@ async def test_on_user_text_stamps_language() -> None:
     assert rt.state.language == "hi"
 
 
+async def test_on_user_text_drops_language_when_not_recorded() -> None:
+    rt = _runtime({"slots": {}, "advance": None, "note": None})
+    await rt.start()
+    await rt.on_user_text("namaste", record=False, language="hi")
+    # record=False skips the append, so language is intentionally dropped.
+    assert rt.state.language is None
+
+
+async def test_on_user_text_language_is_sticky_across_turns() -> None:
+    rt = _runtime({"slots": {}, "advance": None, "note": None})
+    await rt.start()
+    await rt.on_user_text("namaste", language="hi")
+    assert rt.state.language == "hi"
+    # An undetected (None) turn must not clobber the sticky language.
+    await rt.on_user_text("ok")
+    assert rt.state.language == "hi"
+
+
 async def test_degraded_director_is_logged_not_fatal() -> None:
     class BadLLM:
         async def complete(self, messages, **kwargs) -> str:
