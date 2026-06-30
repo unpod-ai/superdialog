@@ -145,6 +145,43 @@ class PlaybookRuntime:
         pass_through.extend(await self._quiesce())
         return pass_through
 
+    async def draft_pass_through(
+        self, text: str, language: str | None = None
+    ) -> tuple[ConversationState, list[str]]:
+        """Speculative verdict + checkpoint-advance, WITHOUT tools or commit.
+
+        For A2a draft-and-hold: evaluate the Director and apply the advance on a
+        THROWAWAY copy of the log so the real conversation is untouched, and
+        SKIP ``_quiesce`` — that is where checkpoint pipelines (tools) run, so a
+        draft can never fire an irreversible side effect. Returns the draft
+        (post-advance) state for the Talker plus any verbatim pass-through.
+        Tool-dependent replies are not speculated (their tool output is absent);
+        the draft is whatever the agent can say without running a tool.
+        """
+        real_log = self.log
+        real_cache = (self._state_cache, self._state_cache_version)
+        try:
+            self.log = EventLog(list(real_log.events))
+            self._state_cache = None
+            self.log.append(UtteranceEvent(role="user", text=text, language=language))
+            decision = await self._director.evaluate(self.state)
+            pass_through: list[str] = []
+            if not decision.degraded:
+                advance = next(
+                    (e for e in decision.events if isinstance(e, AdvanceEvent)), None
+                )
+                if advance is not None and not advance.rule.startswith("interrupt:"):
+                    current = self.state.checkpoint_id
+                    if current is not None:
+                        self._speak_verbatim(self._pb.checkpoint(current), pass_through)
+                await self._apply_with_entry(decision.events, pass_through)
+            # Snapshot the draft state (a concrete fold) before restoring.
+            draft_state = self.state
+            return draft_state, pass_through
+        finally:
+            self.log = real_log
+            self._state_cache, self._state_cache_version = real_cache
+
     async def on_external(self, event: ExternalEvent) -> ExternalResult:
         """Record an external event and apply the matching policy/handler."""
         self.log.append(event)

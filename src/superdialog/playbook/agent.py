@@ -177,6 +177,49 @@ class PlaybookAgent:
         """
         return self._stream_turn(text, language)
 
+    def draft_turn(
+        self, text: str, language: str | None = None
+    ) -> AsyncIterator[StreamChunk]:
+        """Speculative reply to a NOT-yet-final utterance (A2a draft-and-hold).
+
+        Streams the reply the agent *would* give for ``text`` without mutating
+        the event log and without firing tools (see
+        ``PlaybookRuntime.draft_pass_through``). Abort with ``aclose()`` to
+        revise on a continuation; nothing is committed, so abort is free. The
+        host buffers the draft's TTS audio and either releases it on commit
+        (text unchanged) or discards it and re-drafts.
+        """
+        return self._draft_turn(text, language)
+
+    async def _draft_turn(
+        self, text: str, language: str | None = None
+    ) -> AsyncIterator[StreamChunk]:
+        await self._ensure_started()
+        # Verdict + advance on a throwaway log; NO tools, real log untouched.
+        draft_state, pass_through = await self.runtime.draft_pass_through(
+            text, language
+        )
+        # Talker speaks from the settled draft state. No director_done barrier:
+        # the draft has no tools to await, so the state is already final.
+        talker_chunks: list[SpeechChunk] = []
+        speech = self._talker.speak(draft_state)
+        try:
+            async for chunk in speech:
+                talker_chunks.append(chunk)
+                if chunk.text:
+                    yield StreamChunk(text=chunk.text)
+        finally:
+            # Shielded close so a foreign-task aclose() (revise) unwinds cleanly,
+            # mirroring _stream_turn. No log append, no check_repairs — a draft
+            # leaves zero trace.
+            with anyio.CancelScope(shield=True):
+                await speech.aclose()
+        for line in pass_through:
+            yield StreamChunk(text=line)
+        talker_text = "".join(c.text for c in talker_chunks).strip()
+        full = " ".join(pass_through).strip() if pass_through else talker_text
+        yield StreamChunk(done=True, turn=Turn(text=full, metadata=self._metadata()))
+
     def assist(self, text: str) -> None:
         """Push a system-level note into the log; takes effect next turn."""
         if not text:
