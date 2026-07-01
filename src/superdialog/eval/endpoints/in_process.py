@@ -6,6 +6,7 @@ from typing import Any
 
 from superdialog.agent import TurnResult
 from superdialog.agents.llm_agent import LLMAgent
+from superdialog.dialog_machine import DialogMachine
 from superdialog.llm.resolver import resolve_llm
 
 # The primer that asks the vanilla LLM to greet first, mirroring the playbook
@@ -45,6 +46,47 @@ class InProcessVanilla:
     def reset(self) -> None:
         """Discard conversation state by rebuilding the underlying agent."""
         self._agent = self._new_agent()
+
+
+class InProcessPlaybook:
+    """Wraps DialogMachine running the playbook engine (Director + Talker).
+
+    ``agent_model`` sets both roles; ``director_model``/``talker_model`` override
+    each role individually (per-role LLM control into the state machine).
+    """
+
+    def __init__(
+        self,
+        playbook_path: str,
+        *,
+        agent_model: str,
+        director_model: str | None = None,
+        talker_model: str | None = None,
+    ) -> None:
+        self._path = playbook_path
+        self._talker = talker_model or agent_model
+        self._director = director_model or agent_model
+        self._machine = self._new_machine()
+
+    def _new_machine(self) -> DialogMachine:
+        return DialogMachine(
+            source=self._path,
+            llm=self._talker,
+            director_llm=self._director,
+            engine="playbook",
+        )
+
+    async def start(self) -> str:
+        """Speak the playbook's opening greeting."""
+        return (await self._machine.start()).text
+
+    async def turn(self, text: str) -> str:
+        """Feed one user utterance; return the assistant reply text."""
+        return (await self._machine.turn(text)).text
+
+    def reset(self) -> None:
+        """Discard conversation state by rebuilding the DialogMachine."""
+        self._machine = self._new_machine()
 
 
 def _text(res: TurnResult | Any) -> str:
