@@ -889,7 +889,92 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     eval_cmd.set_defaults(fn=_cmd_eval)
 
+    bench = sub.add_parser(
+        "benchmark",
+        help="RAGAS + deterministic benchmark over a dataset (raw vs SuperDialog)",
+    )
+    bench.add_argument("--data", default="kairali",
+                       help="dataset: short name (e.g. kairali) or path to a .jsonl")
+    bench.add_argument("--flow", default=None,
+                       help="playbook YAML to run (default: from dataset's playbook field)")
+    bench.add_argument("--prompt", default=None,
+                       help="raw-LLM system-prompt .txt (needed to run the raw baseline)")
+    bench.add_argument("--models", default=",".join(_BENCH_ALL),
+                       help="comma-separated models (aliases or litellm ids). "
+                            f"default: {','.join(_BENCH_ALL)}")
+    bench.add_argument("--sd-only", action="store_true", help="only with-SuperDialog")
+    bench.add_argument("--raw-only", action="store_true", help="only raw LLM")
+    bench.add_argument("--no-ragas", action="store_true",
+                       help="deterministic metrics only (no judge, fast/free)")
+    bench.add_argument("--out", default=None, help="write the big-table report to this path")
+    bench.set_defaults(fn=_cmd_benchmark)
+
     return parser
+
+
+_BENCH_ALIASES = {
+    "gpt-4o-mini": "gpt-4o-mini",
+    "gpt-4.1-mini": "gpt-4.1-mini",
+    "claude-haiku": "anthropic/claude-haiku-4-5-20251001",
+}
+_BENCH_ALL = ["gpt-4o-mini", "gpt-4.1-mini", "claude-haiku"]
+
+
+def _cmd_benchmark(args: argparse.Namespace) -> int:
+    """Run the RAGAS + deterministic benchmark over a dataset; print one big table.
+
+    Dataset-based (unlike ``eval``'s session audit): replays each dataset's user
+    turns at the model(s), scores raw and/or with-SuperDialog against the
+    ground truth, single fixed judge. Defers to ``superdialog.benchmark``.
+    """
+    from ..benchmark.loader import load_dataset, load_named
+    from ..benchmark.panel import render_big_table
+    from ..benchmark.ragas_scorer import DEFAULT_JUDGES
+    from ..benchmark.runner import run_raw_mode, run_sd_mode
+
+    samples = (
+        load_dataset(args.data)
+        if args.data.endswith(".jsonl")
+        else load_named(args.data)
+    )
+    playbook = args.flow or next((s.playbook for s in samples if s.playbook), None)
+    if not args.raw_only and not playbook:
+        print("error: no playbook (dataset has none; pass --flow)", file=sys.stderr)
+        return 2
+
+    run_ragas = not args.no_ragas
+    sd_only = args.sd_only or not args.prompt  # raw needs a system-prompt file
+    models = [m.strip() for m in args.models.split(",") if m.strip()]
+
+    reports = []
+    for m in models:
+        ms = _BENCH_ALIASES.get(m, m)
+        print(f"\n# model: {ms}", file=sys.stderr)
+        if not sd_only:
+            reports.append(
+                run_raw_mode(samples, ms, args.prompt,
+                             label=f"Raw LLM ({ms})", run_ragas=run_ragas)
+            )
+        if not args.raw_only:
+            reports.append(
+                run_sd_mode(samples, ms, playbook,
+                            label=f"With SuperDialog ({ms})", run_ragas=run_ragas)
+            )
+
+    judge = None if args.no_ragas else DEFAULT_JUDGES[0]
+    pb_name = Path(playbook).name if playbook else None
+    table = render_big_table(reports, dataset=args.data, playbook=pb_name, judge=judge)
+    print(table)
+
+    if args.out:
+        out = Path(args.out)
+        header = (
+            f"# SuperDialog Benchmark - {args.data}\n\n"
+            f"- judge: {judge or 'n/a (RAGAS off)'}\n\n## Results\n\n"
+        )
+        out.write_text(header + table + "\n", encoding="utf-8")
+        print(f"\n# report written: {out}", file=sys.stderr)
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:

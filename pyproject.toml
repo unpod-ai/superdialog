@@ -42,6 +42,18 @@ playground = [
 anyllm = [
     "any-llm-sdk[anthropic,openai]>=1.17.0",
 ]
+# RAGAS benchmark (src/superdialog/benchmark/). litellm is already a base dep and
+# routes the judge models (gpt-4o-mini + claude-haiku); langchain-community
+# provides the ChatLiteLLM bridge RAGAS wraps. Deterministic metrics need none of
+# this — only the RAGAS scorer does.
+benchmark = [
+    "ragas>=0.2,<0.3",
+    # ragas 0.2.x imports langchain_community.chat_models.vertexai at load; that
+    # module was removed in langchain-community 0.4 (langchain 1.x). Pin to the
+    # 0.3 line so ragas imports cleanly.
+    "langchain-community>=0.3,<0.4",
+    "langchain-core>=0.3,<0.4",
+]
 
 [project.urls]
 Homepage = "https://github.com/geneffic/superdialog"
