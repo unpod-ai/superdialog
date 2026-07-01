@@ -147,3 +147,32 @@ class GuardrailJudge:
                 errored=True,
                 reason=f"judge parse error: {exc}",
             )
+
+
+class EfficiencyMetric:
+    """Pure-code metric: user turns + assistant latency percentiles."""
+
+    name = "efficiency"
+    applies_to = ("conversation",)
+
+    async def score(self, sample: EvalSample) -> MetricResult:
+        lat = list(sample.metadata.get("latencies_ms") or [])
+        turns = int(sample.metadata.get("turns") or 0)
+        p50 = _percentile(lat, 50.0)
+        p95 = _percentile(lat, 95.0)
+        return MetricResult(
+            name=self.name,
+            value=float(turns),
+            reason=f"{turns} turns, p95={p95:.0f}ms",
+            extra={"turns": turns, "latency_p50": p50, "latency_p95": p95},
+        )
+
+
+def _percentile(values: list[float], pct: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    k = (len(ordered) - 1) * (pct / 100.0)
+    lo = int(k)
+    hi = min(lo + 1, len(ordered) - 1)
+    return ordered[lo] + (ordered[hi] - ordered[lo]) * (k - lo)
