@@ -57,3 +57,51 @@ class TaskSuccessJudge:
                 errored=True,
                 reason=f"judge parse error: {exc}",
             )
+
+
+class SlotAccuracyJudge:
+    """Fraction of required slots captured AND confirmed, judged from transcript."""
+
+    name = "slot_accuracy"
+    applies_to = ("conversation",)
+
+    def __init__(self, judge_llm: SpeaksUser) -> None:
+        self._llm = judge_llm
+
+    async def score(self, sample: EvalSample) -> MetricResult:
+        truth = sample.metadata.get("ground_truth_slots") or {}
+        if not truth:
+            return MetricResult(
+                name=self.name,
+                value=1.0,
+                reason="no ground-truth slots to check",
+            )
+        prompt = (
+            "You are auditing whether an assistant captured and CONFIRMED the "
+            "required information during a conversation.\n"
+            f"REQUIRED (expected values): {json.dumps(truth)}\n"
+            f"CONVERSATION:\n{_convo_text(sample)}\n\n"
+            "For each required key decide if the assistant captured a value that "
+            "semantically matches the expected one (e.g. 'Sat' matches "
+            "'Saturday'). Reply with JSON: "
+            '{"per_slot": {key: bool}, "accuracy": 0.0-1.0, '
+            '"diffs": {key: [expected, got_or_null]}}.'
+        )
+        try:
+            v = await _judge_json(self._llm, prompt)
+            return MetricResult(
+                name=self.name,
+                value=float(v["accuracy"]),
+                reason=str(v.get("diffs", "")),
+                extra={
+                    "per_slot": v.get("per_slot", {}),
+                    "diffs": v.get("diffs", {}),
+                },
+            )
+        except Exception as exc:
+            return MetricResult(
+                name=self.name,
+                value=None,
+                errored=True,
+                reason=f"judge parse error: {exc}",
+            )
