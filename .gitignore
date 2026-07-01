@@ -28,3 +28,10 @@ bank_agent.yaml
 .claude
 openspec
 uv.lock
+
+# Kairali client artifacts + generated reports — do not publish
+examples/playbooks/kairali_enquiry_qualification.simple.yaml
+examples/prompts/kairali_enquiry_qualification.raw.txt
+examples/datasets/kairali_dataset.jsonl
+benchmark_kairali.md
+benchmark_kairali_results.md

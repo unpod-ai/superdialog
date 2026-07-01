@@ -893,8 +893,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "benchmark",
         help="RAGAS + deterministic benchmark over a dataset (raw vs SuperDialog)",
     )
-    bench.add_argument("--data", default="kairali",
-                       help="dataset: short name (e.g. kairali) or path to a .jsonl")
+    bench.add_argument("--data", default="universal",
+                       help="dataset: short name (e.g. universal) or path to a .jsonl")
     bench.add_argument("--flow", default=None,
                        help="playbook YAML to run (default: from dataset's playbook field)")
     bench.add_argument("--prompt", default=None,

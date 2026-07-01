@@ -11,13 +11,13 @@ test model, so the panel's Δ column is the framework's measured lift.
 Usage
 -----
     # deterministic only (FREE — no LLM calls):
-    python examples/run_benchmark.py kairali --no-ragas --dry
+    python examples/run_benchmark.py universal --no-ragas --dry
 
     # full run, one model (spends: SUT calls x scenarios x 2 modes + judges):
-    python examples/run_benchmark.py kairali --model gpt-4o-mini
+    python examples/run_benchmark.py universal --model gpt-4o-mini
 
     # both models (a panel per model):
-    python examples/run_benchmark.py kairali --both
+    python examples/run_benchmark.py universal --both
 
 Env: OPENAI_API_KEY and/or ANTHROPIC_API_KEY must be set for a live run.
 Install: `uv sync --extra benchmark` inside superdialog/ first.
@@ -35,7 +35,7 @@ from superdialog.benchmark.report import build_report
 from superdialog.benchmark.runner import run_raw_mode, run_sd_mode
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_RAW_PROMPT = "/home/ankit/Downloads/FLow_Testing/Kairali.txt"
+DEFAULT_RAW_PROMPT = None  # pass --raw-prompt <file> to run the raw baseline
 
 # friendly aliases -> litellm model strings
 MODEL_ALIASES = {
@@ -146,7 +146,7 @@ def _build_report_doc(args, samples, reports_by_model: dict) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Raw LLM vs With-SuperDialog benchmark")
-    ap.add_argument("dataset", nargs="?", default="kairali", help="dataset short name")
+    ap.add_argument("dataset", nargs="?", default="universal", help="dataset short name")
     ap.add_argument("--model", default="gpt-4o-mini", help="alias or litellm model id")
     ap.add_argument("--both", action="store_true", help="run gpt-4o-mini AND claude-haiku")
     ap.add_argument("--no-ragas", action="store_true", help="deterministic metrics only")

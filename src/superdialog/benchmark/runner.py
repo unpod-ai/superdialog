@@ -13,7 +13,7 @@ Two modes:
     with-SD : questions fed to a PlaybookAgent (director + talker) built from the
               playbook YAML — full framework routing / slot state machine.
     raw     : questions fed to a plain litellm chat with a system prompt (e.g.
-              the Kairali.txt production prompt) — no framework.
+              a production system prompt) — no framework.
 
 Each fresh transcript is packed back into a BenchmarkSample that KEEPS the
 original ground truth (reference / reference_topics / expected_outcome /

@@ -4,9 +4,9 @@ Scorer-first entry points:
 
     from superdialog.benchmark import load_named, build_report, render_panel
 
-    samples = load_named("kairali")
+    samples = load_named("universal")
     report = build_report("Golden", samples)            # deterministic only, free
-    print(render_panel([report], dataset="kairali"))
+    print(render_panel([report], dataset="universal"))
 
     # spend on RAGAS judges (gpt-4o-mini + claude-haiku) when ready:
     report = build_report("Golden", samples, run_ragas=True)

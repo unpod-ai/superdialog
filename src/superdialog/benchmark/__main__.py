@@ -1,7 +1,7 @@
 """CLI: python -m superdialog.benchmark <dataset> [--ragas]
 
-    python -m superdialog.benchmark kairali            # deterministic only (free)
-    python -m superdialog.benchmark kairali --ragas     # + RAGAS judges (LLM cost)
+    python -m superdialog.benchmark universal            # deterministic only (free)
+    python -m superdialog.benchmark universal --ragas     # + RAGAS judges (LLM cost)
 
 Loads examples/datasets/<dataset>_dataset.jsonl, scores it, prints the panel.
 Scorer-first: without --ragas it never touches an LLM.
@@ -20,7 +20,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     run_ragas = "--ragas" in argv
     argv = [a for a in argv if a != "--ragas"]
-    dataset = argv[0] if argv else "kairali"
+    dataset = argv[0] if argv else "universal"
 
     samples = load_named(dataset)
     playbook = next((s.playbook for s in samples if s.playbook), None)

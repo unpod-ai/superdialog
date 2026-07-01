@@ -2,7 +2,7 @@
 
 Datasets live in ``superdialog/examples/datasets/`` — one JSON object per line.
 Each line carries a golden transcript plus the RAGAS ground-truth fields. See
-``examples/datasets/kairali_dataset.jsonl`` for the canonical shape.
+``examples/datasets/universal_dataset.jsonl`` for the canonical shape.
 """
 
 from __future__ import annotations
@@ -91,7 +91,7 @@ DATASETS_DIR = Path(__file__).resolve().parents[3] / "examples" / "datasets"
 
 
 def load_named(name: str) -> list[BenchmarkSample]:
-    """Load a dataset by short name, e.g. ``load_named("kairali")``."""
+    """Load a dataset by short name, e.g. ``load_named("universal")``."""
     return load_dataset(DATASETS_DIR / f"{name}_dataset.jsonl")
 
 
