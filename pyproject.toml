@@ -42,6 +42,7 @@ playground = [
 anyllm = [
     "any-llm-sdk[anthropic,openai]>=1.17.0",
 ]
+ragas = ["ragas>=0.2", "langchain-core>=0.3", "datasets>=2.0"]
 
 [project.urls]
 Homepage = "https://github.com/geneffic/superdialog"
