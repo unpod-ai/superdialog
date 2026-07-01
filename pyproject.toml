@@ -73,3 +73,4 @@ target-version = "py312"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = ["integration: needs real LLM/RAGAS; opt-in via -m integration"]
