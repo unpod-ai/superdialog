@@ -8,6 +8,7 @@ sandboxed and template errors degrade to a failed ToolResultEvent.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from typing import Any, Awaitable, Callable, Protocol
@@ -112,6 +113,28 @@ def coerce_args(args: dict[str, Any], specs: dict[str, SlotSpec]) -> dict[str, A
         if key in out and spec.type in _CASTS:
             out[key] = _CASTS[spec.type](out[key])
     return out
+
+
+#: HTTP methods that are safe/idempotent by spec — they get no idempotency key.
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
+
+
+def _idempotency_key(spec: ToolSpec, url: str, body: Any) -> str:
+    """Deterministic idempotency key for a side-effecting tool call.
+
+    Keyed on the tool id + rendered request (method, url, body) so a retried or
+    middleware-replayed call — the same logical operation — reuses the key and
+    is de-duplicated server-side, while a materially different request gets a
+    different key. Headers are excluded so a refreshed auth token (401 →
+    refresh → replay) keeps the same key.
+    """
+    payload = json.dumps(
+        [spec.id, spec.method.upper(), url, body],
+        sort_keys=True,
+        default=str,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 class ToolExecutor:
@@ -237,6 +260,13 @@ class ToolExecutor:
                 args={"url": _redact_url(url), "body": _redact(body or {})},
             )
         )
+        # Idempotency: a retried or middleware-replayed side-effecting call is
+        # the same logical operation, so give it a stable key the server can
+        # de-dupe on (POST/PATCH/DELETE/PUT). An author-supplied key wins.
+        if spec.method.upper() not in _SAFE_METHODS and not any(
+            h.lower() == "idempotency-key" for h in headers
+        ):
+            headers["Idempotency-Key"] = _idempotency_key(spec, url, body)
         # Terminal trace of the REAL rendered request (event log url is redacted).
         # Dev visibility for tool/API calls during pg-stack runs.
         print(

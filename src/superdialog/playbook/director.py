@@ -266,9 +266,16 @@ class Director:
         fast_release_threshold: float = 0.85,
         fast_release_allow: set[str] | None = None,
         fast_release_deny: set[str] | None = None,
+        structured_output: bool = True,
     ) -> None:
         self._pb = playbook
         self._llm = llm
+        # Request provider-native JSON-object output for the verdict (json_mode),
+        # so the returned text is reliably parseable and the json_parse_error
+        # degrade path is essentially eliminated on schema-capable backends. The
+        # free-text json.loads fallback below stays for backends that cannot
+        # enforce it. Off ⇒ today's free-text behavior.
+        self._structured_output = structured_output
         # Fast-classifier barrier release (D7). OFF by default: hard slots stay
         # provisional until separately confirmed (current behavior). When ON, a
         # hard slot whose verdict confidence ≥ threshold is confirmed in one
@@ -391,7 +398,9 @@ class Director:
             self._pb, cp, state, request_confidence=self._fast_release
         )
         try:
-            raw = await self._llm.complete(prompt)
+            raw = await self._llm.complete(
+                prompt, **({"json_mode": True} if self._structured_output else {})
+            )
         except Exception:
             return DirectorDecision(degraded=True, detail="llm_error")
         try:

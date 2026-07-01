@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from typing import Any, AsyncIterator
 
-from superdialog.llm.provider import CompletionResult, StreamChunk
+from superdialog.llm.openai_provider import OpenAIProvider
+from superdialog.llm.provider import CompletionResult, StreamChunk, apply_json_mode
 from superdialog.playbook import (
     ProviderDirector,
     ProviderTalker,
@@ -60,3 +61,57 @@ async def test_provider_adapters_returns_director_talker_pair() -> None:
     assert isinstance(talker, ProviderTalker)
     assert await director.complete([]) == "ok"
     assert [p async for p in talker.stream([])] == ["a"]
+
+
+# --- json_mode normalization (capability playbook-verdict-reliability) ---
+
+
+def test_apply_json_mode_sets_response_format() -> None:
+    assert apply_json_mode({"json_mode": True}) == {
+        "response_format": {"type": "json_object"}
+    }
+
+
+def test_apply_json_mode_is_noop_without_flag() -> None:
+    assert apply_json_mode({"temperature": 0}) == {"temperature": 0}
+
+
+def test_apply_json_mode_preserves_explicit_response_format() -> None:
+    out = apply_json_mode(
+        {"json_mode": True, "response_format": {"type": "json_schema"}}
+    )
+    assert out == {"response_format": {"type": "json_schema"}}
+
+
+async def test_openai_provider_forwards_json_mode_to_sdk() -> None:
+    # json_mode is normalized to the backend's response_format and never leaks
+    # to the SDK as an unknown kwarg.
+    captured: dict[str, Any] = {}
+
+    class _Msg:
+        content = "{}"
+        tool_calls = None
+
+    class _Choice:
+        message = _Msg()
+
+    class _Resp:
+        choices = [_Choice()]
+        usage = None
+
+    class _Completions:
+        async def create(self, **kwargs: Any) -> Any:
+            captured.update(kwargs)
+            return _Resp()
+
+    class _Chat:
+        completions = _Completions()
+
+    class _FakeClient:
+        chat = _Chat()
+
+    p = OpenAIProvider("openai/gpt-4o-mini")
+    p._client = _FakeClient()
+    await p.complete([{"role": "user", "content": "hi"}], json_mode=True)
+    assert captured["response_format"] == {"type": "json_object"}
+    assert "json_mode" not in captured

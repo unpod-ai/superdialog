@@ -120,6 +120,31 @@ async def test_interrupt_overrides_rules() -> None:
     assert adv[0].rule == "interrupt:goodbye"
 
 
+class _RecordingLLM:
+    """Records the kwargs the Director passes to ``complete``."""
+
+    def __init__(self) -> None:
+        self.kwargs: dict = {}
+
+    async def complete(self, messages, **kwargs) -> str:
+        self.kwargs = kwargs
+        return json.dumps({"slots": {}, "advance": None, "note": None})
+
+
+async def test_director_requests_json_mode_by_default() -> None:
+    pb, state = _state()
+    llm = _RecordingLLM()
+    await Director(pb, llm).evaluate(state)
+    assert llm.kwargs.get("json_mode") is True
+
+
+async def test_director_structured_output_can_be_disabled() -> None:
+    pb, state = _state()
+    llm = _RecordingLLM()
+    await Director(pb, llm, structured_output=False).evaluate(state)
+    assert "json_mode" not in llm.kwargs
+
+
 async def test_malformed_llm_json_yields_degraded() -> None:
     pb, state = _state()
 

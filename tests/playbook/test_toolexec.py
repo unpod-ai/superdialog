@@ -319,3 +319,77 @@ async def test_url_redaction() -> None:
 
 def test_bool_coercion_false() -> None:
     assert coerce_args({"f": "false"}, {"f": SlotSpec(type="bool")})["f"] is False
+
+
+# --- Idempotency keys on side-effecting tool calls (capability tool-call-idempotency) ---
+
+
+async def test_post_tool_carries_idempotency_key() -> None:
+    http = FakeHttp([(200, {"data": {}})])
+    await ToolExecutor(http=http).execute(HOLD, _state(slot_id="s1", players=2))
+    key = http.calls[0]["headers"].get("Idempotency-Key")
+    assert isinstance(key, str) and len(key) == 64  # sha256 hex digest
+
+
+async def test_idempotency_key_deterministic_for_same_request() -> None:
+    # A retry re-runs execute with identical inputs → identical key, so the
+    # server de-dupes the duplicate side effect.
+    http = FakeHttp([(200, {"data": {}}), (200, {"data": {}})])
+    ex = ToolExecutor(http=http)
+    await ex.execute(HOLD, _state(slot_id="s1", players=2))
+    await ex.execute(HOLD, _state(slot_id="s1", players=2))
+    assert (
+        http.calls[0]["headers"]["Idempotency-Key"]
+        == http.calls[1]["headers"]["Idempotency-Key"]
+    )
+
+
+async def test_idempotency_key_differs_for_different_request() -> None:
+    http = FakeHttp([(200, {"data": {}}), (200, {"data": {}})])
+    ex = ToolExecutor(http=http)
+    await ex.execute(HOLD, _state(slot_id="s1", players=2))
+    await ex.execute(HOLD, _state(slot_id="s2", players=4))
+    assert (
+        http.calls[0]["headers"]["Idempotency-Key"]
+        != http.calls[1]["headers"]["Idempotency-Key"]
+    )
+
+
+async def test_get_tool_has_no_idempotency_key() -> None:
+    spec = ToolSpec(
+        id="lookup",
+        method="GET",
+        url="{{ env.API_BASE_URL }}/lookup",
+        store_response_as="lookup_result",
+    )
+    http = FakeHttp([(200, {})])
+    await ToolExecutor(http=http).execute(spec, _state())
+    assert "Idempotency-Key" not in http.calls[0]["headers"]
+
+
+async def test_author_supplied_idempotency_key_preserved() -> None:
+    spec = HOLD.model_copy(
+        update={"headers": {**HOLD.headers, "Idempotency-Key": "author-key"}}
+    )
+    http = FakeHttp([(200, {"data": {}})])
+    await ToolExecutor(http=http).execute(spec, _state(slot_id="s1", players=2))
+    assert http.calls[0]["headers"]["Idempotency-Key"] == "author-key"
+
+
+async def test_idempotency_key_independent_of_auth_header() -> None:
+    # A 401→refresh→replay changes only the Authorization token; the same
+    # logical operation must reuse the same key so the replay is de-duped.
+    http = FakeHttp([(200, {"data": {}}), (200, {"data": {}})])
+    ex = ToolExecutor(http=http)
+    await ex.execute(HOLD, _state(slot_id="s1", players=2))  # ACCESS_TOKEN=tok-1
+    s2 = _state(slot_id="s1", players=2)
+    s2.env["ACCESS_TOKEN"] = "tok-2-refreshed"
+    await ex.execute(HOLD, s2)
+    assert (
+        http.calls[0]["headers"]["Authorization"]
+        != http.calls[1]["headers"]["Authorization"]
+    )
+    assert (
+        http.calls[0]["headers"]["Idempotency-Key"]
+        == http.calls[1]["headers"]["Idempotency-Key"]
+    )

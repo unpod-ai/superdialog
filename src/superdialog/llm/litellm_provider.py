@@ -8,7 +8,7 @@ from typing import Any, AsyncIterator
 import litellm
 
 from .anyllm_provider import _extract_usage
-from .provider import CompletionResult, StreamChunk
+from .provider import CompletionResult, StreamChunk, apply_json_mode
 
 
 class LitellmProvider:
@@ -23,7 +23,7 @@ class LitellmProvider:
         **opts: Any,
     ) -> CompletionResult:
         print(f"[LITELLM-DBG] complete model={self.model!r} msgs={len(messages)}", flush=True)
-        merged = {**self.default_opts, **opts}
+        merged = {**self.default_opts, **apply_json_mode(opts)}
         t0 = time.perf_counter()
         try:
             resp = await litellm.acompletion(
