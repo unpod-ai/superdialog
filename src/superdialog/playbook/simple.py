@@ -37,6 +37,9 @@ class SimpleStep(BaseModel):
     say: str = ""
     collect: list[str] = Field(default_factory=list)
     done_when: str = ""
+    # Which person this step collects for (multi-entity). Defaults to "caller"
+    # so single-entity playbooks are unchanged.
+    entity: str = "caller"
 
 
 class SimpleObjection(BaseModel):
@@ -68,6 +71,8 @@ class SimplePlaybook(BaseModel):
     timezone: str = "UTC"
     memory_enabled: bool = False
     followup_enabled: bool = False
+    # Opt-in: scope slot storage/lookups per step entity. Off ⇒ unchanged.
+    multi_entity: bool = False
 
 
 def is_simple_playbook(doc: Any) -> bool:
@@ -204,6 +209,7 @@ def _step_to_checkpoint(
             goal=step.purpose,
             guidance=guidance,
             slots=slots,
+            entity=step.entity,
             terminal=True,
             outcome="closed",
         )
@@ -226,6 +232,7 @@ def _step_to_checkpoint(
         goal=step.purpose,
         guidance=guidance,
         slots=slots,
+        entity=step.entity,
         advance_when=[rule],
         gate="hard",
     )
@@ -259,6 +266,7 @@ def simple_to_playbook(doc: dict[str, Any]) -> Playbook:
     )
     return Playbook(
         persona=_build_persona(sp),
+        multi_entity=sp.multi_entity,
         journeys={"main": Journey(checkpoints=checkpoints)},
         interrupts=interrupts,
         guidelines=guidelines,
