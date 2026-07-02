@@ -42,7 +42,12 @@ playground = [
 anyllm = [
     "any-llm-sdk[anthropic,openai]>=1.17.0",
 ]
-ragas = ["ragas>=0.2", "langchain-core>=0.3", "datasets>=2.0"]
+ragas = [
+    "ragas==0.4.3",
+    "langchain-community==0.4.1",  # 0.4.2 dropped the chat_models.vertexai shim ragas 0.4.3 hard-imports
+    "langchain-core>=1.4,<2",
+    "datasets>=2.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/geneffic/superdialog"

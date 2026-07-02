@@ -1,6 +1,8 @@
-"""Metric registry: custom names build; ragas names raise while ragas is broken."""
+"""Metric registry: custom names build always; ragas names build when installed."""
 
 from __future__ import annotations
+
+import builtins
 
 import pytest
 
@@ -30,7 +32,27 @@ async def test_build_suite_custom_only_scores_without_ragas():
     assert results  # scored without raising
 
 
-def test_build_suite_ragas_name_raises_while_ragas_broken():
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_build_suite_ragas_name_builds_when_available():
+    # With the `ragas` extra installed, ragas metric names resolve to RagasMetric
+    # instances (constructed offline — no API call at build time).
+    pytest.importorskip("ragas")
+    suite = build_suite(["faithfulness"], _judge(), "openai/gpt-4.1-mini")
+    assert isinstance(suite, MetricSuite)
+    assert any(getattr(m, "name", "") == "faithfulness" for m in suite._metrics)
+
+
+def test_build_suite_ragas_name_raises_when_ragas_unavailable(monkeypatch):
+    # If `import ragas.metrics` fails (extra not installed / broken), the registry
+    # surfaces a clear RuntimeError instead of a bare ImportError.
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name.startswith("ragas.metrics"):
+            raise ImportError("simulated: ragas unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
     with pytest.raises(RuntimeError):
         build_suite(["faithfulness"], _judge(), "m")
 
