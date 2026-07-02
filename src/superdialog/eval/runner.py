@@ -7,6 +7,8 @@ from typing import Any
 
 from superdialog.eval.dataset.models import EvalCase, EvalSample, Probe
 from superdialog.eval.endpoints.base import ConversationEndpoint, Transcript
+from superdialog.eval.metrics.base import MetricResult, MetricSuite
+from superdialog.eval.results import CaseResult
 from superdialog.playbook.eval.models import PersonaSpec
 from superdialog.playbook.eval.runner import SpeaksUser
 
@@ -98,3 +100,34 @@ def samples_from_run(
             )
         )
     return samples
+
+
+async def run_case(
+    case: EvalCase,
+    endpoint: ConversationEndpoint,
+    suite: MetricSuite,
+    user_llm: SpeaksUser,
+    mode: str,
+) -> CaseResult:
+    """Drive one (case, mode): journey + probes -> samples -> scored CaseResult."""
+    transcript = await drive_journey(endpoint, case.persona, user_llm)
+    probe_results = await run_probes(endpoint, case.probes)
+    samples = samples_from_run(case, mode, transcript, probe_results)
+
+    by_metric: dict[str, list[MetricResult]] = {}
+    for sample in samples:
+        for res in await suite.score(sample):
+            by_metric.setdefault(res.name, []).append(res)
+
+    guardrail_failed = any(
+        r.name == "guardrail" and r.passed is False
+        for results in by_metric.values()
+        for r in results
+    )
+    return CaseResult(
+        case_id=case.id,
+        mode=mode,
+        metric_results=by_metric,
+        guardrail_failed=guardrail_failed,
+        turns=transcript.turn_count(),
+    )
