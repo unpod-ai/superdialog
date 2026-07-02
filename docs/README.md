@@ -24,6 +24,7 @@ This folder is the canonical documentation set.
 | [02-api-reference.md](02-api-reference.md) | Function signatures and worked examples for the Playbook engine and the legacy DialogMachine |
 | [03-embedding-guides.md](03-embedding-guides.md) | How to embed in LiveKit, PipeCat, FastAPI, CLI chatbot, unit tests |
 | [04-playbook-guide.md](04-playbook-guide.md) | Playbooks in two parts - Part 1: authoring formats (simple + full); Part 2: technical design (runtime, process layer, evals/optimize) |
+| [05-eval-guide.md](05-eval-guide.md) | Playbook-vs-vanilla A/B eval - `superdialog eval run`, the two pluggable seams (transport + metric framework), transcript-only scoring, and the two mutually-exclusive RAGAS pins |
 | [decisions.md](decisions.md) | OSS-specific decisions: license, repo, governance, roadmap |
 
 ---
@@ -46,6 +47,9 @@ This folder is the canonical documentation set.
   DialogMachine implements the same `Agent` protocol, so each guide applies
   to it too.
 - **Looking up a signature?** [02-api-reference.md](02-api-reference.md).
+- **Auditing whether the engine beats a plain prompt?**
+  [05-eval-guide.md](05-eval-guide.md) - A/B a playbook against a vanilla LLM
+  handed the same playbook, scored from the transcript alone.
 
 ---
 
