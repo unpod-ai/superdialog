@@ -15,7 +15,7 @@ import os
 import time
 from typing import Any, AsyncIterator
 
-from .provider import CompletionResult, StreamChunk
+from .provider import CompletionResult, StreamChunk, apply_json_mode
 
 
 def strip_provider_prefix(model: str) -> str:
@@ -99,6 +99,7 @@ class OpenAIProvider:
     ) -> CompletionResult:
         """One completion; returns text + normalized tool calls + usage metadata."""
         client = self._ensure_client()
+        opts = apply_json_mode(opts)
         kwargs = {**self._build_kwargs(messages, tools), **self.default_opts, **opts}
         t0 = time.perf_counter()
         resp = await client.chat.completions.create(**kwargs)

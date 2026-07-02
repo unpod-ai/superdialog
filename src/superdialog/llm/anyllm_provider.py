@@ -16,7 +16,7 @@ from __future__ import annotations
 import time
 from typing import Any, AsyncIterator
 
-from .provider import CompletionResult, StreamChunk
+from .provider import CompletionResult, StreamChunk, apply_json_mode
 
 
 def _split_uri(uri: str) -> tuple[str | None, str]:
@@ -162,7 +162,7 @@ class AnyLlmProvider:
     ) -> CompletionResult:
         """One completion; returns text + normalized tool calls + usage metadata."""
         client = self._ensure_client()
-        merged = {**self.default_opts, **opts}
+        merged = {**self.default_opts, **apply_json_mode(opts)}
         t0 = time.perf_counter()
         resp = await client.acompletion(
             model=self._model,

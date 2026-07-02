@@ -35,3 +35,5 @@ examples/prompts/kairali_enquiry_qualification.raw.txt
 examples/datasets/kairali_dataset.jsonl
 benchmark_kairali.md
 benchmark_kairali_results.md
+*.jsonl
+
