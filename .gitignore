@@ -28,3 +28,7 @@ bank_agent.yaml
 .claude
 openspec
 uv.lock
+*.jsonl
+*.yaml
+*.txt
+*.md
