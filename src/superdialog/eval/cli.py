@@ -6,6 +6,7 @@ import argparse
 import os
 
 import anyio
+from dotenv import load_dotenv
 
 from superdialog.llm.resolver import resolve_llm
 from superdialog.playbook.providers import provider_adapters
@@ -24,6 +25,7 @@ def _completer(uri: str):
 
 def cmd_gen_dataset(args: argparse.Namespace) -> int:
     """`superdialog eval gen-dataset` — build <playbook>.evalcases.yaml offline."""
+    load_dotenv()
     from superdialog.eval.dataset.generate import build_dataset
     from superdialog.playbook.eval.personas import generate_personas, load_personas
     from superdialog.playbook.models import Playbook
@@ -47,6 +49,7 @@ def cmd_gen_dataset(args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     """`superdialog eval run` — A/B evaluate a dataset and write a report."""
+    load_dotenv()
     from superdialog.eval.dataset.models import EvalCase, EvalDataset
     from superdialog.eval.endpoints.in_process import (
         InProcessPlaybook,
@@ -96,6 +99,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 def cmd_serve(args: argparse.Namespace) -> int:
     """`superdialog eval serve` — run the OpenAI-compatible server."""
+    load_dotenv()
     import uvicorn
 
     from superdialog.eval.server.openai_server import build_app
