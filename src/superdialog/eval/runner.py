@@ -1,0 +1,200 @@
+"""A/B orchestration: drive endpoints, inject probes, build samples, score."""
+
+from __future__ import annotations
+
+import statistics
+import time
+from collections.abc import Callable
+from typing import Any
+
+from superdialog.eval.dataset.models import EvalCase, EvalDataset, EvalSample, Probe
+from superdialog.eval.endpoints.base import ConversationEndpoint, Transcript
+from superdialog.eval.metrics.base import MetricResult, MetricSuite
+from superdialog.eval.results import CaseResult, MetricAggregate, ModeResult, RunResult
+from superdialog.eval.scoring import DEFAULT_WEIGHTS, case_composite
+from superdialog.playbook.eval.models import PersonaSpec
+from superdialog.playbook.eval.runner import SpeaksUser
+
+
+async def _timed(coro: Any) -> tuple[str, float]:
+    t0 = time.perf_counter()
+    text = await coro
+    return text, (time.perf_counter() - t0) * 1000.0
+
+
+async def drive_journey(
+    endpoint: ConversationEndpoint,
+    persona: PersonaSpec,
+    user_llm: SpeaksUser,
+) -> Transcript:
+    """Persona simulator <-> endpoint until max_turns or the user goes silent."""
+    t = Transcript()
+    greeting, ms = await _timed(endpoint.start())
+    t.add("assistant", greeting, latency_ms=ms)
+
+    for _ in range(persona.max_turns):
+        user_text = await user_llm.complete(_persona_messages(persona, t))
+        if not user_text.strip():
+            break
+        t.add("user", user_text)
+        reply, ms = await _timed(endpoint.turn(user_text))
+        t.add("assistant", reply, latency_ms=ms)
+    return t
+
+
+def _persona_messages(persona: PersonaSpec, t: Transcript) -> list[dict[str, str]]:
+    """Prompt the persona-LLM: who it is + the conversation so far (agent as user)."""
+    sys = (
+        f"You are role-playing a caller. Traits: {persona.traits}. "
+        f"Goal: {persona.goal}. Stay in character; reply with only your next line."
+    )
+    convo = [
+        {"role": "assistant" if r.role == "user" else "user", "content": r.text}
+        for r in t.records
+    ]
+    return [{"role": "system", "content": sys}, *convo]
+
+
+async def run_probes(
+    endpoint: ConversationEndpoint,
+    probes: list[Probe],
+) -> list[tuple[Probe, str]]:
+    """Inject each probe as a fresh single-turn (reset between probes)."""
+    out: list[tuple[Probe, str]] = []
+    for probe in probes:
+        endpoint.reset()
+        await endpoint.start()
+        reply = await endpoint.turn(probe.utterance)
+        out.append((probe, reply))
+    return out
+
+
+def samples_from_run(
+    case: EvalCase,
+    mode: str,
+    transcript: Transcript,
+    probe_results: list[tuple[Probe, str]],
+) -> list[EvalSample]:
+    """One conversation sample + one sample per probe, all tagged with `mode`."""
+    base = {"case_id": case.id, "mode": mode}
+    samples = [
+        EvalSample(
+            kind="conversation",
+            user_input=transcript.to_messages(),
+            reference=case.reference,
+            metadata={
+                **base,
+                "ground_truth_slots": case.persona.ground_truth_slots,
+                "expected_outcome": case.expected_outcome,
+                "latencies_ms": transcript.assistant_latencies_ms(),
+                "turns": transcript.turn_count(),
+            },
+        )
+    ]
+    for probe, reply in probe_results:
+        samples.append(
+            EvalSample(
+                kind="probe",
+                user_input=probe.utterance,
+                response=reply,
+                reference=probe.expect,
+                retrieved_contexts=probe.reference_contexts or None,
+                metadata={**base, "probe_kind": probe.kind},
+            )
+        )
+    return samples
+
+
+async def run_case(
+    case: EvalCase,
+    endpoint: ConversationEndpoint,
+    suite: MetricSuite,
+    user_llm: SpeaksUser,
+    mode: str,
+) -> CaseResult:
+    """Drive one (case, mode): journey + probes -> samples -> scored CaseResult."""
+    transcript = await drive_journey(endpoint, case.persona, user_llm)
+    probe_results = await run_probes(endpoint, case.probes)
+    samples = samples_from_run(case, mode, transcript, probe_results)
+
+    by_metric: dict[str, list[MetricResult]] = {}
+    for sample in samples:
+        for res in await suite.score(sample):
+            by_metric.setdefault(res.name, []).append(res)
+
+    guardrail_failed = any(
+        r.name == "guardrail" and r.passed is False
+        for results in by_metric.values()
+        for r in results
+    )
+    return CaseResult(
+        case_id=case.id,
+        mode=mode,
+        metric_results=by_metric,
+        guardrail_failed=guardrail_failed,
+        turns=transcript.turn_count(),
+    )
+
+
+async def run_ab(
+    dataset: EvalDataset,
+    *,
+    modes: list[str],
+    endpoint_factories: dict[str, Callable[[EvalCase], ConversationEndpoint]],
+    suite: MetricSuite,
+    user_llm: SpeaksUser,
+    metric_names: list[str],
+    repeats: int = 1,
+    weights: dict[str, float] | None = None,
+) -> RunResult:
+    """Run every case under every mode `repeats` times; aggregate per mode."""
+    w = weights or DEFAULT_WEIGHTS
+    mode_results: list[ModeResult] = []
+    for mode in modes:
+        factory = endpoint_factories[mode]
+        case_results: list[CaseResult] = []
+        for case in dataset.cases:
+            for _ in range(repeats):
+                endpoint = factory(case)
+                case_results.append(
+                    await run_case(case, endpoint, suite, user_llm, mode)
+                )
+        mode_results.append(_aggregate_mode(mode, case_results, w))
+    return RunResult(dataset=dataset.playbook, metrics=metric_names, modes=mode_results)
+
+
+def _aggregate_mode(
+    mode: str, case_results: list[CaseResult], weights: dict[str, float]
+) -> ModeResult:
+    seen = sorted({name for cr in case_results for name in cr.metric_results})
+    aggregates: dict[str, MetricAggregate] = {}
+    for metric in seen:
+        vals: list[float] = []
+        errored = skipped = 0
+        for cr in case_results:
+            for r in cr.metric_results.get(metric, []):
+                if r.skipped:
+                    skipped += 1
+                elif r.errored or r.value is None:
+                    errored += 1
+                else:
+                    vals.append(r.value)
+        aggregates[metric] = MetricAggregate(
+            metric=metric,
+            mean=statistics.fmean(vals) if vals else None,
+            std=statistics.pstdev(vals) if len(vals) > 1 else 0.0,
+            n=len(vals),
+            errored=errored,
+            skipped=skipped,
+        )
+    composites = [case_composite(cr, weights) for cr in case_results]
+    violations = sum(1 for cr in case_results if cr.guardrail_failed)
+    return ModeResult(
+        mode=mode,
+        aggregates=aggregates,
+        composite_mean=statistics.fmean(composites) if composites else 0.0,
+        guardrail_violation_rate=(
+            violations / len(case_results) if case_results else 0.0
+        ),
+        case_results=case_results,
+    )

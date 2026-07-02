@@ -871,23 +871,54 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     pb_run.set_defaults(fn=_cmd_playbook_run)
 
-    # -- eval subcommand ----------------------------------------------------
-    eval_cmd = sub.add_parser(
-        "eval",
-        help="Eval a flow: audit real session (--traversal) or run synthetic corpus",
-    )
-    eval_cmd.add_argument("--flow", required=True, help="Path to flow JSON")
-    eval_cmd.add_argument(
+    # -- eval subcommand group ----------------------------------------------
+    from superdialog.eval.cli import cmd_gen_dataset, cmd_run, cmd_serve
+
+    eval_cmd = sub.add_parser("eval", help="A/B eval harness + legacy flow audit")
+    eval_sub = eval_cmd.add_subparsers(dest="eval_cmd", required=True)
+
+    flow_p = eval_sub.add_parser("flow", help="Audit a flow / synthetic corpus eval")
+    flow_p.add_argument("--flow", required=True, help="Path to flow JSON")
+    flow_p.add_argument(
         "--traversal",
         default=None,
-        help="Path to traversal JSON (audit mode). Omit for synthetic eval.",
+        help="Traversal JSON (audit mode); omit for synthetic",
     )
-    eval_cmd.add_argument(
-        "--model",
-        default="gpt-4.1-mini",
-        help="OpenAI model for eval LLM (default: gpt-4.1-mini)",
+    flow_p.add_argument(
+        "--model", default="gpt-4.1-mini", help="OpenAI model for eval LLM"
     )
-    eval_cmd.set_defaults(fn=_cmd_eval)
+    flow_p.set_defaults(fn=_cmd_eval)
+
+    gen_p = eval_sub.add_parser("gen-dataset", help="Build <playbook>.evalcases.yaml")
+    gen_p.add_argument("--playbook", required=True)
+    gen_p.add_argument("--personas", default=None, help="Persona YAML/JSON; else auto")
+    gen_p.add_argument("--gen-model", default="openai/gpt-4.1-mini")
+    gen_p.add_argument("--n-probes", type=int, default=8)
+    gen_p.add_argument("--out", default=None)
+    gen_p.set_defaults(fn=cmd_gen_dataset)
+
+    run_p = eval_sub.add_parser("run", help="A/B evaluate a dataset, write report")
+    run_p.add_argument("--playbook", required=True)
+    run_p.add_argument("--dataset", required=True)
+    run_p.add_argument("--modes", default="vanilla,playbook")
+    run_p.add_argument("--agent-model", default="openai/gpt-4.1-mini")
+    run_p.add_argument("--director-model", default=None)
+    run_p.add_argument("--talker-model", default=None)
+    run_p.add_argument("--judge-model", default="openai/gpt-4.1-mini")
+    run_p.add_argument("--user-model", default=None)
+    run_p.add_argument(
+        "--metrics", default="task_success,slot_accuracy,guardrail,efficiency"
+    )
+    run_p.add_argument("--repeats", type=int, default=1)
+    run_p.add_argument("--out", required=True)
+    run_p.set_defaults(fn=cmd_run)
+
+    serve_p = eval_sub.add_parser("serve", help="Serve playbook as OpenAI-compatible")
+    serve_p.add_argument("--playbook", required=True)
+    serve_p.add_argument("--mode", default="playbook")
+    serve_p.add_argument("--agent-model", default="openai/gpt-4.1-mini")
+    serve_p.add_argument("--port", type=int, default=8000)
+    serve_p.set_defaults(fn=cmd_serve)
 
     bench = sub.add_parser(
         "benchmark",

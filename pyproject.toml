@@ -54,6 +54,17 @@ benchmark = [
     "langchain-community>=0.3,<0.4",
     "langchain-core>=0.3,<0.4",
 ]
+# Playbook-vs-vanilla A/B eval (src/superdialog/eval/). Its headline metrics run
+# on custom LLM judges and need NONE of these — only the optional RAGAS metric
+# adapter does. Pins the ragas 0.4 line, which is mutually exclusive with the
+# `benchmark` extra above (they use different ragas APIs); install one or the
+# other, never both in the same env.
+ragas = [
+    "ragas==0.4.3",
+    "langchain-community==0.4.1",  # 0.4.2 dropped the chat_models.vertexai shim ragas 0.4.3 hard-imports
+    "langchain-core>=1.4,<2",
+    "datasets>=2.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/geneffic/superdialog"
@@ -67,6 +78,13 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/superdialog"]
+
+[tool.uv]
+# `benchmark` (ragas 0.2.x) and `ragas` (ragas 0.4.3) pin mutually-incompatible
+# ragas lines for two separate eval frameworks. Declare them conflicting so uv
+# resolves each in its own fork instead of demanding one resolution that
+# satisfies both (impossible). Install one or the other, never both together.
+conflicts = [[{ extra = "benchmark" }, { extra = "ragas" }]]
 
 [tool.ruff]
 line-length = 88
@@ -84,3 +102,4 @@ target-version = "py312"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = ["integration: needs real LLM/RAGAS; opt-in via -m integration"]
