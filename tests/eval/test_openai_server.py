@@ -79,3 +79,21 @@ def test_session_state_held_server_side(monkeypatch, tmp_path):
         },
     )
     assert greet.json()["choices"][0]["message"]["content"] == "Welcome!"
+
+
+def test_streaming_sse(monkeypatch, tmp_path):
+    """``stream=True`` emits SSE chunks carrying the reply then ``[DONE]``."""
+    app = _build(monkeypatch, tmp_path, {"BEGIN": "Welcome!", "*": "noted"})
+    resp = TestClient(app).post(
+        "/v1/chat/completions",
+        json={
+            "model": "superdialog-vanilla/booking",
+            "user": "s3",
+            "stream": True,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert resp.status_code == 200
+    assert "chat.completion.chunk" in resp.text
+    assert "noted" in resp.text
+    assert "data: [DONE]" in resp.text
