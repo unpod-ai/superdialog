@@ -95,5 +95,16 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
-    """`superdialog eval serve` — implemented in Phase 8 (OpenAI-compatible server)."""
-    raise SystemExit("`eval serve` lands in Phase 8 (OpenAI-compatible server).")
+    """`superdialog eval serve` — run the OpenAI-compatible server."""
+    import uvicorn
+
+    from superdialog.eval.server.openai_server import build_app
+
+    app = build_app(
+        args.playbook,
+        agent_model=args.agent_model,
+        director_model=getattr(args, "director_model", None),
+        talker_model=getattr(args, "talker_model", None),
+    )
+    uvicorn.run(app, host="0.0.0.0", port=args.port)
+    return 0
