@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import statistics
 import time
+from collections.abc import Callable
 from typing import Any
 
-from superdialog.eval.dataset.models import EvalCase, EvalSample, Probe
+from superdialog.eval.dataset.models import EvalCase, EvalDataset, EvalSample, Probe
 from superdialog.eval.endpoints.base import ConversationEndpoint, Transcript
 from superdialog.eval.metrics.base import MetricResult, MetricSuite
-from superdialog.eval.results import CaseResult
+from superdialog.eval.results import CaseResult, MetricAggregate, ModeResult, RunResult
+from superdialog.eval.scoring import DEFAULT_WEIGHTS, case_composite
 from superdialog.playbook.eval.models import PersonaSpec
 from superdialog.playbook.eval.runner import SpeaksUser
 
@@ -130,4 +133,68 @@ async def run_case(
         metric_results=by_metric,
         guardrail_failed=guardrail_failed,
         turns=transcript.turn_count(),
+    )
+
+
+async def run_ab(
+    dataset: EvalDataset,
+    *,
+    modes: list[str],
+    endpoint_factories: dict[str, Callable[[EvalCase], ConversationEndpoint]],
+    suite: MetricSuite,
+    user_llm: SpeaksUser,
+    metric_names: list[str],
+    repeats: int = 1,
+    weights: dict[str, float] | None = None,
+) -> RunResult:
+    """Run every case under every mode `repeats` times; aggregate per mode."""
+    w = weights or DEFAULT_WEIGHTS
+    mode_results: list[ModeResult] = []
+    for mode in modes:
+        factory = endpoint_factories[mode]
+        case_results: list[CaseResult] = []
+        for case in dataset.cases:
+            for _ in range(repeats):
+                endpoint = factory(case)
+                case_results.append(
+                    await run_case(case, endpoint, suite, user_llm, mode)
+                )
+        mode_results.append(_aggregate_mode(mode, case_results, w))
+    return RunResult(dataset=dataset.playbook, metrics=metric_names, modes=mode_results)
+
+
+def _aggregate_mode(
+    mode: str, case_results: list[CaseResult], weights: dict[str, float]
+) -> ModeResult:
+    seen = sorted({name for cr in case_results for name in cr.metric_results})
+    aggregates: dict[str, MetricAggregate] = {}
+    for metric in seen:
+        vals: list[float] = []
+        errored = skipped = 0
+        for cr in case_results:
+            for r in cr.metric_results.get(metric, []):
+                if r.skipped:
+                    skipped += 1
+                elif r.errored or r.value is None:
+                    errored += 1
+                else:
+                    vals.append(r.value)
+        aggregates[metric] = MetricAggregate(
+            metric=metric,
+            mean=statistics.fmean(vals) if vals else None,
+            std=statistics.pstdev(vals) if len(vals) > 1 else 0.0,
+            n=len(vals),
+            errored=errored,
+            skipped=skipped,
+        )
+    composites = [case_composite(cr, weights) for cr in case_results]
+    violations = sum(1 for cr in case_results if cr.guardrail_failed)
+    return ModeResult(
+        mode=mode,
+        aggregates=aggregates,
+        composite_mean=statistics.fmean(composites) if composites else 0.0,
+        guardrail_violation_rate=(
+            violations / len(case_results) if case_results else 0.0
+        ),
+        case_results=case_results,
     )
