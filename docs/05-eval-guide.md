@@ -93,12 +93,21 @@ superdialog eval run \
 
 # 3. (optional) expose the playbook as an OpenAI-compatible endpoint for any external benchmark
 superdialog eval serve --playbook spa.yaml --port 8000
+
+# or one shot: build the dataset if missing, then A/B every --models entry
+superdialog eval bench --playbook spa.yaml \
+    --models openai/gpt-4o-mini --max-turns 20 --out ./eval-out
 ```
 
 `eval run` also takes `--director-model` / `--talker-model` (per-role LLMs for
 playbook mode), `--user-model` (the persona/user-simulator LLM), and
 `--repeats`. The dataset format mirrors the RAGAS single-turn/multi-turn shape:
 each case carries a persona, `ground_truth_slots`, and a list of probes.
+
+`eval bench` wraps both phases: it reuses `<playbook>.evalcases.yaml` when
+present (`--regen` rebuilds it, `--personas` seeds it), accepts every `run`
+flag, adds `--max-turns` to override each persona's turn budget, and writes one
+report directory per `--models` entry plus a combined `report.md`.
 
 The legacy session audit still lives under this group as
 `superdialog eval flow --flow kyc.json --traversal session.json`.
