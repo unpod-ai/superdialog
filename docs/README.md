@@ -25,6 +25,7 @@ This folder is the canonical documentation set.
 | [03-embedding-guides.md](03-embedding-guides.md) | How to embed in LiveKit, PipeCat, FastAPI, CLI chatbot, unit tests |
 | [04-playbook-guide.md](04-playbook-guide.md) | Playbooks in two parts - Part 1: authoring formats (simple + full); Part 2: technical design (runtime, process layer, evals/optimize) |
 | [05-eval-guide.md](05-eval-guide.md) | Playbook-vs-vanilla A/B eval - `superdialog eval run`, the two pluggable seams (transport + metric framework), transcript-only scoring, and the two mutually-exclusive RAGAS pins |
+| [06-playbook-execution-flow.md](06-playbook-execution-flow.md) | Code-verified execution trace - the two-brain turn loop, every touchpoint with file:line, the render steering surface, playbook semantics → behavior, patterns, and measured advantages vs a vanilla LLM |
 | [decisions.md](decisions.md) | OSS-specific decisions: license, repo, governance, roadmap |
 
 ---
