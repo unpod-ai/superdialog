@@ -110,9 +110,17 @@ async def test_expr_rule_applies_set_writes() -> None:
 
 
 async def test_interrupt_overrides_rules() -> None:
+    # A goodbye at a step with REQUIRED slots unfilled first gets ONE steer to
+    # collect them (terminal-interrupt slot guard); interrupts still override
+    # advance rules — proven with the required slots filled in the verdict.
     pb, state = _state()
     llm = CannedLLM(
-        {"slots": {}, "advance": None, "note": None, "interrupt": "goodbye"}
+        {
+            "slots": {"city": "Pune", "date": "2026-07-05"},
+            "advance": "booking.confirm",  # interrupt must still win over this
+            "note": None,
+            "interrupt": "goodbye",
+        }
     )
     decision = await Director(pb, llm).evaluate(state)
     adv = [e for e in decision.events if isinstance(e, AdvanceEvent)]

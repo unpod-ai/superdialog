@@ -288,11 +288,18 @@ def _system_block(pb: Playbook, state: ConversationState) -> tuple[str, str]:
     # path. When the KB is empty the prompt is byte-identical to before, so
     # existing playbooks are unaffected.
     # Inject the (potentially large) KB into the Talker's prompt ONLY on steps
-    # that actually reference it — the KB-answer / qualify steps — instead of
-    # every turn. Keeps the Talker lean and fast (its whole point) and stops the
-    # KB from eating the token budget on greeting/slot-capture turns. Off-flow
-    # questions are routed to the KB step by the global_kb_query interrupt.
-    cp_uses_kb = cp is not None and "knowledge_base" in (cp.guidance or "")
+    # that actually use it — instead of every turn. Keeps the Talker lean and
+    # fast (its whole point) and stops the KB from eating the token budget on
+    # greeting/slot-capture turns. Off-flow questions are routed to the KB
+    # step by the global_kb_query interrupt. An explicit cp.uses_kb wins; the
+    # legacy substring heuristic remains for un-annotated checkpoints (it also
+    # fires on steps that merely MENTION knowledge_base, e.g. a qualify step's
+    # fallback branch — annotate those uses_kb=false to reclaim the tokens).
+    cp_uses_kb = cp is not None and (
+        cp.uses_kb
+        if cp.uses_kb is not None
+        else "knowledge_base" in (cp.guidance or "")
+    )
     kb = (
         render_template(pb.knowledge_base, pb, state, ns=ns).strip()
         if pb.knowledge_base and cp_uses_kb

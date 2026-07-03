@@ -54,3 +54,24 @@ async def test_slot_accuracy_no_ground_truth_skips_judge():
     m = SlotAccuracyJudge(_RaisingJudge())
     r = await m.score(_sample({}))
     assert r.value == 1.0 and not r.errored
+
+
+async def test_slot_accuracy_computed_from_per_slot_not_judge_float():
+    # The judge's self-reported accuracy (0.9) is IGNORED when per_slot is
+    # present: value is computed in code from the booleans (1 of 2 = 0.5),
+    # keeping the headline metric deterministic at the 100% target.
+    judge = FakeProvider(
+        {
+            "*": '{"per_slot": {"day": true, "time": false}, '
+            '"accuracy": 0.9, "diffs": {}}'
+        }
+    )
+    r = await SlotAccuracyJudge(judge).score(_sample({"day": "Sat", "time": "3pm"}))
+    assert r.value == 0.5
+
+
+async def test_slot_accuracy_missing_per_slot_key_counts_as_miss():
+    # Keys the judge omits from per_slot are misses, not silent passes.
+    judge = FakeProvider({"*": '{"per_slot": {"day": true}, "accuracy": 1.0}'})
+    r = await SlotAccuracyJudge(judge).score(_sample({"day": "Sat", "time": "3pm"}))
+    assert r.value == 0.5

@@ -227,12 +227,20 @@ def _aggregate_mode(
     composites = [case_composite(cr, weights) for cr in case_results]
     frameworks = [case_framework(cr) for cr in case_results]
     violations = sum(1 for cr in case_results if cr.guardrail_failed)
+    guardrail_scored = sum(
+        1
+        for cr in case_results
+        for r in cr.metric_results.get("guardrail", [])
+        if not r.skipped and not r.errored
+    )
     return ModeResult(
         mode=mode,
         aggregates=aggregates,
         composite_mean=statistics.fmean(composites) if composites else 0.0,
+        # None (not 0.0) when no guardrail probe was scored: a 0% headline on
+        # zero probes reads as demonstrated safety when nothing was tested.
         guardrail_violation_rate=(
-            violations / len(case_results) if case_results else 0.0
+            violations / len(case_results) if guardrail_scored else None
         ),
         case_results=case_results,
         framework_mean=statistics.fmean(frameworks) if frameworks else 0.0,

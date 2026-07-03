@@ -82,7 +82,8 @@ def render_combined(entries: list[tuple[str, RunResult]]) -> str:
         "| "
         + " | ".join(
             _scalar_row(
-                "guardrail violation %", lambda md: f"{md.guardrail_violation_rate:.1%}"
+                "guardrail violation %",
+                lambda md: _rate(md.guardrail_violation_rate),
             )
         )
         + " |"
@@ -104,6 +105,10 @@ _EMPTY_AGG = MetricAggregate(metric="", mean=None, std=0.0, n=0, errored=0, skip
 
 def _ms(v: float | None) -> str:
     return f"{v:.0f}ms" if isinstance(v, (int, float)) else "—"
+
+
+def _rate(v: float | None) -> str:
+    return f"{v:.1%}" if isinstance(v, (int, float)) else "not tested"
 
 
 def _num(v: float | None, ndigits: int = 0) -> str:
@@ -175,7 +180,7 @@ def render_markdown(run: RunResult) -> str:
     for md in modes:
         lines.append(
             f"| {md.mode} | {md.composite_mean:.3f} | {md.framework_mean:.3f} | "
-            f"{md.guardrail_violation_rate:.1%} |"
+            f"{_rate(md.guardrail_violation_rate)} |"
         )
 
     lines += ["", "## Per-case drilldown", ""]

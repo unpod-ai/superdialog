@@ -20,6 +20,46 @@ HOLD_LINE = "I'm taking a little longer than usual — bear with me for a moment
 RECOVERY_LINE = "Sorry, could you say that again?"
 
 
+def _excise(buf: str, folded: list[str]) -> str:
+    """Remove every casefolded occurrence of each phrase from ``buf``."""
+    low = buf.casefold()
+    for p in folded:
+        i = low.find(p)
+        while i != -1:
+            buf = buf[:i] + buf[i + len(p) :]
+            low = buf.casefold()
+            i = low.find(p)
+    return buf
+
+
+async def _filter_never_say(
+    tokens: AsyncIterator[str], phrases: list[str]
+) -> AsyncIterator[str]:
+    """Deterministic never_say enforcement on the token stream.
+
+    Buffers just enough text (longest phrase − 1 chars) to catch phrases split
+    across chunk boundaries, excises any casefolded occurrence, and flushes
+    the confirmed-clean prefix — so an authored phrase can never reach TTS,
+    whatever the LLM emits. Prompt-only enforcement is probabilistic; this is
+    the guarantee. Adds no LLM calls and microseconds per chunk.
+    """
+    folded = [p.casefold() for p in phrases if p]
+    if not folded:
+        async for token in tokens:
+            yield token
+        return
+    tail = max(len(p) for p in folded) - 1
+    buf = ""
+    async for token in tokens:
+        buf = _excise(buf + token, folded)
+        if len(buf) > tail:
+            yield buf[: len(buf) - tail]
+            buf = buf[len(buf) - tail :]
+    buf = _excise(buf, folded)
+    if buf:
+        yield buf
+
+
 class StreamsLLM(Protocol):
     """Anything that can stream plain-text tokens for a chat prompt."""
 
@@ -130,7 +170,9 @@ class Talker:
             else:
                 # strict but no verbatim authored: never improvise on a strict step.
                 yield SpeechChunk(
-                    text=self._recovery_line, final=True, spoke_from_version=state.version
+                    text=self._recovery_line,
+                    final=True,
+                    spoke_from_version=state.version,
                 )
             return
 
@@ -138,11 +180,14 @@ class Talker:
         # NOTE: a partial stream that fails midway replays from the start on
         # retry — acceptable for v1 (the retry targets connect-time failures;
         # mid-stream resume is a host concern).
+        never_say = list(cp.never_say) if cp is not None else []
         for attempt in (1, 2):
             try:
                 stream = self._llm.stream(view.messages)
                 try:
-                    async for token in stream:
+                    # never_say enforcement is deterministic, not prompt-hope:
+                    # authored phrases are excised from the stream before TTS.
+                    async for token in _filter_never_say(stream, never_say):
                         yield SpeechChunk(
                             text=token, spoke_from_version=view.spoke_from_version
                         )

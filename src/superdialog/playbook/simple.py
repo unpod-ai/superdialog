@@ -50,6 +50,9 @@ class SimpleStep(BaseModel):
     entity: str = "caller"
     # User turns before the runtime steers "wrap this step up" (default 4).
     turn_budget: int | None = None
+    # Inject the knowledge base on this step. None = legacy heuristic (say
+    # mentions 'knowledge_base'); set false on steps that merely reference it.
+    kb: bool | None = None
 
 
 class SimpleObjection(BaseModel):
@@ -199,10 +202,21 @@ def _build_persona(sp: SimplePlaybook) -> str:
                 "## Reference facts (never invent beyond these)\n" + dumped.strip()
             )
     if sp.objections:
-        bullets = "\n".join(
-            f"- If {o.trigger} -> {o.handle.strip()}" for o in sp.objections
-        )
-        parts.append("## Objection handling\n" + bullets)
+        # Skip objections whose handle just restates a hard boundary — the
+        # boundary block already renders every turn; duplicating it costs
+        # persona tokens on every single Talker call for zero signal.
+        blows = [b.strip().casefold() for b in sp.boundaries]
+        kept = [
+            o
+            for o in sp.objections
+            if not any(
+                o.handle.strip().casefold() in b or b in o.handle.strip().casefold()
+                for b in blows
+            )
+        ]
+        if kept:
+            bullets = "\n".join(f"- If {o.trigger} -> {o.handle.strip()}" for o in kept)
+            parts.append("## Objection handling\n" + bullets)
     if sp.boundaries:
         bullets = "\n".join(f"- {b}" for b in sp.boundaries)
         parts.append("## Hard boundaries\n" + bullets)
@@ -241,6 +255,7 @@ def _step_to_checkpoint(
             entity=step.entity,
             terminal=True,
             outcome="closed",
+            uses_kb=step.kb,
         )
     # requires=collect: the Director may not advance past unfilled slots (a
     # done_when verdict alone could skip capture on terse callers); a blocked
@@ -276,6 +291,7 @@ def _step_to_checkpoint(
         advance_when=rules,
         gate="hard",
         turn_budget=step.turn_budget or _DEFAULT_TURN_BUDGET,
+        uses_kb=step.kb,
     )
 
 

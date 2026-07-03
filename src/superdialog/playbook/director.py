@@ -55,6 +55,10 @@ _RECOVER_NOTE = (
     "Acknowledge the confusion, correct course, and keep helping."
 )
 
+#: Terminal-interrupt slot guard steer prefix; its presence in the live
+#: steering note lets the caller's NEXT goodbye through (one-shot guard).
+_WRAP_MARKER = "Caller wants to end the call"
+
 _TIME_RE = re.compile(r"^\s*(\d{1,2})(?::(\d{2}))?\s*([ap]\.?m\.?)?\s*$", re.IGNORECASE)
 
 
@@ -262,6 +266,16 @@ _FAST_RELEASE_DENY_MARKERS = (
     "account",
     "routing",
     "iban",
+    # Indian-market identifiers (substring match is deliberately broad: a
+    # false positive only forces explicit confirmation, never blocks capture)
+    "mobile",
+    "number",
+    "aadhaar",
+    "pan",
+    "upi",
+    "pin",
+    "dob",
+    "passport",
 )
 
 
@@ -479,6 +493,32 @@ class Director:
             # after delivery_query_raised because the transcript mentions the issue).
             already_handled = spec is not None and spec.to in state.completed
             if spec is not None and not already_handled:
+                # Terminal-interrupt slot guard: a goodbye must not silently
+                # skip required capture ("INTERRUPTS TAKE ABSOLUTE PRIORITY"
+                # let a terse caller's bye drop city/language). ONE steer to
+                # collect the missing slots; the marker lets the next goodbye
+                # through, so the call can always still end.
+                missing = [
+                    k
+                    for k, s in cp.slots.items()
+                    if s.required and not peek.filled([k], entity=cp.entity)
+                ]
+                wrap_pending = (state.steering_note or "").startswith(_WRAP_MARKER)
+                if (
+                    missing
+                    and not wrap_pending
+                    and self._pb.checkpoint(spec.to).terminal
+                ):
+                    events.append(
+                        SteeringNoteEvent(
+                            text=(
+                                f"{_WRAP_MARKER} — quickly ask for: "
+                                f"{', '.join(missing)}; then honor the goodbye."
+                            ),
+                            kind="steer",
+                        )
+                    )
+                    return DirectorDecision(events=events)
                 events.append(
                     AdvanceEvent(
                         from_checkpoint=cp_ref,

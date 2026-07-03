@@ -136,6 +136,10 @@ class Checkpoint(BaseModel):
     terminal: bool = False
     outcome: str | None = None
     turn_budget: int | None = None
+    # Inject the knowledge base into this step's Talker prompt. None = legacy
+    # heuristic (guidance mentions 'knowledge_base'); set explicitly to keep
+    # the (large) KB off hot steps whose guidance merely references it.
+    uses_kb: bool | None = None
 
     @field_validator("entity")
     @classmethod

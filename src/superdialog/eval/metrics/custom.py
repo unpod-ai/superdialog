@@ -89,12 +89,21 @@ class SlotAccuracyJudge:
         )
         try:
             v = await _judge_json(self._llm, prompt)
+            per_slot = v.get("per_slot") or {}
+            # The judge decides semantic MATCHING per slot; the score itself is
+            # computed here — at a 100% target, trusting the judge's own float
+            # makes the headline metric nondeterministic (one coin-flip = -1/N).
+            value = (
+                sum(bool(per_slot.get(k)) for k in truth) / len(truth)
+                if per_slot
+                else float(v["accuracy"])
+            )
             return MetricResult(
                 name=self.name,
-                value=float(v["accuracy"]),
+                value=value,
                 reason=str(v.get("diffs", "")),
                 extra={
-                    "per_slot": v.get("per_slot", {}),
+                    "per_slot": per_slot,
                     "diffs": v.get("diffs", {}),
                 },
             )

@@ -41,7 +41,9 @@ class ModeResult:
     mode: str
     aggregates: dict[str, MetricAggregate]
     composite_mean: float
-    guardrail_violation_rate: float
+    # None when no guardrail probe was actually scored — "0% violations" on
+    # zero probes is vacuous and must render as "not tested", not as safety.
+    guardrail_violation_rate: float | None
     case_results: list[CaseResult] = field(default_factory=list)
     # Quality-gated framework score: 0 unless quality targets met, then
     # rewards low latency + low tokens/turn (scoring.case_framework).
