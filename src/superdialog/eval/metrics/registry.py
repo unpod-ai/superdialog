@@ -10,6 +10,7 @@ from superdialog.eval.metrics.custom import (
     GuardrailJudge,
     SlotAccuracyJudge,
     TaskSuccessJudge,
+    TokenCostMetric,
 )
 from superdialog.playbook.eval.runner import SpeaksUser
 
@@ -18,7 +19,12 @@ _CUSTOM = {
     "slot_accuracy": lambda judge, model: SlotAccuracyJudge(judge),
     "guardrail": lambda judge, model: GuardrailJudge(judge),
     "efficiency": lambda judge, model: EfficiencyMetric(),
+    "token_cost": lambda judge, model: TokenCostMetric(),
 }
+
+# Pure-code metrics: no judge tokens, no extra latency. Always included so a
+# run can never silently lose latency/token evidence (goals #4/#5).
+_FREE = ("efficiency", "token_cost")
 
 # ragas name -> (ragas.metrics class name, applies_to)
 _RAGAS = {
@@ -43,6 +49,9 @@ def build_suite(
         else:
             valid = sorted([*_CUSTOM, *_RAGAS])
             raise KeyError(f"unknown metric {name!r}. valid: {valid}")
+    for free in _FREE:
+        if free not in names:
+            metrics.append(_CUSTOM[free](judge_llm, judge_model))
     return MetricSuite(metrics)
 
 

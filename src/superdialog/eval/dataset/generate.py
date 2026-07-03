@@ -114,7 +114,9 @@ async def _llm_probes(pb: Playbook, llm: Any, n_probes: int) -> list[Probe]:
     """Format-agnostic fallback: have the gen LLM derive probes from the domain
     text (identity + KB), for playbooks whose KB/rules are not in the ``Q:``/``A:``
     or ``GUARDRAIL``-header shapes the regex extractors expect."""
-    domain = ((pb.persona or "") + "\n" + (getattr(pb, "knowledge_base", "") or ""))[:8000]
+    domain = ((pb.persona or "") + "\n" + (getattr(pb, "knowledge_base", "") or ""))[
+        :8000
+    ]
     if not domain.strip():
         return []
     messages = [

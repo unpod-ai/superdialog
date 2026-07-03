@@ -168,6 +168,48 @@ class EfficiencyMetric:
         )
 
 
+class TokenCostMetric:
+    """Pure-code metric: input tokens per assistant turn (lower is better).
+
+    Reads per-turn token counts the endpoints thread through the transcript;
+    skips (never errors) when the endpoint provided none, so transports that
+    can't report usage don't pollute aggregates.
+    """
+
+    name = "token_cost"
+    applies_to = ("conversation",)
+
+    async def score(self, sample: EvalSample) -> MetricResult:
+        toks = list(sample.metadata.get("input_tokens_per_turn") or [])
+        if not toks:
+            return MetricResult(
+                name=self.name,
+                value=None,
+                skipped=True,
+                reason="endpoint reported no token usage",
+            )
+        mean = sum(toks) / len(toks)
+        extra: dict[str, Any] = {
+            "tokens_mean": mean,
+            "tokens_max": max(toks),
+            "tokens_total": sum(toks),
+        }
+        for key, name in (
+            ("director_tokens_per_turn", "director_tokens_mean"),
+            ("talker_tokens_per_turn", "talker_tokens_mean"),
+            ("llm_calls_per_turn", "llm_calls_mean"),
+        ):
+            vals = list(sample.metadata.get(key) or [])
+            if vals:
+                extra[name] = sum(vals) / len(vals)
+        return MetricResult(
+            name=self.name,
+            value=mean,
+            reason=f"{mean:.0f} input tok/turn (max {max(toks):.0f})",
+            extra=extra,
+        )
+
+
 def _percentile(values: list[float], pct: float) -> float:
     if not values:
         return 0.0

@@ -49,6 +49,14 @@ class Transcript:
         """Number of user turns (a proxy for conversation length)."""
         return sum(1 for r in self.records if r.role == "user")
 
+    def assistant_meta_values(self, key: str) -> list[float]:
+        """Numeric ``metadata[key]`` of every assistant turn that recorded one."""
+        out: list[float] = []
+        for r in self.records:
+            if r.role == "assistant" and isinstance(r.metadata.get(key), (int, float)):
+                out.append(float(r.metadata[key]))
+        return out
+
 
 @runtime_checkable
 class ConversationEndpoint(Protocol):

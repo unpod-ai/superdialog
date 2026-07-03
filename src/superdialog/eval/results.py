@@ -30,6 +30,8 @@ class MetricAggregate:
     n: int  # scored values counted into mean
     errored: int
     skipped: int
+    # Mean per numeric MetricResult.extra key (e.g. latency_p95, tokens_mean).
+    extras: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -41,6 +43,9 @@ class ModeResult:
     composite_mean: float
     guardrail_violation_rate: float
     case_results: list[CaseResult] = field(default_factory=list)
+    # Quality-gated framework score: 0 unless quality targets met, then
+    # rewards low latency + low tokens/turn (scoring.case_framework).
+    framework_mean: float = 0.0
 
 
 @dataclass

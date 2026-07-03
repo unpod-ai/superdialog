@@ -49,6 +49,8 @@ async def test_run_ab_single_mode_two_cases_two_repeats() -> None:
     assert len(mode.case_results) == 4
     assert set(mode.aggregates) >= {"task_success", "efficiency"}
     for agg in mode.aggregates.values():
-        # each metric is scored on every conversation sample -> n >= 1
-        assert agg.n >= 1
+        # each metric is scored on every conversation sample -> n >= 1, except
+        # data-dependent metrics (token_cost) that skip when the endpoint
+        # reports no usage — a skipped-only aggregate row is still informative.
+        assert agg.n >= 1 or agg.skipped >= 1
     assert 0.0 <= mode.composite_mean <= 1.0

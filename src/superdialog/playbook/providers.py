@@ -30,13 +30,16 @@ class LLMUsageEvent:
     tokens_out: int = 0
     cached: int = 0
     cache_write: int = 0
+    role: str = ""  # "director" | "talker" | "" (unknown emitter)
 
 
 #: An async callback invoked once per LLM call with an :class:`LLMUsageEvent`.
 OnLLMComplete = Callable[[LLMUsageEvent], Awaitable[None]]
 
 
-def _usage_event(meta: Mapping[str, Any] | None, model: str) -> LLMUsageEvent:
+def _usage_event(
+    meta: Mapping[str, Any] | None, model: str, role: str = ""
+) -> LLMUsageEvent:
     m = meta or {}
     return LLMUsageEvent(
         model=model,
@@ -44,6 +47,7 @@ def _usage_event(meta: Mapping[str, Any] | None, model: str) -> LLMUsageEvent:
         tokens_out=int(m.get("completion_tokens", 0) or 0),
         cached=int(m.get("cache_read_tokens", 0) or 0),
         cache_write=int(m.get("cache_write_tokens", 0) or 0),
+        role=role,
     )
 
 
@@ -65,7 +69,9 @@ class ProviderDirector:
         """Return the provider completion's text for ``messages``."""
         result = await self._p.complete(list(messages), **kw)
         if self.on_llm_complete is not None:
-            await self.on_llm_complete(_usage_event(result.metadata, self.model_id))
+            await self.on_llm_complete(
+                _usage_event(result.metadata, self.model_id, role="director")
+            )
         return result.text
 
 
@@ -99,7 +105,9 @@ class ProviderTalker:
             if chunk.text:
                 yield chunk.text
         if self.on_llm_complete is not None:
-            await self.on_llm_complete(_usage_event(usage, self.model_id))
+            await self.on_llm_complete(
+                _usage_event(usage, self.model_id, role="talker")
+            )
 
 
 def provider_adapters(

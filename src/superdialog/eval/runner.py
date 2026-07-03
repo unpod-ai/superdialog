@@ -11,7 +11,7 @@ from superdialog.eval.dataset.models import EvalCase, EvalDataset, EvalSample, P
 from superdialog.eval.endpoints.base import ConversationEndpoint, Transcript
 from superdialog.eval.metrics.base import MetricResult, MetricSuite
 from superdialog.eval.results import CaseResult, MetricAggregate, ModeResult, RunResult
-from superdialog.eval.scoring import DEFAULT_WEIGHTS, case_composite
+from superdialog.eval.scoring import DEFAULT_WEIGHTS, case_composite, case_framework
 from superdialog.playbook.eval.models import PersonaSpec
 from superdialog.playbook.eval.runner import SpeaksUser
 
@@ -30,7 +30,7 @@ async def drive_journey(
     """Persona simulator <-> endpoint until max_turns or the user goes silent."""
     t = Transcript()
     greeting, ms = await _timed(endpoint.start())
-    t.add("assistant", greeting, latency_ms=ms)
+    t.add("assistant", greeting, latency_ms=ms, metadata=_turn_meta(endpoint))
 
     for _ in range(persona.max_turns):
         user_text = await user_llm.complete(_persona_messages(persona, t))
@@ -38,8 +38,14 @@ async def drive_journey(
             break
         t.add("user", user_text)
         reply, ms = await _timed(endpoint.turn(user_text))
-        t.add("assistant", reply, latency_ms=ms)
+        t.add("assistant", reply, latency_ms=ms, metadata=_turn_meta(endpoint))
     return t
+
+
+def _turn_meta(endpoint: ConversationEndpoint) -> dict[str, Any]:
+    """Duck-typed per-turn metadata (token usage) from endpoints that offer it."""
+    fn = getattr(endpoint, "last_turn_metadata", None)
+    return fn() if callable(fn) else {}
 
 
 def _persona_messages(persona: PersonaSpec, t: Transcript) -> list[dict[str, str]]:
@@ -99,6 +105,16 @@ def samples_from_run(
                 "expected_outcome": case.expected_outcome,
                 "latencies_ms": transcript.assistant_latencies_ms(),
                 "turns": transcript.turn_count(),
+                "input_tokens_per_turn": transcript.assistant_meta_values(
+                    "input_tokens"
+                ),
+                "director_tokens_per_turn": transcript.assistant_meta_values(
+                    "director_tokens"
+                ),
+                "talker_tokens_per_turn": transcript.assistant_meta_values(
+                    "talker_tokens"
+                ),
+                "llm_calls_per_turn": transcript.assistant_meta_values("llm_calls"),
             },
         )
     ]
@@ -181,6 +197,7 @@ def _aggregate_mode(
     aggregates: dict[str, MetricAggregate] = {}
     for metric in seen:
         vals: list[float] = []
+        extras_pool: dict[str, list[float]] = {}
         errored = skipped = 0
         for cr in case_results:
             for r in cr.metric_results.get(metric, []):
@@ -190,6 +207,9 @@ def _aggregate_mode(
                     errored += 1
                 else:
                     vals.append(r.value)
+                    for k, x in (r.extra or {}).items():
+                        if isinstance(x, (int, float)) and not isinstance(x, bool):
+                            extras_pool.setdefault(k, []).append(float(x))
         aggregates[metric] = MetricAggregate(
             metric=metric,
             mean=statistics.fmean(vals) if vals else None,
@@ -197,8 +217,10 @@ def _aggregate_mode(
             n=len(vals),
             errored=errored,
             skipped=skipped,
+            extras={k: statistics.fmean(v) for k, v in extras_pool.items()},
         )
     composites = [case_composite(cr, weights) for cr in case_results]
+    frameworks = [case_framework(cr) for cr in case_results]
     violations = sum(1 for cr in case_results if cr.guardrail_failed)
     return ModeResult(
         mode=mode,
@@ -208,4 +230,5 @@ def _aggregate_mode(
             violations / len(case_results) if case_results else 0.0
         ),
         case_results=case_results,
+        framework_mean=statistics.fmean(frameworks) if frameworks else 0.0,
     )

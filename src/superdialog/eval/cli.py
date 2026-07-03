@@ -116,7 +116,9 @@ def cmd_bench(args: argparse.Namespace) -> int:
     models = [m.strip() for m in args.models.split(",") if m.strip()]
     modes = [m.strip() for m in args.modes.split(",") if m.strip()]
     metrics = [m.strip() for m in args.metrics.split(",") if m.strip()]
-    dataset_path = args.dataset or f"{os.path.splitext(args.playbook)[0]}.evalcases.yaml"
+    dataset_path = (
+        args.dataset or f"{os.path.splitext(args.playbook)[0]}.evalcases.yaml"
+    )
 
     async def _run() -> None:
         # 1) Dataset: reuse an existing one unless --regen (or it's missing).
@@ -157,6 +159,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
             playbook_text = fh.read()
 
         for model in models:
+
             def _vanilla(case: EvalCase, _m: str = model) -> InProcessVanilla:
                 return InProcessVanilla(playbook_text, resolve_llm(_m))
 

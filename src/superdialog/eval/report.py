@@ -72,10 +72,20 @@ def render_combined(entries: list[tuple[str, RunResult]]) -> str:
     for metric in metrics:
         lines.append("| " + " | ".join(_metric_row(metric)) + " |")
     lines.append(
-        "| " + " | ".join(_scalar_row("composite (gated)", lambda md: f"{md.composite_mean:.3f}")) + " |"
+        "| "
+        + " | ".join(
+            _scalar_row("composite (gated)", lambda md: f"{md.composite_mean:.3f}")
+        )
+        + " |"
     )
     lines.append(
-        "| " + " | ".join(_scalar_row("guardrail violation %", lambda md: f"{md.guardrail_violation_rate:.1%}")) + " |"
+        "| "
+        + " | ".join(
+            _scalar_row(
+                "guardrail violation %", lambda md: f"{md.guardrail_violation_rate:.1%}"
+            )
+        )
+        + " |"
     )
     return "\n".join(lines)
 
@@ -87,6 +97,17 @@ def write_combined(entries: list[tuple[str, RunResult]], out_dir: str) -> str:
     with open(md_path, "w", encoding="utf-8") as fh:
         fh.write(render_combined(entries))
     return md_path
+
+
+_EMPTY_AGG = MetricAggregate(metric="", mean=None, std=0.0, n=0, errored=0, skipped=0)
+
+
+def _ms(v: float | None) -> str:
+    return f"{v:.0f}ms" if isinstance(v, (int, float)) else "—"
+
+
+def _num(v: float | None, ndigits: int = 0) -> str:
+    return f"{v:.{ndigits}f}" if isinstance(v, (int, float)) else "—"
 
 
 def _fmt(agg: MetricAggregate | None) -> str:
@@ -129,14 +150,31 @@ def render_markdown(run: RunResult) -> str:
                 cells.append("—")
         lines.append("| " + " | ".join(cells) + " |")
 
+    lines += ["", "## Latency & tokens (per assistant turn)", ""]
+    lines += [
+        "| mode | latency p50 | latency p95 | input tok/turn | director | talker | LLM calls/turn |",  # noqa: E501
+        "|---|---|---|---|---|---|---|",
+    ]
+    for md in modes:
+        eff = (md.aggregates.get("efficiency") or _EMPTY_AGG).extras
+        tok = (md.aggregates.get("token_cost") or _EMPTY_AGG).extras
+        lines.append(
+            f"| {md.mode} "
+            f"| {_ms(eff.get('latency_p50'))} | {_ms(eff.get('latency_p95'))} "
+            f"| {_num(tok.get('tokens_mean'))} "
+            f"| {_num(tok.get('director_tokens_mean'))} "
+            f"| {_num(tok.get('talker_tokens_mean'))} "
+            f"| {_num(tok.get('llm_calls_mean'), 1)} |"
+        )
+
     lines += ["", "## Composite & guardrails", ""]
     lines += [
-        "| mode | composite (gated) | guardrail violation rate |",
-        "|---|---|---|",
+        "| mode | composite (gated) | framework (quality-gated cost) | guardrail violation rate |",  # noqa: E501
+        "|---|---|---|---|",
     ]
     for md in modes:
         lines.append(
-            f"| {md.mode} | {md.composite_mean:.3f} | "
+            f"| {md.mode} | {md.composite_mean:.3f} | {md.framework_mean:.3f} | "
             f"{md.guardrail_violation_rate:.1%} |"
         )
 
