@@ -195,3 +195,42 @@ async def test_efficiency_extras_expose_latency_percentiles():
     res = await EfficiencyMetric().score(sample)
     assert res.extra["latency_p50"] == 200.0  # median of [100, 300]
     assert res.extra["latency_p95"] > 200.0
+
+
+# --- journey stops at the natural call end -------------------------------------
+
+
+class _EndingEndpoint:
+    """Ends the session after the second user turn."""
+
+    def __init__(self) -> None:
+        self._turns = 0
+
+    async def start(self) -> str:
+        return "hello"
+
+    async def turn(self, text: str) -> str:
+        self._turns += 1
+        return "bye" if self._turns >= 2 else "ok"
+
+    @property
+    def ended(self) -> bool:
+        return self._turns >= 2
+
+    def reset(self) -> None:
+        self._turns = 0
+
+
+class _ChattyUser:
+    async def complete(self, messages) -> str:
+        return "next line"
+
+
+async def test_drive_journey_stops_when_endpoint_ends():
+    from superdialog.eval.runner import drive_journey
+
+    persona = PersonaSpec(name="p", traits="", goal="g", max_turns=10)
+    t = await drive_journey(_EndingEndpoint(), persona, _ChattyUser())
+    # greeting + 2 exchanges — NOT 10: the journey stopped at the call end.
+    assert t.turn_count() == 2
+    assert t.records[-1].text == "bye"

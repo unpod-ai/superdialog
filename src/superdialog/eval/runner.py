@@ -39,6 +39,11 @@ async def drive_journey(
         t.add("user", user_text)
         reply, ms = await _timed(endpoint.turn(user_text))
         t.add("assistant", reply, latency_ms=ms, metadata=_turn_meta(endpoint))
+        # Stop at the natural call end (duck-typed; endpoints without a
+        # session model never report ended). Running past it burns turns on
+        # goodbye loops that the judges then penalize.
+        if bool(getattr(endpoint, "ended", False)):
+            break
     return t
 
 

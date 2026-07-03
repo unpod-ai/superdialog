@@ -64,6 +64,11 @@ class InProcessVanilla:
         """Token usage of the most recent start()/turn() (empty when unknown)."""
         return dict(self._last_meta)
 
+    @property
+    def ended(self) -> bool:
+        """A flat prompt has no session model — the persona drives the end."""
+        return False
+
     def reset(self) -> None:
         """Discard conversation state by rebuilding the underlying agent."""
         self._agent = self._new_agent()
@@ -142,6 +147,11 @@ class InProcessPlaybook:
         if "talker" in by_role:
             meta["talker_tokens"] = by_role["talker"]
         return meta
+
+    @property
+    def ended(self) -> bool:
+        """True once the playbook reached a terminal checkpoint."""
+        return bool(getattr(self._machine, "is_complete", False))
 
     def reset(self) -> None:
         """Discard conversation state by rebuilding the DialogMachine."""

@@ -19,7 +19,15 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field
 
-from .models import AdvanceRule, Checkpoint, GuidelineConfig, InterruptSpec, Journey, Playbook, SlotSpec
+from .models import (
+    AdvanceRule,
+    Checkpoint,
+    GuidelineConfig,
+    InterruptSpec,
+    Journey,
+    Playbook,
+    SlotSpec,
+)
 
 
 class SimplePersona(BaseModel):
@@ -40,6 +48,8 @@ class SimpleStep(BaseModel):
     # Which person this step collects for (multi-entity). Defaults to "caller"
     # so single-entity playbooks are unchanged.
     entity: str = "caller"
+    # User turns before the runtime steers "wrap this step up" (default 4).
+    turn_budget: int | None = None
 
 
 class SimpleObjection(BaseModel):
@@ -184,9 +194,7 @@ def _build_persona(sp: SimplePlaybook) -> str:
         # so it is not duplicated in the prompt.
         persona_facts = {k: v for k, v in sp.facts.items() if k != "knowledge_base"}
         if persona_facts:
-            dumped = yaml.safe_dump(
-                persona_facts, sort_keys=False, allow_unicode=True
-            )
+            dumped = yaml.safe_dump(persona_facts, sort_keys=False, allow_unicode=True)
             parts.append(
                 "## Reference facts (never invent beyond these)\n" + dumped.strip()
             )
@@ -206,11 +214,24 @@ def _build_persona(sp: SimplePlaybook) -> str:
     return "\n\n".join(parts)
 
 
+# Past this many user turns on one step, the runtime steers "wrap this step
+# up" (no on_failure is compiled, so it never force-advances — steer only).
+_DEFAULT_TURN_BUDGET = 4
+
+
 def _step_to_checkpoint(
     step: SimpleStep, next_id: str | None, opening: str
 ) -> Checkpoint:
     guidance = step.say.strip() or opening.strip()
-    slots = {c: SlotSpec(type="str", description="") for c in step.collect}
+    # gate="soft" on the SLOT (not the checkpoint): requires below then demands
+    # filled, not confirmed. Hard inheritance would demand confirmation that
+    # verdict writes can't self-provide (they land provisional at hard gates by
+    # anti-injection design), blocking advance after the user answered and
+    # causing the re-asking this compiler previously avoided via requires=[].
+    slots = {
+        c: SlotSpec(type="str", description="", required=True, gate="soft")
+        for c in step.collect
+    }
     if next_id is None:
         return Checkpoint(
             id=step.id,
@@ -221,15 +242,15 @@ def _step_to_checkpoint(
             terminal=True,
             outcome="closed",
         )
-    # No requires: Director advances based solely on done_when condition.
-    # Requiring slots blocks advance until the Director's previous-turn note
-    # ("still need: X") is cleared, which bleeds into the next Talker turn
-    # and causes re-asking. Slots are still extracted independently.
+    # requires=collect: the Director may not advance past unfilled slots (a
+    # done_when verdict alone could skip capture on terse callers); a blocked
+    # advance emits the "still need: X" steer and the Talker's "Still needed"
+    # hint, so the agent circles back instead of moving on.
     rule = AdvanceRule(
         when=step.done_when.strip() or "step complete",
         judge="llm",
         to=next_id,
-        requires=[],
+        requires=list(step.collect),
     )
     # Hard gate on ALL steps: Talker barriers on the Director so it always
     # speaks from post-advance state.  The opening greeting is spoken via
@@ -243,6 +264,7 @@ def _step_to_checkpoint(
         entity=step.entity,
         advance_when=[rule],
         gate="hard",
+        turn_budget=step.turn_budget or _DEFAULT_TURN_BUDGET,
     )
 
 

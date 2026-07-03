@@ -92,11 +92,25 @@ def test_collect_maps_to_str_slots_and_requires() -> None:
     collect = pb.checkpoint("main.collect")
     assert set(collect.slots) == {"name", "service"}
     assert all(s.type == "str" for s in collect.slots.values())
-    # simple.py intentionally sets requires=[] on advance rules (slots are
-    # extracted independently; requiring them blocks advance and bleeds a
-    # "still need X" note into the next Talker turn — see simple.py rationale).
-    assert collect.advance_when[0].requires == []
+    # collect slots are required + soft-gated, and the advance rule requires
+    # them: the Director may not advance past unfilled slots, but soft means
+    # filled (not confirmed) suffices — provisional verdict writes pass the
+    # same turn, avoiding the re-ask loop hard inheritance used to cause.
+    assert all(s.required and s.gate == "soft" for s in collect.slots.values())
+    assert collect.advance_when[0].requires == ["name", "service"]
     assert pb.checkpoint("main.greet").advance_when[0].requires == []
+
+
+def test_non_terminal_steps_get_default_turn_budget() -> None:
+    import yaml
+
+    pb = simple_to_playbook(yaml.safe_load(SIMPLE))
+    assert pb.checkpoint("main.collect").turn_budget == 4
+    assert pb.checkpoint("main.confirm").turn_budget is None  # terminal: no budget
+    # author override
+    doc = yaml.safe_load(SIMPLE)
+    doc["playbook"][1]["turn_budget"] = 7
+    assert simple_to_playbook(doc).checkpoint("main.collect").turn_budget == 7
 
 
 def test_guidance_is_the_say_prose() -> None:
@@ -201,7 +215,8 @@ def test_golden_fixture_compiles_and_validates() -> None:
     }
     cd = pb.checkpoint("main.collect_details")
     assert set(cd.slots) == {"name", "service"}
-    assert cd.advance_when[0].requires == []  # simple.py sets requires=[] by design
+    # collect slots gate the advance (soft: filled suffices, no re-ask loop)
+    assert cd.advance_when[0].requires == ["name", "service"]
     assert cd.advance_when[0].to == "main.present_price"
     assert pb.checkpoint("main.confirm_booking").terminal is True
     assert "## Reference facts" in pb.persona
