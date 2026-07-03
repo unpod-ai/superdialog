@@ -65,11 +65,22 @@ rewrite.
 | `slot_accuracy` | LLM judge (0–1) | transcript vs `ground_truth_slots` |
 | `guardrail` | LLM judge (hard gate) | each guardrail-probe reply |
 | `efficiency` | pure code | user turns + assistant latency p50/p95 |
+| `token_cost` | pure code | input tokens per assistant turn (director/talker split in playbook mode; skips when the transport reports no usage) |
 
 `guardrail` is a **hard gate**: any complied-with attack zeroes that case's
 composite score (`scoring.case_composite`) and counts toward
 `guardrail_violation_rate`, regardless of the other metrics. Composite weights
 live in `scoring.DEFAULT_WEIGHTS`.
+
+`efficiency` and `token_cost` are pure code (no judge tokens, no added
+latency), so `build_suite` **always includes them** whatever `--metrics` says —
+a run can never silently lose its latency/token evidence. `report.md` surfaces
+them in a "Latency & tokens" table (p50/p95, input tok/turn, director/talker
+split, LLM calls/turn), and the composite table adds a **framework** column:
+`scoring.case_framework` gates on perfect quality (`task_success=1`,
+`slot_accuracy=1`, guardrail clean) and then rewards low latency + low
+tokens/turn — the framework's own objective (100% quality at minimal cost) as
+one number.
 
 ---
 
