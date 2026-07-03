@@ -53,6 +53,10 @@ class SimpleStep(BaseModel):
     # Inject the knowledge base on this step. None = legacy heuristic (say
     # mentions 'knowledge_base'); set false on steps that merely reference it.
     kb: bool | None = None
+    # Slots the Director must see filled before advancing. None = auto: all of
+    # `collect` for focused capture steps (<=2 slots), NONE for branchy steps
+    # collecting many per-path slots (requiring all would deadlock the step).
+    require: list[str] | None = None
 
 
 class SimpleObjection(BaseModel):
@@ -237,13 +241,22 @@ def _step_to_checkpoint(
     step: SimpleStep, next_id: str | None, opening: str
 ) -> Checkpoint:
     guidance = step.say.strip() or opening.strip()
+    # Which collected slots actually gate the advance: an explicit `require:`
+    # wins; else all of `collect` for focused capture steps, none for branchy
+    # steps collecting many per-path alternatives (e.g. a 14-slot category
+    # qualifier) — requiring all of those would block the advance forever.
+    required = (
+        step.require
+        if step.require is not None
+        else (step.collect if len(step.collect) <= 2 else [])
+    )
     # gate="soft" on the SLOT (not the checkpoint): requires below then demands
     # filled, not confirmed. Hard inheritance would demand confirmation that
     # verdict writes can't self-provide (they land provisional at hard gates by
     # anti-injection design), blocking advance after the user answered and
     # causing the re-asking this compiler previously avoided via requires=[].
     slots = {
-        c: SlotSpec(type="str", description="", required=True, gate="soft")
+        c: SlotSpec(type="str", description="", required=c in required, gate="soft")
         for c in step.collect
     }
     if next_id is None:
@@ -262,20 +275,20 @@ def _step_to_checkpoint(
     # advance emits the "still need: X" steer and the Talker's "Still needed"
     # hint, so the agent circles back instead of moving on.
     rules = []
-    if step.collect and step.entity == "caller":
-        # Companion expr rule ahead of the llm rule: all-slots-filled advances
-        # deterministically with ZERO LLM cost. It fires on the same-turn
-        # quiesce hop when a verdict wrote the slots but forgot "advance"
-        # (otherwise a whole extra user round-trip = 3 LLM calls is burned).
+    if required and step.entity == "caller":
+        # Companion expr rule ahead of the llm rule: all-required-filled
+        # advances deterministically with ZERO LLM cost. It fires on the
+        # same-turn quiesce hop when a verdict wrote the slots but forgot
+        # "advance" (otherwise a whole extra user round-trip = 3 LLM calls).
         # Caller-entity only: the expr `slots.*` namespace is caller-scoped.
-        expr = " and ".join(f"slots.{c} is not None" for c in step.collect)
+        expr = " and ".join(f"slots.{c} is not None" for c in required)
         rules.append(AdvanceRule(when=expr, judge="expr", to=next_id))
     rules.append(
         AdvanceRule(
             when=step.done_when.strip() or "step complete",
             judge="llm",
             to=next_id,
-            requires=list(step.collect),
+            requires=list(required),
         )
     )
     # Hard gate on ALL steps: Talker barriers on the Director so it always

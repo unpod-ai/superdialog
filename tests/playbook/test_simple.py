@@ -407,3 +407,41 @@ def test_simple_maps_guideline_fields() -> None:
     assert pb.guidelines.call_type == "support"
     assert pb.guidelines.timezone == "Asia/Kolkata"
     assert pb.guidelines.language == "hi"  # lifted from persona.language
+
+
+def test_branchy_steps_do_not_require_all_collected_slots() -> None:
+    import yaml
+
+    doc = yaml.safe_load(SIMPLE)
+    # a qualify-style step collecting many per-category alternatives
+    doc["playbook"][1]["collect"] = ["a", "b", "c", "d", "e"]
+    pb = simple_to_playbook(doc)
+    cp = pb.checkpoint("main.collect")
+    # requiring all 5 would deadlock the step -> auto heuristic requires none
+    assert cp.advance_when[-1].requires == []
+    assert [r.judge for r in cp.advance_when] == ["llm"]  # no expr rule either
+    assert all(not s.required for s in cp.slots.values())
+
+
+def test_explicit_require_overrides_heuristic() -> None:
+    import yaml
+
+    doc = yaml.safe_load(SIMPLE)
+    doc["playbook"][1]["collect"] = ["a", "b", "c", "d", "e"]
+    doc["playbook"][1]["require"] = ["a", "b"]
+    pb = simple_to_playbook(doc)
+    cp = pb.checkpoint("main.collect")
+    assert cp.advance_when[-1].requires == ["a", "b"]
+    assert cp.advance_when[0].judge == "expr"
+    assert "slots.a is not None and slots.b is not None" == cp.advance_when[0].when
+    assert cp.slots["a"].required and not cp.slots["c"].required
+
+
+def test_kb_false_step_compiles_uses_kb_false() -> None:
+    import yaml
+
+    doc = yaml.safe_load(SIMPLE)
+    doc["playbook"][1]["kb"] = False
+    pb = simple_to_playbook(doc)
+    assert pb.checkpoint("main.collect").uses_kb is False
+    assert pb.checkpoint("main.greet").uses_kb is None  # legacy default
