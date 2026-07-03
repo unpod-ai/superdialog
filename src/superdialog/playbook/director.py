@@ -95,6 +95,11 @@ def _coerce_slot(value: Any, spec: SlotSpec, now: datetime | None = None) -> Any
         return normalize_date(value, now)
     if spec.type == "time":
         return normalize_time(value)
+    if spec.type == "str":
+        # Slot values render into the Talker's SYSTEM prompt every turn
+        # ("Known information"); collapse whitespace and clamp so a caller
+        # stating a multi-line "name" can't forge a trusted prompt section.
+        return " ".join(str(value).split())[:200]
     cast = _CASTS.get(spec.type)
     if cast is None:  # array/object: stored as extracted
         return value
@@ -188,7 +193,14 @@ def _verdict_prompt(
         if request_confidence
         else ""
     )
-    system = (
+    # Ordered constant-first so provider prompt caching actually engages:
+    # [session-constant: preamble/schema/rules-of-engagement + the full
+    # playbook interrupt block] -> marked as the cache prefix (the old prefix
+    # was only the ~40-token preamble, below every provider's cache minimum,
+    # so the ~1k-token constant head was re-prefilled uncached on the one call
+    # every gated turn barriers on) -> [checkpoint-constant: step/slots/rules]
+    # -> [volatile: date anchor, resolution candidates, known values, tools].
+    cache_prefix = (
         _VERDICT_PREAMBLE
         + confidence_field
         + '"advance": <target id from the rules below, or null>, '
@@ -200,21 +212,24 @@ def _verdict_prompt(
         "in this utterance. Never infer slots from ambiguous yes/no answers to "
         "unrelated questions. Exception: slots listed under CANDIDATE RESOLUTION "
         "below — set those by matching the caller's spoken name to a candidate id.\n\n"
-        + date_block
+        f"Interrupts:\n{interrupt_lines}\n"
+    )
+    system = (
+        cache_prefix
         + (f"You are collecting details for: {cp.entity}\n" if pb.multi_entity else "")
         + f"Current step: {cp.id} — goal: {cp.goal}\n"
         f"Slots to extract:\n{slot_lines}\n"
+        f"Advance rules:\n{rule_lines}\n"
+        + date_block
         + resolve_block
         + f"Already known: {json.dumps(known, default=str)}\n"
-        f"Tool results:\n{tool_lines}\n"
-        f"Advance rules:\n{rule_lines}\n"
-        f"Interrupts:\n{interrupt_lines}"
+        f"Tool results:\n{tool_lines}"
     )
     return [
         {
             "role": "system",
             "content": system,
-            CACHE_PREFIX_KEY: _VERDICT_PREAMBLE,
+            CACHE_PREFIX_KEY: cache_prefix,
         },
         {"role": "user", "content": transcript},
     ]
@@ -520,7 +535,12 @@ class Director:
                     )
         note = verdict.get("note")
         if note and not any(isinstance(e, SteeringNoteEvent) for e in events):
-            events.append(SteeringNoteEvent(text=str(note), kind="steer"))
+            # The note renders into the Talker's SYSTEM prompt as a supervisor
+            # directive; a verdict can echo untrusted user text into it, so
+            # collapse whitespace (no forged sections) and clamp the length.
+            events.append(
+                SteeringNoteEvent(text=" ".join(str(note).split())[:200], kind="steer")
+            )
         return DirectorDecision(events=events)
 
     def _steer_text(

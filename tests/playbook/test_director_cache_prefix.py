@@ -16,17 +16,25 @@ def test_verdict_system_prefix_is_true_prefix() -> None:
     assert isinstance(system["content"], str)
     # (b) annotated prefix is a true leading substring of content
     assert system["content"].startswith(system[CACHE_PREFIX_KEY])
-    # (c) the prefix equals the fixed preamble source
-    assert system[CACHE_PREFIX_KEY] == _VERDICT_PREAMBLE
+    # (c) the prefix covers the whole session-constant head: preamble, rules
+    # of engagement, and the playbook-wide interrupt block — big enough to
+    # clear provider cache minimums (the bare preamble was ~40 tokens).
+    prefix = system[CACHE_PREFIX_KEY]
+    assert prefix.startswith(_VERDICT_PREAMBLE)
+    assert "SLOT RULE" in prefix
+    assert "Interrupts:" in prefix
+    # (d) volatile content stays OUT of the prefix
+    for volatile in ("Already known:", "Tool results:", "Current step:"):
+        assert volatile not in prefix
+        assert volatile in system["content"]
 
 
 def test_prefix_holds_with_confidence_field() -> None:
-    # request_confidence injects volatile text right after the preamble; the
-    # stable preamble must still be a true prefix of the assembled content.
+    # request_confidence extends the constant head; the annotated prefix must
+    # still be a true leading substring of the assembled content.
     pb, state = _state()
     cp = pb.checkpoint(state.checkpoint_id)
     messages = _verdict_prompt(pb, cp, state, request_confidence=True)
     system = messages[0]
-    assert system[CACHE_PREFIX_KEY] == _VERDICT_PREAMBLE
-    assert system["content"].startswith(_VERDICT_PREAMBLE)
-    assert "confidence" in system["content"]
+    assert system["content"].startswith(system[CACHE_PREFIX_KEY])
+    assert "confidence" in system[CACHE_PREFIX_KEY]

@@ -246,11 +246,22 @@ def _step_to_checkpoint(
     # done_when verdict alone could skip capture on terse callers); a blocked
     # advance emits the "still need: X" steer and the Talker's "Still needed"
     # hint, so the agent circles back instead of moving on.
-    rule = AdvanceRule(
-        when=step.done_when.strip() or "step complete",
-        judge="llm",
-        to=next_id,
-        requires=list(step.collect),
+    rules = []
+    if step.collect and step.entity == "caller":
+        # Companion expr rule ahead of the llm rule: all-slots-filled advances
+        # deterministically with ZERO LLM cost. It fires on the same-turn
+        # quiesce hop when a verdict wrote the slots but forgot "advance"
+        # (otherwise a whole extra user round-trip = 3 LLM calls is burned).
+        # Caller-entity only: the expr `slots.*` namespace is caller-scoped.
+        expr = " and ".join(f"slots.{c} is not None" for c in step.collect)
+        rules.append(AdvanceRule(when=expr, judge="expr", to=next_id))
+    rules.append(
+        AdvanceRule(
+            when=step.done_when.strip() or "step complete",
+            judge="llm",
+            to=next_id,
+            requires=list(step.collect),
+        )
     )
     # Hard gate on ALL steps: Talker barriers on the Director so it always
     # speaks from post-advance state.  The opening greeting is spoken via
@@ -262,7 +273,7 @@ def _step_to_checkpoint(
         guidance=guidance,
         slots=slots,
         entity=step.entity,
-        advance_when=[rule],
+        advance_when=rules,
         gate="hard",
         turn_budget=step.turn_budget or _DEFAULT_TURN_BUDGET,
     )

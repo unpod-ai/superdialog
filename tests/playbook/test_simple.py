@@ -92,13 +92,21 @@ def test_collect_maps_to_str_slots_and_requires() -> None:
     collect = pb.checkpoint("main.collect")
     assert set(collect.slots) == {"name", "service"}
     assert all(s.type == "str" for s in collect.slots.values())
-    # collect slots are required + soft-gated, and the advance rule requires
-    # them: the Director may not advance past unfilled slots, but soft means
-    # filled (not confirmed) suffices — provisional verdict writes pass the
-    # same turn, avoiding the re-ask loop hard inheritance used to cause.
+    # collect slots are required + soft-gated, and the llm advance rule
+    # requires them: the Director may not advance past unfilled slots, but
+    # soft means filled (not confirmed) suffices — provisional verdict writes
+    # pass the same turn, avoiding the re-ask loop hard inheritance caused.
     assert all(s.required and s.gate == "soft" for s in collect.slots.values())
-    assert collect.advance_when[0].requires == ["name", "service"]
-    assert pb.checkpoint("main.greet").advance_when[0].requires == []
+    # rule 0: companion expr rule — all-slots-filled advances with no LLM call
+    expr_rule, llm_rule = collect.advance_when
+    assert expr_rule.judge == "expr"
+    assert expr_rule.when == ("slots.name is not None and slots.service is not None")
+    assert llm_rule.judge == "llm"
+    assert llm_rule.requires == ["name", "service"]
+    # no collect -> no expr rule, no requires
+    greet_rules = pb.checkpoint("main.greet").advance_when
+    assert [r.judge for r in greet_rules] == ["llm"]
+    assert greet_rules[0].requires == []
 
 
 def test_non_terminal_steps_get_default_turn_budget() -> None:
@@ -215,9 +223,10 @@ def test_golden_fixture_compiles_and_validates() -> None:
     }
     cd = pb.checkpoint("main.collect_details")
     assert set(cd.slots) == {"name", "service"}
-    # collect slots gate the advance (soft: filled suffices, no re-ask loop)
-    assert cd.advance_when[0].requires == ["name", "service"]
-    assert cd.advance_when[0].to == "main.present_price"
+    # collect slots gate the llm advance (soft: filled suffices, no re-ask
+    # loop); the preceding expr rule advances for free once both are filled.
+    assert cd.advance_when[-1].requires == ["name", "service"]
+    assert cd.advance_when[-1].to == "main.present_price"
     assert pb.checkpoint("main.confirm_booking").terminal is True
     assert "## Reference facts" in pb.persona
     assert "canonical_pricing" in pb.persona and "₹400" in pb.persona
