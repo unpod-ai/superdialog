@@ -258,8 +258,15 @@ strength:
                       (render.py:257)                          a framework-owned OUTCOME
  steer/repair notes   Direction (weak) / Correction            supervisor nudges mid-
                       (strong) positioning (render.py:255,269) conversation, self-healing
- never_say / KB gate  negative constraint / step-scoped facts  no forbidden claims, no
-                      (render.py:265,295)                      off-step KB rambling
+ never_say            prompt line + DETERMINISTIC stream       authored phrases are
+                      filter excising phrases before TTS       excised whatever the LLM
+                      (talker.py _filter_never_say)            emits — a guarantee
+ uses_kb / KB gate    explicit per-checkpoint flag; None =     step-scoped facts, no
+                      guidance-substring heuristic             off-step KB rambling
+                      (models.py uses_kb, render.py:295)
+ goodbye guard        terminal interrupt with required slots   a terse caller's "bye"
+                      unfilled → ONE steer to collect, then    can't silently skip
+                      the next goodbye passes (director.py)    required capture
  repair loop          spoke_from_version diff → correction     never re-asks an answered
                       (runtime.py:169)                         question twice
 ```
