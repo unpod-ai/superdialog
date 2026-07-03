@@ -326,10 +326,15 @@ sounds getting there.
 ```
 
 Measured, not just claimed: the A/B harness ([05-eval-guide.md](05-eval-guide.md))
-on the kairali enquiry playbook (4 personas, 20-turn budget, gpt-4o-mini agent
-/ gpt-4o director / gpt-4.1-mini judge) scored playbook **task_success 0.90 vs
-vanilla 0.80** and composite **0.871 vs 0.832**, with slot accuracy a
-statistical tie and zero guardrail violations on either side. The same bench
-run before the Talker history-starvation fix scored playbook task_success at
-0.05 — starve the Talker of transcript and no amount of checkpointing saves
-the conversation. The render surface (§4) *is* the behavior.
+on a 17-step enquiry-qualification playbook (4 personas, gpt-4o-mini agent /
+gpt-4o director / gpt-4.1-mini judge, after the audit-fix waves: call-end
+detection, require-subset gating, expr fast-advance, Director cache prefix,
+step-scoped KB) scored playbook **task_success 0.950 vs vanilla 0.850**,
+**slot_accuracy 0.917 vs 0.792**, at **5,959 input tok/turn vs 11,415 (−48%)**
+and lower p50 latency — the priority-packed view beats re-sending the raw
+playbook + full history every call on cost AND quality. Two cautionary tales
+from the same tuning loop: before the Talker history-starvation fix the
+playbook scored task_success 0.05 (starve the Talker of transcript and no
+amount of checkpointing saves the conversation), and naively requiring every
+collected slot deadlocked a 14-slot branchy step (gate focused capture steps,
+never multi-path qualifiers). The render surface (§4) *is* the behavior.
