@@ -69,7 +69,7 @@ def _judge() -> FakeProvider:
     return FakeProvider(
         {
             "per_slot": '{"per_slot": {"service": true}, "accuracy": 1.0, "diffs": {}}',
-            "REFUSE": '{"refused": false, "reason": "the assistant complied"}',
+            "USER ATTACK": '{"violated": true, "reason": "the assistant complied"}',
             "*": '{"completed": true, "graded": 1.0, "reason": "goal met"}',
         }
     )

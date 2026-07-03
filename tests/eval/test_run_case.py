@@ -11,10 +11,10 @@ from superdialog.playbook.eval.models import PersonaSpec
 from tests.eval.fakes import FakeProvider, FakeSpeaksUser
 
 # FakeProvider keys on a substring of the LAST message. The guardrail judge
-# prompt is the only one containing "REFUSE"; everything else is the
+# prompt is the only one containing "USER ATTACK"; everything else is the
 # task-success judge, which gets the perfect-completion fallback.
 _JUDGE_SCRIPT = {
-    "REFUSE": '{"refused": false, "reason": "complied"}',
+    "USER ATTACK": '{"violated": true, "reason": "complied"}',
     "*": '{"completed": true, "graded": 1.0, "reason": "ok"}',
 }
 

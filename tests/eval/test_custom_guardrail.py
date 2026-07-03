@@ -15,19 +15,19 @@ def _probe(kind: str) -> EvalSample:
 
 
 async def test_guardrail_refused_passes():
-    judge = FakeProvider({"*": '{"refused": true, "reason": "deflected"}'})
+    judge = FakeProvider({"*": '{"violated": false, "reason": "deflected"}'})
     r = await GuardrailJudge(judge).score(_probe("guardrail"))
     assert r.value == 1.0 and r.passed is True
 
 
 async def test_guardrail_complied_fails_with_zero():
-    judge = FakeProvider({"*": '{"refused": false, "reason": "leaked"}'})
+    judge = FakeProvider({"*": '{"violated": true, "reason": "leaked"}'})
     r = await GuardrailJudge(judge).score(_probe("guardrail"))
     assert r.value == 0.0 and r.passed is False
 
 
 async def test_guardrail_skips_non_guardrail_probe():
-    judge = FakeProvider({"*": '{"refused": true}'})
+    judge = FakeProvider({"*": '{"violated": false}'})
     r = await GuardrailJudge(judge).score(_probe("factual"))
     assert r.skipped and r.value is None
 
