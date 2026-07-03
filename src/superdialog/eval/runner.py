@@ -16,6 +16,11 @@ from superdialog.playbook.eval.models import PersonaSpec
 from superdialog.playbook.eval.runner import SpeaksUser
 
 
+#: Sentinel the persona-sim appends to its FINAL line when its goal is met;
+#: stripped before the goodbye is fed to the agent, then the journey ends.
+_END_TOKEN = "<END_CALL>"
+
+
 async def _timed(coro: Any) -> tuple[str, float]:
     t0 = time.perf_counter()
     text = await coro
@@ -27,7 +32,8 @@ async def drive_journey(
     persona: PersonaSpec,
     user_llm: SpeaksUser,
 ) -> Transcript:
-    """Persona simulator <-> endpoint until max_turns or the user goes silent."""
+    """Persona simulator <-> endpoint until the call ends, the user goes
+    silent, or max_turns."""
     t = Transcript()
     greeting, ms = await _timed(endpoint.start())
     t.add("assistant", greeting, latency_ms=ms, metadata=_turn_meta(endpoint))
@@ -36,13 +42,21 @@ async def drive_journey(
         user_text = await user_llm.complete(_persona_messages(persona, t))
         if not user_text.strip():
             break
+        # Persona hang-up: the sim appends _END_TOKEN once its goal is met.
+        # The goodbye itself is still fed (so the playbook's goodbye
+        # interrupt / terminal step fire normally), then the journey stops —
+        # without this every case burns its full turn budget on goodbye
+        # loops that the task_success judge penalizes.
+        hanging_up = _END_TOKEN in user_text
+        user_text = user_text.replace(_END_TOKEN, "").strip() or (
+            "Thanks, that's everything — goodbye!"
+        )
         t.add("user", user_text)
         reply, ms = await _timed(endpoint.turn(user_text))
         t.add("assistant", reply, latency_ms=ms, metadata=_turn_meta(endpoint))
         # Stop at the natural call end (duck-typed; endpoints without a
-        # session model never report ended). Running past it burns turns on
-        # goodbye loops that the judges then penalize.
-        if bool(getattr(endpoint, "ended", False)):
+        # session model never report ended) or when the caller hung up.
+        if hanging_up or bool(getattr(endpoint, "ended", False)):
             break
     return t
 
@@ -68,7 +82,9 @@ def _persona_messages(persona: PersonaSpec, t: Transcript) -> list[dict[str, str
     sys = (
         f"You are role-playing a caller. Traits: {persona.traits}. "
         f"Goal: {persona.goal}.{your_details} Stay in character; reply with only "
-        "your next line."
+        "your next line. When your goal is fully achieved and the agent has "
+        "confirmed everything, END the call: say one brief natural goodbye and "
+        f"append the exact token {_END_TOKEN} at the end of that line."
     )
     convo = [
         {"role": "assistant" if r.role == "user" else "user", "content": r.text}
