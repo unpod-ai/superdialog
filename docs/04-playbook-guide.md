@@ -128,14 +128,28 @@ hand-written `to:` targets to maintain. Per step:
 - `say` - compiles to `Checkpoint.guidance`, the Talker's playbook for the
   step. May contain Jinja over `{slots, views, results}`. This is the
   prose `superdialog optimize` mutates most.
-- `collect` - slot keys to capture; compiled to untyped (`str`) slots
-  **plus** the advance rule's `requires`. ⚠️ All collected keys gate
-  advancement together: a 3-slot step needs all three extracted before the
-  conversation moves - measured in evals as the single biggest source of
-  stalls. Prefer 1–2 slots per step.
+- `collect` - slot keys to capture; compiled to untyped (`str`) slots.
+  Whether they **gate advancement** depends on the step's shape: a focused
+  capture step (**≤2 slots**) requires all of them filled before the
+  Director may advance (plus a free deterministic expr rule fires the
+  moment they are all filled); a **branchy step collecting >2 per-path
+  alternatives requires none** - demanding all of a 14-slot category
+  qualifier's slots deadlocks the step, since no caller fills every
+  branch. Override the heuristic with `require:`.
+- `require` (optional) - explicit subset of `collect` that gates the
+  advance, when the auto heuristic guesses wrong (e.g. one mandatory key
+  on an otherwise-branchy step: `require: [inquiry_category]`).
 - `done_when` - compiles to a single `judge: llm` advance rule the
   Director judges each turn. Write an observable condition ("Caller has
   confirmed a day and time"), not an intention.
+- `turn_budget` (optional, default 4) - user turns on this step before the
+  runtime steers "wrap this step up". Steer-only for simple playbooks (no
+  `on_failure` is compiled), so it nudges, never force-advances.
+- `kb` (optional) - whether this step's Talker prompt carries the (large)
+  `facts.knowledge_base`. Unset = legacy heuristic (the step's `say`
+  mentions `knowledge_base`). Set `kb: false` on steps that merely
+  *reference* the KB to keep them lean - off-step KB questions route
+  through a KB-answer step via a `global_kb_query`-style interrupt.
 
 **`facts`** (mapping, optional) - folds under `## Reference facts (never
 invent beyond these)`. The agent's grounding data: pricing, amenities,
@@ -149,7 +163,9 @@ handled *within* the current step; they cannot re-route the journey.
 
 **`boundaries`** (list of strings, optional) - folds as `## Hard
 boundaries`. Compliance-critical "NEVER…" rules. Prose-enforced; the full
-format's `never_say` is the stronger mechanism.
+format's `never_say` is the stronger mechanism: authored `never_say`
+phrases are deterministically excised from the Talker's token stream
+before TTS, whatever the LLM emits.
 
 **`fallback_actions`** (mapping `{name: instruction}`, optional) - folds
 as `## Fallback actions`: what to do when the happy path fails (callback,
