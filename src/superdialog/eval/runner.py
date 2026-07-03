@@ -44,9 +44,20 @@ async def drive_journey(
 
 def _persona_messages(persona: PersonaSpec, t: Transcript) -> list[dict[str, str]]:
     """Prompt the persona-LLM: who it is + the conversation so far (agent as user)."""
+    # Give the persona its own ground-truth details so it can supply concrete
+    # values (name, phone, email, city, ...) when the agent asks — otherwise the
+    # sim invents placeholders like "[Your Name]" and slot capture never scores.
+    details = "; ".join(f"{k}={v}" for k, v in persona.ground_truth_slots.items())
+    your_details = (
+        f" Your details (use these EXACT values when asked, never a placeholder): "
+        f"{details}."
+        if details
+        else ""
+    )
     sys = (
         f"You are role-playing a caller. Traits: {persona.traits}. "
-        f"Goal: {persona.goal}. Stay in character; reply with only your next line."
+        f"Goal: {persona.goal}.{your_details} Stay in character; reply with only "
+        "your next line."
     )
     convo = [
         {"role": "assistant" if r.role == "user" else "user", "content": r.text}

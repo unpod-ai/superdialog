@@ -872,7 +872,7 @@ def _build_parser() -> argparse.ArgumentParser:
     pb_run.set_defaults(fn=_cmd_playbook_run)
 
     # -- eval subcommand group ----------------------------------------------
-    from superdialog.eval.cli import cmd_gen_dataset, cmd_run, cmd_serve
+    from superdialog.eval.cli import cmd_bench, cmd_gen_dataset, cmd_run, cmd_serve
 
     eval_cmd = sub.add_parser("eval", help="A/B eval harness + legacy flow audit")
     eval_sub = eval_cmd.add_subparsers(dest="eval_cmd", required=True)
@@ -892,7 +892,7 @@ def _build_parser() -> argparse.ArgumentParser:
     gen_p = eval_sub.add_parser("gen-dataset", help="Build <playbook>.evalcases.yaml")
     gen_p.add_argument("--playbook", required=True)
     gen_p.add_argument("--personas", default=None, help="Persona YAML/JSON; else auto")
-    gen_p.add_argument("--gen-model", default="openai/gpt-4.1-mini")
+    gen_p.add_argument("--gen-model", default="anthropic/claude-sonnet-5")
     gen_p.add_argument("--n-probes", type=int, default=8)
     gen_p.add_argument("--out", default=None)
     gen_p.set_defaults(fn=cmd_gen_dataset)
@@ -912,6 +912,49 @@ def _build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--repeats", type=int, default=1)
     run_p.add_argument("--out", required=True)
     run_p.set_defaults(fn=cmd_run)
+
+    bench_p = eval_sub.add_parser(
+        "bench", help="One shot: gen dataset (if missing) + A/B every --models entry"
+    )
+    bench_p.add_argument("--playbook", required=True)
+    bench_p.add_argument(
+        "--models",
+        required=True,
+        help="Comma-separated agent model URIs to A/B (one report dir each)",
+    )
+    bench_p.add_argument("--judge-model", default="anthropic/claude-sonnet-5")
+    bench_p.add_argument("--gen-model", default="anthropic/claude-sonnet-5")
+    bench_p.add_argument("--user-model", default=None)
+    bench_p.add_argument(
+        "--director-model", default=None, help="Override Director LLM (else --models)"
+    )
+    bench_p.add_argument(
+        "--talker-model", default=None, help="Override Talker LLM (else --models)"
+    )
+    bench_p.add_argument("--personas", default=None, help="Persona YAML/JSON; else auto")
+    bench_p.add_argument("--dataset", default=None, help="Reuse this dataset; else auto")
+    bench_p.add_argument("--regen", action="store_true", help="Rebuild the dataset")
+    bench_p.add_argument("--n-probes", type=int, default=8)
+    bench_p.add_argument(
+        "--max-turns",
+        type=int,
+        default=None,
+        help="Override every persona's turn budget (B's flow needs ~20)",
+    )
+    bench_p.add_argument("--modes", default="vanilla,playbook")
+    # Includes the RAGAS metrics that need no embeddings (faithfulness,
+    # topic_adherence, goal_accuracy); answer_correctness/answer_relevancy are
+    # left out as they require an embeddings model.
+    bench_p.add_argument(
+        "--metrics",
+        default=(
+            "task_success,slot_accuracy,guardrail,efficiency,"
+            "faithfulness,topic_adherence,goal_accuracy"
+        ),
+    )
+    bench_p.add_argument("--repeats", type=int, default=1)
+    bench_p.add_argument("--out", default="./eval-out")
+    bench_p.set_defaults(fn=cmd_bench)
 
     serve_p = eval_sub.add_parser("serve", help="Serve playbook as OpenAI-compatible")
     serve_p.add_argument("--playbook", required=True)

@@ -71,6 +71,13 @@ class ConversationState(BaseModel):
     checkpoint_entered_version: int = 0  # version of the AdvanceEvent that entered it
     # Append-only audit trail of exited checkpoints (revisits duplicate).
     completed: list[str] = Field(default_factory=list)
+    # Checkpoints to return to after a resume=True interrupt detour finishes
+    # (LIFO). Pushed with the step we left when such an interrupt fires; popped
+    # by the synthesized "resume" advance. Derived purely from the log.
+    resume_stack: list[str] = Field(default_factory=list)
+    # True when the CURRENT checkpoint was entered by a resume=True interrupt —
+    # the runtime uses this to know it should return once the detour is done.
+    entered_via_resume: bool = False
     transcript: list[TranscriptEntry] = Field(default_factory=list)
     slots: dict[str, SlotValue] = Field(default_factory=dict)
     env: dict[str, str] = Field(default_factory=dict)
@@ -100,11 +107,14 @@ class ConversationState(BaseModel):
         # Precompute slot specs once; first declaration wins (matches
         # Playbook.slot_spec semantics).
         specs: dict[str, SlotSpec] = {}
+        interrupt_resume: dict[str, bool] = {}
         if playbook:
             for journey in playbook.journeys.values():
                 for cp in journey.checkpoints:
                     for key, slot_spec in cp.slots.items():
                         specs.setdefault(key, slot_spec)
+            for itr in playbook.interrupts:
+                interrupt_resume[itr.id] = itr.resume
         s = cls()
         for e in log.replay():
             s.version = e.version
@@ -150,6 +160,19 @@ class ConversationState(BaseModel):
             elif isinstance(e, AdvanceEvent):
                 if e.from_checkpoint:
                     s.completed.append(e.from_checkpoint)
+                # Resume bookkeeping: a resume=True interrupt records the step we
+                # are leaving so the detour can return to it; the synthesized
+                # "resume" advance pops that entry. entered_via_resume tracks
+                # whether the checkpoint we just entered is such a detour target.
+                entered_via_resume = False
+                if e.rule.startswith("interrupt:") and e.from_checkpoint:
+                    _iid = e.rule.split(":", 1)[1]
+                    if interrupt_resume.get(_iid):
+                        s.resume_stack = s.resume_stack + [e.from_checkpoint]
+                        entered_via_resume = True
+                elif e.rule == "resume" and s.resume_stack:
+                    s.resume_stack = s.resume_stack[:-1]
+                s.entered_via_resume = entered_via_resume
                 s.checkpoint_id = e.to_checkpoint
                 s.checkpoint_entered_version = e.version
                 s.user_turns_in_checkpoint = 0

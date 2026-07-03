@@ -100,6 +100,7 @@ class DialogMachine:
         director_llm: str | None = None,
         barrier_timeout: float = 0.4,
         hold_timeout: float | None = None,
+        settle_before_speak: bool = False,
     ) -> None:
         # Back-compat: the first param used to be `flow`; accept it by keyword.
         if source is None and flow is not None:
@@ -107,7 +108,13 @@ class DialogMachine:
         self._engine: Literal["graph", "playbook"] = _select_engine(source, engine)
         if self._engine == "playbook":
             self._init_playbook(
-                source, llm, tools, director_llm, barrier_timeout, hold_timeout
+                source,
+                llm,
+                tools,
+                director_llm,
+                barrier_timeout,
+                hold_timeout,
+                settle_before_speak,
             )
             return
         # graph engine: a path string under engine="flow" loads via Flow.load.
@@ -124,6 +131,7 @@ class DialogMachine:
         director_llm: str | None,
         barrier_timeout: float = 0.4,
         hold_timeout: float | None = None,
+        settle_before_speak: bool = False,
     ) -> None:
         """Wire the Playbook backend lazily; build it on first turn/start."""
         if not (llm or director_llm):
@@ -136,6 +144,7 @@ class DialogMachine:
         # Director/Talker timing overrides forwarded to the PlaybookAgent backend.
         self._barrier_timeout = barrier_timeout
         self._hold_timeout = hold_timeout
+        self._settle_before_speak = settle_before_speak
         # Test seams: inject scripted Talker/Director so tests stay offline.
         self._talker_override: Any = None
         self._director_override: Any = None
@@ -262,6 +271,7 @@ class DialogMachine:
             "http": httpx_http,
             "python_tools": _python_tools_from(self._pb_tools),
             "barrier_timeout": self._barrier_timeout,
+            "settle_before_speak": self._settle_before_speak,
         }
         if self._hold_timeout is not None:
             pb_kwargs["hold_timeout"] = self._hold_timeout
@@ -335,14 +345,22 @@ class DialogMachine:
         """
         if self._engine == "playbook":
             pb = self._ensure_backend()
-            lines = await pb.runtime.start()
+            # Drive greet(), not runtime.start(): runtime.start() only seeds the
+            # session and returns pass-through lines — the opening greeting is
+            # spoken by the Talker, and greet() also arms the first-turn
+            # double-greeting guard that turn() relies on. Bypassing it left the
+            # greeting unspoken and every turn re-greeting one checkpoint behind.
+            greeting = ""
+            async for chunk in pb.greet():
+                if chunk.done and chunk.turn is not None:
+                    greeting = chunk.turn.text
             try:
                 _cp = pb.runtime.state.checkpoint_id
                 self._pb_prev_checkpoint = _cp
                 self._observer.on_flow_node(self._trace_id, _cp, {}, prev_node=None)
             except Exception:
                 pass
-            return Turn(text=" ".join(lines).strip(), tool_calls=[], metadata={})
+            return Turn(text=greeting, tool_calls=[], metadata={})
         machine = await self._ensure_machine()
         # Fire on_enter actions for the initial node (auth, preloads, etc.)
         # Mirrors SimpleFlowAgent.on_enter() for the voice path.

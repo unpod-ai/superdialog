@@ -186,7 +186,7 @@ _KB_YAML = textwrap.dedent("""
         checkpoints:
           - id: collect
             goal: "Collect the name."
-            guidance: "Collect naturally."
+            guidance: "Collect naturally; answer any aside from the knowledge_base."
 """)
 
 

@@ -21,6 +21,74 @@ def write_report(run: RunResult, out_dir: str) -> tuple[str, str]:
     return json_path, md_path
 
 
+def render_combined(entries: list[tuple[str, RunResult]]) -> str:
+    """ONE big table across every model+mode: metric rows (incl. composite and
+    guardrail-violation) × columns for each model's vanilla/playbook/Δ.
+
+    ``entries`` is ``[(model_uri, RunResult), ...]``. Everything lands in a single
+    table — no separate per-mode/per-model sub-reports to stitch together."""
+    col_headers: list[str] = ["metric"]
+    for model, run in entries:
+        for md in run.modes:
+            col_headers.append(f"{model} · {md.mode}")
+        if len(run.modes) == 2:
+            col_headers.append(f"{model} · Δ")
+
+    metrics = sorted(
+        {m for _, run in entries for md in run.modes for m in md.aggregates}
+    )
+    lines = [
+        "# A/B Eval — Combined Report",
+        "",
+        f"Dataset(s): {', '.join(sorted({run.dataset for _, run in entries}))}",
+        "",
+        "| " + " | ".join(col_headers) + " |",
+        "|" + "---|" * len(col_headers),
+    ]
+
+    def _metric_row(metric: str) -> list[str]:
+        cells = [metric]
+        for _model, run in entries:
+            for md in run.modes:
+                cells.append(_fmt(md.aggregates.get(metric)))
+            if len(run.modes) == 2:
+                a = run.modes[0].aggregates.get(metric)
+                b = run.modes[-1].aggregates.get(metric)
+                if a and b and a.mean is not None and b.mean is not None:
+                    cells.append(f"{b.mean - a.mean:+.3f}")
+                else:
+                    cells.append("—")
+        return cells
+
+    def _scalar_row(label: str, value_of) -> list[str]:
+        cells = [label]
+        for _model, run in entries:
+            for md in run.modes:
+                cells.append(value_of(md))
+            if len(run.modes) == 2:
+                cells.append("—")  # delta not meaningful for composite/rates
+        return cells
+
+    for metric in metrics:
+        lines.append("| " + " | ".join(_metric_row(metric)) + " |")
+    lines.append(
+        "| " + " | ".join(_scalar_row("composite (gated)", lambda md: f"{md.composite_mean:.3f}")) + " |"
+    )
+    lines.append(
+        "| " + " | ".join(_scalar_row("guardrail violation %", lambda md: f"{md.guardrail_violation_rate:.1%}")) + " |"
+    )
+    return "\n".join(lines)
+
+
+def write_combined(entries: list[tuple[str, RunResult]], out_dir: str) -> str:
+    """Write the single combined ``report.md`` at ``out_dir``; returns its path."""
+    os.makedirs(out_dir, exist_ok=True)
+    md_path = os.path.join(out_dir, "report.md")
+    with open(md_path, "w", encoding="utf-8") as fh:
+        fh.write(render_combined(entries))
+    return md_path
+
+
 def _fmt(agg: MetricAggregate | None) -> str:
     if agg is None or agg.mean is None:
         return "—"

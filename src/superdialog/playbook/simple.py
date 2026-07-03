@@ -51,6 +51,7 @@ class SimpleInterrupt(BaseModel):
     id: str = ""
     when: str
     to: str
+    resume: bool = False  # return to the step we left once the detour is done
 
 
 class SimplePlaybook(BaseModel):
@@ -178,10 +179,17 @@ def _build_persona(sp: SimplePlaybook) -> str:
     if sp.goal.strip():
         parts.append(f"Overall goal: {sp.goal.strip()}")
     if sp.facts:
-        dumped = yaml.safe_dump(sp.facts, sort_keys=False, allow_unicode=True)
-        parts.append(
-            "## Reference facts (never invent beyond these)\n" + dumped.strip()
-        )
+        # A `knowledge_base` facts key is routed to Playbook.knowledge_base (the
+        # engine's KB-answer / drift-fix path); keep it out of the persona dump
+        # so it is not duplicated in the prompt.
+        persona_facts = {k: v for k, v in sp.facts.items() if k != "knowledge_base"}
+        if persona_facts:
+            dumped = yaml.safe_dump(
+                persona_facts, sort_keys=False, allow_unicode=True
+            )
+            parts.append(
+                "## Reference facts (never invent beyond these)\n" + dumped.strip()
+            )
     if sp.objections:
         bullets = "\n".join(
             f"- If {o.trigger} -> {o.handle.strip()}" for o in sp.objections
@@ -252,6 +260,7 @@ def simple_to_playbook(doc: dict[str, Any]) -> Playbook:
             id=intr.id or f"interrupt_{i}",
             when=intr.when,
             to=intr.to,
+            resume=intr.resume,
         )
         for i, intr in enumerate(sp.interrupts)
     ]
@@ -264,12 +273,17 @@ def simple_to_playbook(doc: dict[str, Any]) -> Playbook:
         memory_enabled=sp.memory_enabled,
         followup_enabled=sp.followup_enabled,
     )
+    kb = sp.facts.get("knowledge_base") if isinstance(sp.facts, dict) else None
+    knowledge_base = (
+        yaml.safe_dump(kb, sort_keys=False, allow_unicode=True).strip() if kb else ""
+    )
     return Playbook(
         persona=_build_persona(sp),
         multi_entity=sp.multi_entity,
         journeys={"main": Journey(checkpoints=checkpoints)},
         interrupts=interrupts,
         guidelines=guidelines,
+        knowledge_base=knowledge_base,
     )
 
 

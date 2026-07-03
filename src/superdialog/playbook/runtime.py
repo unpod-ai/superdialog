@@ -136,6 +136,20 @@ class PlaybookRuntime:
         advance = next(
             (e for e in decision.events if isinstance(e, AdvanceEvent)), None
         )
+        is_interrupt = advance is not None and advance.rule.startswith("interrupt:")
+        state = self.state
+        # Resume takes priority over drift: at a resume=True interrupt target, if
+        # the Director did NOT fire another interrupt (a fresh detour or a real
+        # exit like not-interested/goodbye), the detour is done — return to the
+        # step we left instead of honoring a plain advance that would wander off
+        # (e.g. straight to closing). Slot writes the Director extracted this
+        # turn are still applied so nothing is lost.
+        if state.entered_via_resume and state.resume_stack and not is_interrupt:
+            self._apply([e for e in decision.events if not isinstance(e, AdvanceEvent)])
+            await self._advance(state.resume_stack[-1], "resume", pass_through)
+            await self._apply_turn_budget(pass_through)
+            pass_through.extend(await self._quiesce())
+            return pass_through
         if advance is not None and not advance.rule.startswith("interrupt:"):
             current = self.state.checkpoint_id
             if current is not None:  # we are leaving: surface its verbatim line
@@ -233,6 +247,21 @@ class PlaybookRuntime:
         if cp.auto and cp.advance_when:
             self._speak_verbatim(cp, pass_through)
             await self._advance(cp.advance_when[0].to, "auto", pass_through)
+            return True
+        # Resume a resume=True interrupt detour: the caller asked an off-flow
+        # question, we jumped here and spoke the answer; once they have taken a
+        # turn (answer heard) and nothing else routed this turn, return to the
+        # step we left. user_turns_in_checkpoint>=1 defers the return past the
+        # entry turn so the answer is spoken first.
+        # ponytail: single-level only, and a real advance off this target would
+        # orphan the stacked entry — fine for KB-answer steps that don't advance
+        # elsewhere; revisit if a resume target gains its own advance rules.
+        if (
+            state.entered_via_resume
+            and state.resume_stack
+            and state.user_turns_in_checkpoint >= 1
+        ):
+            await self._advance(state.resume_stack[-1], "resume", pass_through)
             return True
         return False
 

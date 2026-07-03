@@ -21,9 +21,25 @@ _AXES = (
 
 _GEN_SYSTEM = """\
 You create test personas for evaluating a conversational agent. Given the
-playbook summary and its slot schema, return ONLY a JSON array of exactly
-{count} personas, one per diversity axis:
+AGENT DOMAIN, the playbook summary, and its slot schema, return ONLY a JSON
+array of exactly {count} personas, one per diversity axis:
 {axes}
+
+CRITICAL: personas MUST be realistic callers for the SPECIFIC business/domain
+described in the AGENT DOMAIN section — match its services, categories, and
+terminology exactly. NEVER invent an unrelated domain (e.g. loans, insurance,
+telecom) — every goal and slot value must fit THAT business.
+
+CALL SHAPE: the AGENT leads this call — it greets, asks screening questions
+(identity, preferred language, what the enquiry is about), then collects
+contact details. Each persona is the person on the OTHER end: they let the
+agent drive, answer whatever it asks directly and truthfully from their
+ground_truth_slots, and only state their own request when the agent asks how it
+can help or invites questions. Personas must NOT open with a barrage of
+questions or try to run the call themselves — that derails an agent-led flow.
+Bake this responsive, follow-the-agent behavior into every persona's `traits`
+and `goal` (the diversity axis still governs HOW they answer — terse, tangent-
+prone, error-making — not whether they hijack the call).
 
 Each persona: {{"name": str, "traits": str, "goal": str,
 "ground_truth_slots": {{...}}}}. ground_truth_slots MUST contain a concrete,
@@ -114,9 +130,20 @@ async def generate_personas(
     """Generate a diverse persona suite; ValueError after max_attempts."""
     required = _required_slots(playbook)
     system = _GEN_SYSTEM.format(count=count, axes="\n".join(f"- {a}" for a in _AXES))
+    # Ground generation on the agent's real domain (identity + KB), so personas
+    # are plausible callers for THIS business — not a hallucinated unrelated
+    # domain. Truncated to keep the prompt bounded.
+    domain = (playbook.persona or "").strip()
+    kb = (getattr(playbook, "knowledge_base", "") or "").strip()
+    domain_block = ""
+    if domain:
+        domain_block += f"AGENT DOMAIN / IDENTITY:\n{domain[:1500]}\n\n"
+    if kb:
+        domain_block += f"KNOWLEDGE BASE (services/facts this business offers):\n{kb[:1500]}\n\n"
     user = (
-        f"CHECKPOINTS:\n{_summary(playbook)}\n\n"
-        f"REQUIRED SLOTS (every persona needs concrete values for all):\n"
+        domain_block
+        + f"CHECKPOINTS:\n{_summary(playbook)}\n\n"
+        + "REQUIRED SLOTS (every persona needs concrete values for all):\n"
         + "\n".join(f"- {k} ({t})" for k, t in required.items())
     )
     messages = [

@@ -109,7 +109,14 @@ class PlaybookAgent:
         traversal_dir: str | Path | None = None,
         traversal_source: str = "",
         traversal_model: str = "",
+        settle_before_speak: bool = False,
     ) -> None:
+        # Offline-eval knob: when True the Talker waits for the Director to
+        # settle before speaking on EVERY turn (not just the greeting), so a
+        # turn-based harness captures the reply from the checkpoint the Director
+        # actually chose. Off in live voice, where the Talker speaks
+        # speculatively and only barriers at hard gates.
+        self._settle_before_speak = settle_before_speak
         self._director_timer = _LLMTimer(director_llm)
         self._talker_timer = _LLMTimer(talker_llm)
         self.runtime = PlaybookRuntime(
@@ -288,8 +295,15 @@ class PlaybookAgent:
         # where greet() spoke, wait briefly for the Director to advance before
         # snapshotting speak_state — otherwise the Talker would re-speak the
         # opening greeting from the same checkpoint a second time.
-        if self._greeting_checkpoint and entry_cp == self._greeting_checkpoint:
+        greeting_turn = bool(
+            self._greeting_checkpoint and entry_cp == self._greeting_checkpoint
+        )
+        if greeting_turn:
             self._greeting_checkpoint = None
+        # Wait for the Director to settle before snapshotting when either the
+        # greeting guard fires or offline settle_before_speak is on. Otherwise
+        # (live voice) skip the wait and let the Talker speak speculatively.
+        if greeting_turn or self._settle_before_speak:
             with anyio.move_on_after(self._talker._hold_timeout):
                 await quiescent.wait()
 

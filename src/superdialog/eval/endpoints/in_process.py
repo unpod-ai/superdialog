@@ -17,6 +17,15 @@ _VANILLA_SUFFIX = (
     "conversation. Otherwise respond as the assistant described above."
 )
 
+# The Talker's real-time barrier (default 0.4s) exists to keep a live voice
+# call from hanging while the Director settles; past it the Talker gives up on
+# the real reply and speaks a filler/hold line. Offline eval has no real-time
+# pressure and every Director call is a multi-second LLM round-trip, so the
+# production barrier would make the playbook emit filler EVERY turn and score
+# ~0. Widen it so the barrier always waits for the Director's real answer.
+_OFFLINE_BARRIER_S = 120.0
+_OFFLINE_HOLD_S = 120.0
+
 
 class InProcessVanilla:
     """Runs the SAME playbook as a flat system prompt through a single LLM.
@@ -74,6 +83,9 @@ class InProcessPlaybook:
             llm=self._talker,
             director_llm=self._director,
             engine="playbook",
+            barrier_timeout=_OFFLINE_BARRIER_S,
+            hold_timeout=_OFFLINE_HOLD_S,
+            settle_before_speak=True,
         )
 
     async def start(self) -> str:

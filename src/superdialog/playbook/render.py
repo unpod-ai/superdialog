@@ -28,6 +28,14 @@ from .state import ConversationState
 # missing root must defer to the |default filter, not raise mid-speech.
 _jinja = SandboxedEnvironment(undefined=ChainableUndefined, autoescape=False)
 
+# Small share of the token budget reserved for recent transcript, so that even
+# on a KB-heavy step (where the KB block is injected) the Talker still sees the
+# last few turns and doesn't re-greet / re-ask answered slots. Kept small — the
+# KB is no longer in the system block on ordinary turns, so transcript fits the
+# general budget anyway; this is just a safety floor for the KB-answer step. At a
+# tiny budget it rounds to ~0, preserving graceful degradation.
+_TRANSCRIPT_BUDGET_FRACTION = 0.2
+
 
 _LANGUAGE_NAMES = {
     "en": "English",
@@ -279,9 +287,15 @@ def _system_block(pb: Playbook, state: ConversationState) -> tuple[str, str]:
     # so an authoring typo degrades to raw text and never crashes the speaking
     # path. When the KB is empty the prompt is byte-identical to before, so
     # existing playbooks are unaffected.
+    # Inject the (potentially large) KB into the Talker's prompt ONLY on steps
+    # that actually reference it — the KB-answer / qualify steps — instead of
+    # every turn. Keeps the Talker lean and fast (its whole point) and stops the
+    # KB from eating the token budget on greeting/slot-capture turns. Off-flow
+    # questions are routed to the KB step by the global_kb_query interrupt.
+    cp_uses_kb = cp is not None and "knowledge_base" in (cp.guidance or "")
     kb = (
         render_template(pb.knowledge_base, pb, state, ns=ns).strip()
-        if pb.knowledge_base
+        if pb.knowledge_base and cp_uses_kb
         else ""
     )
     if kb:
@@ -309,13 +323,21 @@ def render_view(
     system, cache_prefix = _system_block(pb, state)
     used = estimate_tokens(system)
     chat: list[dict[str, str]] = []
-    # newest-first packing of transcript, then reverse to chronological
+    # Recent transcript gets a reserved share of the budget so a large system
+    # block (persona + full KB) can't starve the Talker of the running dialogue
+    # — otherwise it re-greets / re-asks answered slots. Newest-first up to the
+    # reserved amount, then older turns fill any leftover general budget.
+    transcript_reserve = int(token_budget * _TRANSCRIPT_BUDGET_FRACTION)
+    used_transcript = 0
     for entry in reversed(state.transcript):
         cost = estimate_tokens(entry.text) + 4
-        if used + cost > token_budget:
+        within_reserve = used_transcript + cost <= transcript_reserve
+        within_budget = used + cost <= token_budget
+        if not (within_reserve or within_budget):
             break
         chat.append({"role": entry.role, "content": entry.text})
         used += cost
+        used_transcript += cost
     chat.reverse()
     # Some providers (Anthropic) require at least one non-system message.
     # When the transcript is empty (opening greeting) or the entire history
