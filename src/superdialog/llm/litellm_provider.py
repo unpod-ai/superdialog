@@ -34,10 +34,10 @@ class LitellmProvider:
         tools: list[dict[str, Any]] | None = None,
         **opts: Any,
     ) -> CompletionResult:
-        print(
-            f"[LITELLM-DBG] complete model={self.model!r} msgs={len(messages)}",
-            flush=True,
-        )
+        # print(
+        #     f"[LITELLM-DBG] complete model={self.model!r} msgs={len(messages)}",
+        #     flush=True,
+        # )
         merged = {**self.default_opts, **apply_json_mode(opts)}
         _resolve_dynamic_credentials(merged)
         t0 = time.perf_counter()
@@ -45,11 +45,12 @@ class LitellmProvider:
             resp = await litellm.acompletion(
                 model=self.model, messages=messages, tools=tools, **merged
             )
-        except Exception as _e:
-            print(
-                f"[LITELLM-DBG] complete FAILED model={self.model!r} exc={type(_e).__name__}: {_e}",
-                flush=True,
-            )
+        except Exception:
+            # print(
+            #     f"[LITELLM-DBG] complete FAILED model={self.model!r} "
+            #     f"exc={type(_e).__name__}: {_e}",
+            #     flush=True,
+            # )
             raise
         msg = resp.choices[0].message
         raw_calls = msg.tool_calls or []
@@ -76,10 +77,10 @@ class LitellmProvider:
         tools: list[dict[str, Any]] | None = None,
         **opts: Any,
     ) -> AsyncIterator[StreamChunk]:
-        print(
-            f"[LITELLM-DBG] stream model={self.model!r} msgs={len(messages)}",
-            flush=True,
-        )
+        # print(
+        #     f"[LITELLM-DBG] stream model={self.model!r} msgs={len(messages)}",
+        #     flush=True,
+        # )
         merged = {**self.default_opts, **opts, "stream": True}
         _resolve_dynamic_credentials(merged)
         # Request usage on the trailing stream chunk. Without this, some providers
@@ -93,11 +94,12 @@ class LitellmProvider:
             resp = await litellm.acompletion(
                 model=self.model, messages=messages, tools=tools, **merged
             )
-        except Exception as _e:
-            print(
-                f"[LITELLM-DBG] stream FAILED model={self.model!r} exc={type(_e).__name__}: {_e}",
-                flush=True,
-            )
+        except Exception:
+            # print(
+            #     f"[LITELLM-DBG] stream FAILED model={self.model!r} "
+            #     f"exc={type(_e).__name__}: {_e}",
+            #     flush=True,
+            # )
             raise
         usage_meta: dict[str, int] = {}
         pending_done: StreamChunk | None = None
