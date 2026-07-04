@@ -26,6 +26,7 @@ This folder is the canonical documentation set.
 | [04-playbook-guide.md](04-playbook-guide.md) | Playbooks in two parts - Part 1: authoring formats (simple + full); Part 2: technical design (runtime, process layer, evals/optimize) |
 | [05-eval-guide.md](05-eval-guide.md) | Playbook-vs-vanilla A/B eval - `superdialog eval run`, the two pluggable seams (transport + metric framework), transcript-only scoring, and the two mutually-exclusive RAGAS pins |
 | [06-playbook-execution-flow.md](06-playbook-execution-flow.md) | Code-verified execution trace - the two-brain turn loop, every touchpoint with file:line, the render steering surface, playbook semantics → behavior, patterns, and measured advantages vs a vanilla LLM |
+| [07-running-evals.md](07-running-evals.md) | Operator runbook - setup, the `eval bench` fast path and the explicit gen-dataset/run/serve phases, every flag, how to read the report, dataset format, recipes, and gotchas |
 | [decisions.md](decisions.md) | OSS-specific decisions: license, repo, governance, roadmap |
 
 ---
@@ -50,7 +51,8 @@ This folder is the canonical documentation set.
 - **Looking up a signature?** [02-api-reference.md](02-api-reference.md).
 - **Auditing whether the engine beats a plain prompt?**
   [05-eval-guide.md](05-eval-guide.md) - A/B a playbook against a vanilla LLM
-  handed the same playbook, scored from the transcript alone.
+  handed the same playbook, scored from the transcript alone. To actually
+  *run* one, follow [07-running-evals.md](07-running-evals.md).
 
 ---
 
