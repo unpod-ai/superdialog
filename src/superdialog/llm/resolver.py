@@ -75,9 +75,18 @@ def resolve_backend(uri: str) -> LLMProvider:
         anyllm/anthropic/claude-haiku-4-5   -> AnyLlmProvider
         litellm/anthropic/claude-haiku-4-5  -> LitellmProvider
         oai/gpt-4.1-mini                    -> OpenAIProvider (naked openai SDK)
+        livekit/google/gemma-4-31b-it       -> OpenAIProvider on the LiveKit gateway
         custom/<name>/<model>               -> LiteLLM (registered base_url+key)
         vllm/<model>@<host>                  -> LiteLLM (hosted_vllm via api_base)
     """
+    # LiveKit inference gateway: force the OpenAI SDK backend against the
+    # gateway (minted JWT + gateway base_url), independent of the ambient
+    # LLM_BACKEND so a stray LIVEKIT_API_KEY can't reroute unrelated models.
+    if uri.startswith("livekit/"):
+        from .openai_provider import OpenAIProvider
+
+        return OpenAIProvider(model=uri[len("livekit/") :], livekit=True)
+
     backend: str | None = None
     for scheme, name in _BACKEND_SCHEMES.items():
         if uri.startswith(scheme):

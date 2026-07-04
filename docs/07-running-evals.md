@@ -33,9 +33,20 @@ working directory is picked up automatically:
 # .env
 OPENAI_API_KEY=sk-...
 # ANTHROPIC_API_KEY=...   # if you route any role to anthropic/*
+# LIVEKIT_API_KEY=...     # only for livekit/* models (LiveKit inference gateway)
+# LIVEKIT_API_SECRET=...
 ```
 
 Models are `litellm` URIs — `openai/gpt-4o-mini`, `anthropic/claude-haiku-4-5-20251001`, etc.
+
+**LiveKit direct inference (gemma).** A `livekit/<model>` URI routes the role
+through LiveKit's inference gateway instead of the provider directly — e.g.
+`livekit/google/gemma-4-31b-it` (Gemma 4 31B, the model LiveKit hosts itself).
+It authenticates with `LIVEKIT_API_KEY` + `LIVEKIT_API_SECRET` (a JWT minted per
+run; no separate model key), and honors `LIVEKIT_INFERENCE_URL` to override the
+gateway. Use it anywhere a model URI is accepted (`--models`, `--agent-model`,
+`--judge-model`, …). It needs the `livekit-agents` SDK — add `--extra livekit`
+to the `uv sync` above (already present in the supervoice env).
 
 > **venv gotcha:** the `VIRTUAL_ENV=… does not match … .venv` warning on every
 > `uv run` is harmless. If `superdialog` resolves to a stale sibling checkout,
@@ -246,6 +257,19 @@ which deltas are real.
 
 **Multi-model sweep:** `--models gpt-4o-mini,gpt-4.1-mini,claude-haiku` writes
 one report dir per model plus a combined table.
+
+**Gemma via LiveKit inference (gate before shipping it live):** put
+`LIVEKIT_API_KEY`/`LIVEKIT_API_SECRET` in `.env`, then A/B the LiveKit-hosted
+gemma against your current model — mixing schemes in one sweep is fine:
+
+```bash
+superdialog eval bench --playbook my_agent.simple.yaml \
+  --models livekit/google/gemma-4-31b-it,openai/gpt-4o-mini \
+  --repeats 3 --out ./eval-out/gemma-ab
+```
+
+The same URI is what the live pool takes (`LLM_MODEL=livekit/google/gemma-4-31b-it`),
+so a green eval here is the gate before flipping it on for real calls.
 
 **CI smoke (no API, no cost):** `uv run python -m pytest tests/eval/ -q` — the
 harness is fully unit-tested against fake providers.

@@ -17,6 +17,14 @@ from typing import Any, AsyncIterator
 
 from .provider import CompletionResult, StreamChunk, apply_json_mode
 
+# LiveKit inference gateway JWT lifetime. ``create_access_token`` mints a 600s
+# token upstream; we request a longer one and rebuild the client before it
+# lapses so a long voice call never 401s mid-stream. STT/TTS re-mint per WS
+# connect (gateway_stt/gateway_tts); this HTTP path caches an AsyncOpenAI
+# client, so it must refresh the token itself.
+_LK_TOKEN_TTL_S = 1800.0
+_LK_REFRESH_MARGIN_S = 120.0
+
 
 def strip_provider_prefix(model: str) -> str:
     """Strip a leading ``openai/`` (or ``livekit/``) scheme to a bare model id."""
@@ -59,6 +67,45 @@ def make_openai_client() -> Any:
     return AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 
+def make_livekit_client(ttl: float = _LK_TOKEN_TTL_S) -> tuple[Any, float]:
+    """Build an ``AsyncOpenAI`` bound to the LiveKit inference gateway.
+
+    Returns ``(client, expiry_monotonic)`` — the monotonic clock value at which
+    the minted access token lapses, so the caller can refresh before then.
+    Requires ``LIVEKIT_API_KEY`` + ``LIVEKIT_API_SECRET`` (or their
+    ``LIVEKIT_INFERENCE_*`` aliases); raises ``ValueError`` when absent so a
+    ``livekit/`` model fails loudly instead of silently hitting OpenAI.
+    """
+    from openai import AsyncOpenAI
+
+    lk_api_key = os.environ.get("LIVEKIT_API_KEY") or os.environ.get(
+        "LIVEKIT_INFERENCE_API_KEY"
+    )
+    lk_api_secret = os.environ.get("LIVEKIT_API_SECRET") or os.environ.get(
+        "LIVEKIT_INFERENCE_API_SECRET"
+    )
+    if not (lk_api_key and lk_api_secret):
+        raise ValueError(
+            "livekit/ models require LIVEKIT_API_KEY and LIVEKIT_API_SECRET"
+        )
+    try:
+        from livekit.agents.inference.llm import (
+            create_access_token,
+            get_default_inference_url,
+        )
+    except ImportError as exc:  # eval envs may lack the agents SDK
+        raise ValueError(
+            "livekit/ models need the livekit-agents package "
+            "(install superdialog's 'livekit' extra: uv sync --extra livekit)"
+        ) from exc
+
+    token = create_access_token(lk_api_key, lk_api_secret, ttl=ttl)
+    return (
+        AsyncOpenAI(api_key=token, base_url=get_default_inference_url()),
+        time.monotonic() + ttl,
+    )
+
+
 def _normalize_tool_calls(raw_calls: Any) -> list[dict[str, Any]]:
     """Normalize SDK tool-call objects to plain dicts (OpenAI tool-call shape)."""
     return [
@@ -70,12 +117,26 @@ def _normalize_tool_calls(raw_calls: Any) -> list[dict[str, Any]]:
 class OpenAIProvider:
     """``LLMProvider`` backed by ``openai.AsyncOpenAI.chat.completions``."""
 
-    def __init__(self, model: str, **default_opts: Any) -> None:
+    def __init__(
+        self, model: str, *, livekit: bool = False, **default_opts: Any
+    ) -> None:
         self.model = model
         self.default_opts: dict[str, Any] = default_opts
+        # ``livekit`` forces the LiveKit inference gateway (JWT + gateway URL)
+        # regardless of the ambient LLM_BACKEND, and enables token refresh.
+        self._livekit = livekit
         self._client: Any = None
+        self._client_expiry = 0.0
 
     def _ensure_client(self) -> Any:
+        if self._livekit:
+            now = time.monotonic()
+            if (
+                self._client is None
+                or now >= self._client_expiry - _LK_REFRESH_MARGIN_S
+            ):
+                self._client, self._client_expiry = make_livekit_client()
+            return self._client
         if self._client is None:
             self._client = make_openai_client()
         return self._client
