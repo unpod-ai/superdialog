@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 
 from .litellm_provider import LitellmProvider
+from .livekit_gateway import LIVEKIT_PROVIDER_NAME, register_livekit_inference
 from .provider import LLMProvider
 from .registry import get_custom
 from .resilience import ResilienceConfig, ResilientProvider
@@ -38,6 +39,13 @@ def _litellm_resolve(uri: str) -> LLMProvider:
             raise ValueError(f"Custom URI requires model: {uri}")
         _, name, model = parts
         cfg = get_custom(name)
+        if cfg is None and name == LIVEKIT_PROVIDER_NAME:
+            # Self-register the LiveKit gateway from env so
+            # ``custom/lk-inference/<model>`` works with no explicit registration
+            # hook (parity with the ``livekit/`` scheme). Its api_key is a
+            # refreshing token source, so long calls never reuse a stale JWT.
+            register_livekit_inference()
+            cfg = get_custom(name)
         if not cfg:
             raise ValueError(f"Unknown custom provider: {name}")
         return LitellmProvider(

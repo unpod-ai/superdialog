@@ -48,6 +48,17 @@ gateway. Use it anywhere a model URI is accepted (`--models`, `--agent-model`,
 `--judge-model`, …). It needs the `livekit-agents` SDK — add `--extra livekit`
 to the `uv sync` above (already present in the supervoice env).
 
+Two equivalent routes to the same gateway, pick per need:
+
+| URI | Backend | When |
+|---|---|---|
+| `livekit/google/gemma-4-31b-it` | openai SDK | default — best tool-calling fidelity |
+| `custom/lk-inference/google/gemma-4-31b-it` | LiteLLM | when you want LiteLLM (cost tables, fallbacks) |
+
+Both mint + auto-refresh the JWT (safe for long calls) and self-configure from
+the `LIVEKIT_*` env — no registration step. Don't stack schemes
+(`litellm/livekit/…` fails); use one of the two forms above.
+
 > **venv gotcha:** the `VIRTUAL_ENV=… does not match … .venv` warning on every
 > `uv run` is harmless. If `superdialog` resolves to a stale sibling checkout,
 > run tests via `uv run python -m pytest …` and re-sync with

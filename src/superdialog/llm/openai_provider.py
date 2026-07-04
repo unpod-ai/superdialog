@@ -78,30 +78,11 @@ def make_livekit_client(ttl: float = _LK_TOKEN_TTL_S) -> tuple[Any, float]:
     """
     from openai import AsyncOpenAI
 
-    lk_api_key = os.environ.get("LIVEKIT_API_KEY") or os.environ.get(
-        "LIVEKIT_INFERENCE_API_KEY"
-    )
-    lk_api_secret = os.environ.get("LIVEKIT_API_SECRET") or os.environ.get(
-        "LIVEKIT_INFERENCE_API_SECRET"
-    )
-    if not (lk_api_key and lk_api_secret):
-        raise ValueError(
-            "livekit/ models require LIVEKIT_API_KEY and LIVEKIT_API_SECRET"
-        )
-    try:
-        from livekit.agents.inference.llm import (
-            create_access_token,
-            get_default_inference_url,
-        )
-    except ImportError as exc:  # eval envs may lack the agents SDK
-        raise ValueError(
-            "livekit/ models need the livekit-agents package "
-            "(install superdialog's 'livekit' extra: uv sync --extra livekit)"
-        ) from exc
+    from .livekit_gateway import livekit_gateway_url, mint_livekit_token
 
-    token = create_access_token(lk_api_key, lk_api_secret, ttl=ttl)
+    token = mint_livekit_token(ttl)
     return (
-        AsyncOpenAI(api_key=token, base_url=get_default_inference_url()),
+        AsyncOpenAI(api_key=token, base_url=livekit_gateway_url()),
         time.monotonic() + ttl,
     )
 

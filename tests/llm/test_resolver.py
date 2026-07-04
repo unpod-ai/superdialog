@@ -1,8 +1,12 @@
 import pytest
 
+import superdialog.llm.livekit_gateway as lkg
 import superdialog.llm.openai_provider as op
 from superdialog.llm.anyllm_provider import AnyLlmProvider
-from superdialog.llm.litellm_provider import LitellmProvider
+from superdialog.llm.litellm_provider import (
+    LitellmProvider,
+    _resolve_dynamic_credentials,
+)
 from superdialog.llm.openai_provider import OpenAIProvider
 from superdialog.llm.registry import register_llm_provider
 from superdialog.llm.resolver import resolve_llm
@@ -103,3 +107,56 @@ def test_livekit_client_requires_credentials(monkeypatch) -> None:
         monkeypatch.delenv(var, raising=False)
     with pytest.raises(ValueError, match="LIVEKIT_API_KEY"):
         op.make_livekit_client()
+
+
+def test_custom_lk_inference_auto_registers_from_env(monkeypatch) -> None:
+    # `custom/lk-inference/<model>` self-registers the gateway from env (no
+    # explicit hook) and routes through LiteLLM with a refreshing token source
+    # as api_key. URL + registration need no livekit-agents import.
+    monkeypatch.setenv("LIVEKIT_API_KEY", "lk_key")
+    monkeypatch.setenv("LIVEKIT_API_SECRET", "lk_secret")
+    monkeypatch.delenv("LIVEKIT_INFERENCE_URL", raising=False)
+    monkeypatch.delenv("LIVEKIT_URL", raising=False)
+    p = resolve_llm("custom/lk-inference/google/gemma-4-31b-it")
+    assert isinstance(p.inner, LitellmProvider)
+    assert p.model == "openai/google/gemma-4-31b-it"
+    assert p.default_opts.get("api_base") == "https://agent-gateway.livekit.cloud/v1"
+    assert isinstance(p.default_opts.get("api_key"), lkg.LiveKitTokenSource)
+
+
+def test_livekit_gateway_url_env(monkeypatch) -> None:
+    monkeypatch.delenv("LIVEKIT_INFERENCE_URL", raising=False)
+    monkeypatch.setenv("LIVEKIT_URL", "wss://x.livekit.cloud")
+    assert lkg.livekit_gateway_url() == "https://agent-gateway.livekit.cloud/v1"
+    monkeypatch.setenv("LIVEKIT_URL", "wss://x.staging.livekit.cloud")
+    assert lkg.livekit_gateway_url() == "https://agent-gateway.staging.livekit.cloud/v1"
+    monkeypatch.setenv("LIVEKIT_INFERENCE_URL", "https://my-gw/v1")
+    assert lkg.livekit_gateway_url() == "https://my-gw/v1"
+
+
+def test_livekit_token_source_caches_and_refreshes(monkeypatch) -> None:
+    clock = {"t": 500.0}
+    mints = {"n": 0}
+
+    def fake_mint(ttl: float) -> str:
+        mints["n"] += 1
+        return f"tok-{mints['n']}"
+
+    monkeypatch.setattr(lkg, "mint_livekit_token", fake_mint)
+    monkeypatch.setattr(lkg.time, "monotonic", lambda: clock["t"])
+    src = lkg.LiveKitTokenSource(ttl=1000.0, margin=100.0)
+    assert src() == "tok-1"  # first mint
+    assert src() == "tok-1"  # cached, still fresh
+    clock["t"] = 500.0 + 1000.0 - 100.0 + 1  # within refresh margin of expiry
+    assert src() == "tok-2"  # re-minted
+    assert mints["n"] == 2
+
+
+def test_litellm_resolves_callable_api_key() -> None:
+    # A callable api_key is invoked per request; a string passes through.
+    dynamic = {"api_key": lambda: "fresh-token", "api_base": "https://gw/v1"}
+    _resolve_dynamic_credentials(dynamic)
+    assert dynamic["api_key"] == "fresh-token"
+    static = {"api_key": "static-key"}
+    _resolve_dynamic_credentials(static)
+    assert static["api_key"] == "static-key"
