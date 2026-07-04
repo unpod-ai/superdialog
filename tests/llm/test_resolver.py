@@ -160,3 +160,57 @@ def test_litellm_resolves_callable_api_key() -> None:
     static = {"api_key": "static-key"}
     _resolve_dynamic_credentials(static)
     assert static["api_key"] == "static-key"
+
+
+def test_openai_stream_captures_usage(monkeypatch) -> None:
+    # stream() must request + surface usage on the final chunk, else streamed
+    # turns (e.g. the playbook talker on the livekit/ path) report zero tokens.
+    import anyio
+
+    class _Delta:
+        def __init__(self, content=None):
+            self.content = content
+            self.tool_calls = None
+
+    class _Choice:
+        def __init__(self, content=None, finish=None):
+            self.delta = _Delta(content)
+            self.finish_reason = finish
+
+    class _Usage:
+        prompt_tokens = 123
+        completion_tokens = 7
+
+    class _Chunk:
+        def __init__(self, choices=None, usage=None):
+            self.choices = choices or []
+            self.usage = usage
+
+    captured: dict = {}
+
+    async def _fake_create(**kwargs):
+        captured.update(kwargs)
+
+        async def _gen():
+            yield _Chunk(choices=[_Choice("hel")])
+            yield _Chunk(choices=[_Choice("lo", finish="stop")])
+            yield _Chunk(choices=[], usage=_Usage())  # trailing usage-only chunk
+
+        return _gen()
+
+    class _Client:
+        class chat:
+            class completions:
+                create = staticmethod(_fake_create)
+
+    prov = OpenAIProvider(model="google/gemma-4-31b-it", livekit=True)
+    monkeypatch.setattr(prov, "_ensure_client", lambda: _Client())
+
+    async def _run():
+        return [c async for c in prov.stream([{"role": "user", "content": "hi"}])]
+
+    chunks = anyio.run(_run)
+    assert captured.get("stream_options") == {"include_usage": True}
+    assert chunks[-1].done is True
+    assert chunks[-1].usage["prompt_tokens"] == 123
+    assert chunks[-1].usage["completion_tokens"] == 7

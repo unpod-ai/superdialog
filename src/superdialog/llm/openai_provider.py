@@ -15,6 +15,7 @@ import os
 import time
 from typing import Any, AsyncIterator
 
+from .anyllm_provider import _extract_usage
 from .provider import CompletionResult, StreamChunk, apply_json_mode
 
 # LiveKit inference gateway JWT lifetime. ``create_access_token`` mints a 600s
@@ -165,7 +166,13 @@ class OpenAIProvider:
         tools: list[dict[str, Any]] | None = None,
         **opts: Any,
     ) -> AsyncIterator[StreamChunk]:
-        """Yield streamed text/tool-call deltas; tolerates usage-only chunks."""
+        """Yield streamed text/tool-call deltas; emit usage on the final chunk.
+
+        Requests ``stream_options.include_usage`` and captures the trailing
+        usage-only chunk so streamed turns report tokens — parity with
+        LitellmProvider. Without this the LiveKit gateway (livekit/) path
+        reports zero tokens for streamed turns, undercounting cost/billing.
+        """
         client = self._ensure_client()
         kwargs = {
             **self._build_kwargs(messages, tools),
@@ -173,11 +180,18 @@ class OpenAIProvider:
             **opts,
             "stream": True,
         }
+        kwargs.setdefault("stream_options", {"include_usage": True})
         resp = await client.chat.completions.create(**kwargs)
+        usage_meta: dict[str, int] = {}
+        pending_done: StreamChunk | None = None
         async for chunk in resp:
+            u = getattr(chunk, "usage", None)
+            if u and not usage_meta:
+                usage_meta = _extract_usage(u)
             if not getattr(chunk, "choices", None):
                 continue  # usage-only chunk (stream_options include_usage)
             delta = chunk.choices[0].delta
+            is_done = chunk.choices[0].finish_reason is not None
             tcs = getattr(delta, "tool_calls", None)
             tc_delta: dict[str, Any] | None = None
             if tcs:
@@ -185,8 +199,21 @@ class OpenAIProvider:
                 tc_delta = (
                     first.model_dump() if hasattr(first, "model_dump") else dict(first)
                 )
-            yield StreamChunk(
+            sc = StreamChunk(
                 text=getattr(delta, "content", None),
                 tool_call_delta=tc_delta,
-                done=chunk.choices[0].finish_reason is not None,
+                done=is_done,
+            )
+            # Defer the terminal chunk so usage (a later usage-only chunk) rides
+            # out on it — matches LitellmProvider's contract.
+            if is_done:
+                pending_done = sc
+            else:
+                yield sc
+        if pending_done is not None:
+            yield StreamChunk(
+                text=pending_done.text,
+                tool_call_delta=pending_done.tool_call_delta,
+                done=True,
+                usage=usage_meta or None,
             )
