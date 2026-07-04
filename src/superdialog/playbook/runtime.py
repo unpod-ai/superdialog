@@ -128,6 +128,13 @@ class PlaybookRuntime:
         decision = await self._director.evaluate(self.state)
         pass_through: list[str] = []
         if decision.degraded:
+            # Loud by design: a silently-degraded Director re-speaks the current
+            # checkpoint every turn (greeting loop) with zero console evidence.
+            print(
+                f"[DIRECTOR] DEGRADED detail={decision.detail} "
+                f"cp={self.state.checkpoint_id}",
+                flush=True,
+            )
             self.log.append(DegradedEvent(component="director", detail=decision.detail))
             # LLM-free policies still apply in degraded mode.
             await self._apply_turn_budget(pass_through)
@@ -135,6 +142,16 @@ class PlaybookRuntime:
             return pass_through
         advance = next(
             (e for e in decision.events if isinstance(e, AdvanceEvent)), None
+        )
+        _adv = advance and (
+            getattr(advance, "to", None)
+            or getattr(advance, "target", None)
+            or advance.rule
+        )
+        print(
+            f"[DIRECTOR] verdict advance={_adv or 'STAY'} "
+            f"cp={self.state.checkpoint_id}",
+            flush=True,
         )
         is_interrupt = advance is not None and advance.rule.startswith("interrupt:")
         state = self.state

@@ -432,6 +432,10 @@ class Director:
             )
         except Exception:
             return DirectorDecision(degraded=True, detail="llm_error")
+        # CompletesLLM promises str, but rich providers (LitellmProvider et al.)
+        # return CompletionResult — accept both; .strip() on the object was a
+        # per-turn AttributeError that silently killed every Director verdict.
+        raw = getattr(raw, "text", raw)
         try:
             verdict = json.loads(_strip_fences(raw))
         except ValueError:

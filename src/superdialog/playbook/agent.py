@@ -265,10 +265,23 @@ class PlaybookAgent:
             # The shield is task-local to this background task — entered and
             # exited in the same task — so it is safe under a foreign abort.
             with anyio.CancelScope(shield=True):
-                # The utterance is already in the log (appended before the
-                # snapshot below); record=False avoids a double-append.
-                pass_through.extend(await self.runtime.on_user_text(text, record=False))
-                quiescent.set()
+                try:
+                    # The utterance is already in the log (appended before the
+                    # snapshot below); record=False avoids a double-append.
+                    pass_through.extend(
+                        await self.runtime.on_user_text(text, record=False)
+                    )
+                except Exception as exc:  # noqa: BLE001 — loud, never silent
+                    # A dead Director must not strand the Talker on its
+                    # barrier every turn (it would re-speak the entry
+                    # checkpoint forever with zero console evidence).
+                    print(
+                        f"[DIRECTOR] TURN FAILED {type(exc).__name__}: {exc} "
+                        f"cp={self.runtime.state.checkpoint_id}",
+                        flush=True,
+                    )
+                finally:
+                    quiescent.set()
 
         async def director_done() -> ConversationState:
             # Event-guarded: idempotent and cancellation-safe, as the
