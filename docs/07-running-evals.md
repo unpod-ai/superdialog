@@ -26,15 +26,17 @@ uv sync --extra dev --extra fastapi --extra anyllm --extra ragas
   the `benchmark` extra (different RAGAS line) — install one, never both
   (see [05-eval-guide.md §6](05-eval-guide.md)).
 
-**Provide an API key.** Every handler calls `load_dotenv()`, so a `.env` in the
-working directory is picked up automatically:
+**Provide the keys.** Copy `.env.example` → `.env` and fill it in; every handler
+calls `load_dotenv()`, so a `.env` in the working directory is picked up
+automatically:
 
 ```bash
-# .env
+# .env  (see .env.example)
 OPENAI_API_KEY=sk-...
-# ANTHROPIC_API_KEY=...   # if you route any role to anthropic/*
-# LIVEKIT_API_KEY=...     # only for livekit/* models (LiveKit inference gateway)
-# LIVEKIT_API_SECRET=...
+# ANTHROPIC_API_KEY=...    # if you route any role to anthropic/*
+LIVEKIT_API_KEY=...        # for livekit/* models (LiveKit inference gateway)
+LIVEKIT_API_SECRET=...
+LIVEKIT_URL=...
 ```
 
 Models are `litellm` URIs — `openai/gpt-4o-mini`, `anthropic/claude-haiku-4-5-20251001`, etc.
@@ -129,16 +131,19 @@ combined `report.md` is written at `--out` root.
 | `task eval-gemma` | preset: `gemma` (LiveKit gateway) vs `gpt-4.1-mini` (direct) |
 | `task eval-gateway` | preset: `gpt-4o-mini` via gateway vs direct + gemma |
 
-`livekit/*` models need `LIVEKIT_API_KEY` + `LIVEKIT_API_SECRET` in the env-file.
-In the super monorepo the root `.env` has them — pass `ENV_FILE=../.env`:
+`livekit/*` models need `LIVEKIT_API_KEY` + `LIVEKIT_API_SECRET` in `.env` (see
+`.env.example`). With those set, the defaults just work:
 
 ```bash
-task eval-smoke   ENV_FILE=../.env MODEL=livekit/openai/gpt-4o-mini
-task eval-gemma   ENV_FILE=../.env REPEATS=3
-task eval-gateway ENV_FILE=../.env
-task eval-bench   ENV_FILE=../.env REPEATS=3 OUT=./eval-out/three-way \
+task eval-smoke   MODEL=livekit/openai/gpt-4o-mini
+task eval-gemma   REPEATS=3
+task eval-gateway
+task eval-bench   REPEATS=3 OUT=./eval-out/three-way \
   MODELS="livekit/google/gemma-4-31b-it,livekit/openai/gpt-4o-mini,openai/gpt-4.1-mini"
 ```
+
+Keys in a different file? Pass `ENV_FILE=/path/to/.env` (e.g. the super
+monorepo's root `ENV_FILE=../.env`).
 
 Overridable vars: `MODELS ENV_FILE PLAYBOOK DATASET JUDGE USER MODES METRICS REPEATS MAX_TURNS OUT`.
 
