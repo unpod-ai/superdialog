@@ -162,6 +162,18 @@ def test_litellm_resolves_callable_api_key() -> None:
     assert static["api_key"] == "static-key"
 
 
+def test_livekit_path_preserves_provider_prefix_in_model() -> None:
+    # The gateway routes by <provider>/<model>, so the livekit path must keep
+    # the prefix; the direct OpenAI API wants a bare id, so it strips it.
+    msgs = [{"role": "user", "content": "x"}]
+    lk = OpenAIProvider(model="openai/gpt-4o-mini", livekit=True)
+    assert lk._build_kwargs(msgs, None)["model"] == "openai/gpt-4o-mini"
+    direct = OpenAIProvider(model="openai/gpt-4o-mini")
+    assert direct._build_kwargs(msgs, None)["model"] == "gpt-4o-mini"
+    gemma = OpenAIProvider(model="google/gemma-4-31b-it", livekit=True)
+    assert gemma._build_kwargs(msgs, None)["model"] == "google/gemma-4-31b-it"
+
+
 def test_openai_stream_captures_usage(monkeypatch) -> None:
     # stream() must request + surface usage on the final chunk, else streamed
     # turns (e.g. the playbook talker on the livekit/ path) report zero tokens.

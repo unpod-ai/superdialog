@@ -126,10 +126,11 @@ class OpenAIProvider:
     def _build_kwargs(
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None
     ) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {
-            "model": strip_provider_prefix(self.model),
-            "messages": messages,
-        }
+        # The LiveKit gateway routes by <provider>/<model> (openai/gpt-4o-mini,
+        # google/gemma-4-31b-it), so keep the prefix there. The direct OpenAI
+        # API wants a bare id, so strip it only off that path.
+        model = self.model if self._livekit else strip_provider_prefix(self.model)
+        kwargs: dict[str, Any] = {"model": model, "messages": messages}
         if tools:
             kwargs["tools"] = tools
         return kwargs
