@@ -101,14 +101,15 @@ tasks:
       DATASET: '{{.DATASET | default "examples/datasets/kairali_enquiry_qualification.simple.evalcases.yaml"}}'
       MODELS: '{{.MODELS | default "livekit/google/gemma-4-31b-it,openai/gpt-4.1-mini"}}'
       JUDGE: '{{.JUDGE | default "openai/gpt-4.1-mini"}}'
-      USER: '{{.USER | default "openai/gpt-4.1-mini"}}'
+      # NB: not USER — go-task exposes $USER (your login name), shadowing the default.
+      USER_MODEL: '{{.USER_MODEL | default "openai/gpt-4.1-mini"}}'
       MODES: '{{.MODES | default "playbook"}}'
       METRICS: '{{.METRICS | default "task_success,slot_accuracy"}}'
       REPEATS: '{{.REPEATS | default "1"}}'
       MAX_TURNS: '{{.MAX_TURNS | default "10"}}'
       OUT: '{{.OUT | default "./eval-out/bench"}}'
     cmds:
-      - '{{.UV}} run --extra livekit --extra evals --extra anyllm --env-file {{.ENV_FILE}} superdialog eval bench --playbook {{.PLAYBOOK}} --dataset {{.DATASET}} --models "{{.MODELS}}" --modes {{.MODES}} --judge-model {{.JUDGE}} --user-model {{.USER}} --metrics {{.METRICS}} --repeats {{.REPEATS}} --max-turns {{.MAX_TURNS}} --out {{.OUT}}'
+      - '{{.UV}} run --extra livekit --extra evals --extra anyllm --env-file {{.ENV_FILE}} superdialog eval bench --playbook {{.PLAYBOOK}} --dataset {{.DATASET}} --models "{{.MODELS}}" --modes {{.MODES}} --judge-model {{.JUDGE}} --user-model {{.USER_MODEL}} --metrics {{.METRICS}} --repeats {{.REPEATS}} --max-turns {{.MAX_TURNS}} --out {{.OUT}}'
 
   eval-gemma:
     desc: "Preset: gemma (LiveKit gateway) vs gpt-4.1-mini (direct) on the kairali playbook"

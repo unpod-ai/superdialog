@@ -145,7 +145,7 @@ task eval-bench   REPEATS=3 OUT=./eval-out/three-way \
 Keys in a different file? Pass `ENV_FILE=/path/to/.env` (e.g. the super
 monorepo's root `ENV_FILE=../.env`).
 
-Overridable vars: `MODELS ENV_FILE PLAYBOOK DATASET JUDGE USER MODES METRICS REPEATS MAX_TURNS OUT`.
+Overridable vars: `MODELS ENV_FILE PLAYBOOK DATASET JUDGE USER_MODEL MODES METRICS REPEATS MAX_TURNS OUT`.
 
 ---
 
