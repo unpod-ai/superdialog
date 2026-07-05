@@ -72,6 +72,60 @@ tasks:
     cmds:
       - "{{.UV}} run --extra dev pytest tests/ -v --cov=src/superdialog --cov-report=term-missing"
 
+  # --- Evals (A/B model comparison) ---
+  # livekit/<provider>/<model> URIs route through the LiveKit inference gateway
+  # (e.g. livekit/google/gemma-4-31b-it, livekit/openai/gpt-4o-mini) and need
+  # LIVEKIT_API_KEY + LIVEKIT_API_SECRET in the env-file plus the `livekit` extra
+  # (wired below). In the super monorepo the root .env has them: ENV_FILE=../.env.
+
+  eval-smoke:
+    desc: "One call to check a model reaches the gateway + keys work (MODEL=…, ENV_FILE=../.env)"
+    vars:
+      ENV_FILE: '{{.ENV_FILE | default ".env"}}'
+      MODEL: '{{.MODEL | default "livekit/google/gemma-4-31b-it"}}'
+    cmds:
+      - |
+        {{.UV}} run --extra livekit --extra evals --extra anyllm --env-file {{.ENV_FILE}} python - <<'PY'
+        import asyncio
+        from superdialog.llm.resolver import resolve_llm
+        m = "{{.MODEL}}"
+        r = asyncio.run(resolve_llm(m).complete([{"role": "user", "content": "Reply with exactly: ok"}]))
+        print(m, "->", repr(r.text), r.metadata)
+        PY
+
+  eval-bench:
+    desc: "A/B eval MODELS on a playbook (override MODELS/PLAYBOOK/DATASET/REPEATS/OUT/…)"
+    vars:
+      ENV_FILE: '{{.ENV_FILE | default ".env"}}'
+      PLAYBOOK: '{{.PLAYBOOK | default "examples/playbooks/kairali_enquiry_qualification.simple.yaml"}}'
+      DATASET: '{{.DATASET | default "examples/datasets/kairali_enquiry_qualification.simple.evalcases.yaml"}}'
+      MODELS: '{{.MODELS | default "livekit/google/gemma-4-31b-it,openai/gpt-4.1-mini"}}'
+      JUDGE: '{{.JUDGE | default "openai/gpt-4.1-mini"}}'
+      USER: '{{.USER | default "openai/gpt-4.1-mini"}}'
+      MODES: '{{.MODES | default "playbook"}}'
+      METRICS: '{{.METRICS | default "task_success,slot_accuracy"}}'
+      REPEATS: '{{.REPEATS | default "1"}}'
+      MAX_TURNS: '{{.MAX_TURNS | default "10"}}'
+      OUT: '{{.OUT | default "./eval-out/bench"}}'
+    cmds:
+      - '{{.UV}} run --extra livekit --extra evals --extra anyllm --env-file {{.ENV_FILE}} superdialog eval bench --playbook {{.PLAYBOOK}} --dataset {{.DATASET}} --models "{{.MODELS}}" --modes {{.MODES}} --judge-model {{.JUDGE}} --user-model {{.USER}} --metrics {{.METRICS}} --repeats {{.REPEATS}} --max-turns {{.MAX_TURNS}} --out {{.OUT}}'
+
+  eval-gemma:
+    desc: "Preset: gemma (LiveKit gateway) vs gpt-4.1-mini (direct) on the kairali playbook"
+    cmds:
+      - task: eval-bench
+        vars:
+          MODELS: "livekit/google/gemma-4-31b-it,openai/gpt-4.1-mini"
+          OUT: "./eval-out/gemma-vs-gpt"
+
+  eval-gateway:
+    desc: "Preset: gpt-4o-mini via gateway vs direct (isolates gateway overhead) + gemma"
+    cmds:
+      - task: eval-bench
+        vars:
+          MODELS: "livekit/openai/gpt-4o-mini,openai/gpt-4o-mini,livekit/google/gemma-4-31b-it"
+          OUT: "./eval-out/gateway-vs-direct"
+
   # --- Voice Agent Playground (playground/) ---
 
   supervoice-dev:

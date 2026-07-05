@@ -117,6 +117,31 @@ combined `report.md` is written at `--out` root.
 > are **always** included regardless of `--metrics` — every run reports latency
 > and input-tokens.
 
+### Task shortcuts (Taskfile)
+
+`Taskfile.yml` wraps the CLI with the required extras (`livekit`, `evals`,
+`anyllm`) and env-file wiring — run from `superdialog/`:
+
+| Task | Runs |
+|---|---|
+| `task eval-smoke` | one call to a model — checks the gateway + keys (`MODEL=…`) |
+| `task eval-bench` | A/B any `MODELS` on any `PLAYBOOK`/`DATASET` (all vars overridable) |
+| `task eval-gemma` | preset: `gemma` (LiveKit gateway) vs `gpt-4.1-mini` (direct) |
+| `task eval-gateway` | preset: `gpt-4o-mini` via gateway vs direct + gemma |
+
+`livekit/*` models need `LIVEKIT_API_KEY` + `LIVEKIT_API_SECRET` in the env-file.
+In the super monorepo the root `.env` has them — pass `ENV_FILE=../.env`:
+
+```bash
+task eval-smoke   ENV_FILE=../.env MODEL=livekit/openai/gpt-4o-mini
+task eval-gemma   ENV_FILE=../.env REPEATS=3
+task eval-gateway ENV_FILE=../.env
+task eval-bench   ENV_FILE=../.env REPEATS=3 OUT=./eval-out/three-way \
+  MODELS="livekit/google/gemma-4-31b-it,livekit/openai/gpt-4o-mini,openai/gpt-4.1-mini"
+```
+
+Overridable vars: `MODELS ENV_FILE PLAYBOOK DATASET JUDGE USER MODES METRICS REPEATS MAX_TURNS OUT`.
+
 ---
 
 ## 3. The explicit two-phase path
