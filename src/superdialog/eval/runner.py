@@ -35,11 +35,18 @@ async def drive_journey(
     """Persona simulator <-> endpoint until the call ends, the user goes
     silent, or max_turns."""
     t = Transcript()
+    print("[eval-progress]   journey: endpoint.start() …", flush=True)
     greeting, ms = await _timed(endpoint.start())
+    print(f"[eval-progress]   journey: greeting in {ms:.0f}ms", flush=True)
     t.add("assistant", greeting, latency_ms=ms, metadata=_turn_meta(endpoint))
 
-    for _ in range(persona.max_turns):
+    for _turn_i in range(persona.max_turns):
+        print(f"[eval-progress]   turn {_turn_i}: user_llm.complete() …", flush=True)
         user_text = await user_llm.complete(_persona_messages(persona, t))
+        print(
+            f"[eval-progress]   turn {_turn_i}: user said {user_text[:60]!r}",
+            flush=True,
+        )
         if not user_text.strip():
             break
         # Persona hang-up: the sim appends _END_TOKEN once its goal is met.
@@ -52,7 +59,9 @@ async def drive_journey(
             "Thanks, that's everything — goodbye!"
         )
         t.add("user", user_text)
+        print(f"[eval-progress]   turn {_turn_i}: endpoint.turn() …", flush=True)
         reply, ms = await _timed(endpoint.turn(user_text))
+        print(f"[eval-progress]   turn {_turn_i}: reply in {ms:.0f}ms", flush=True)
         t.add("assistant", reply, latency_ms=ms, metadata=_turn_meta(endpoint))
         # Stop at the natural call end (duck-typed; endpoints without a
         # session model never report ended) or when the caller hung up.
@@ -162,13 +171,16 @@ async def run_case(
 ) -> CaseResult:
     """Drive one (case, mode): journey + probes -> samples -> scored CaseResult."""
     transcript = await drive_journey(endpoint, case.persona, user_llm)
+    print(f"[eval-progress]  probes: {len(case.probes)} …", flush=True)
     probe_results = await run_probes(endpoint, case.probes)
     samples = samples_from_run(case, mode, transcript, probe_results)
 
+    print(f"[eval-progress]  scoring {len(samples)} samples …", flush=True)
     by_metric: dict[str, list[MetricResult]] = {}
     for sample in samples:
         for res in await suite.score(sample):
             by_metric.setdefault(res.name, []).append(res)
+    print("[eval-progress]  scoring done", flush=True)
 
     guardrail_failed = any(
         r.name == "guardrail" and r.passed is False
@@ -201,8 +213,13 @@ async def run_ab(
     for mode in modes:
         factory = endpoint_factories[mode]
         case_results: list[CaseResult] = []
-        for case in dataset.cases:
-            for _ in range(repeats):
+        for _ci, case in enumerate(dataset.cases):
+            for _r in range(repeats):
+                print(
+                    f"[eval-progress] mode={mode} case {_ci + 1}/{len(dataset.cases)}"
+                    f" rep {_r + 1}/{repeats} id={case.id}",
+                    flush=True,
+                )
                 endpoint = factory(case)
                 case_results.append(
                     await run_case(case, endpoint, suite, user_llm, mode)
