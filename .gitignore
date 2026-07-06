@@ -39,3 +39,5 @@ benchmark_kairali_results.md
 
 eval-out
 examples/datasets
+*.yaml
+*.sh
