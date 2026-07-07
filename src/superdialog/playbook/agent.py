@@ -27,6 +27,7 @@ from .events import EventLog, SummaryEvent, UtteranceEvent
 from .models import Playbook
 from .runtime import PlaybookRuntime
 from .state import ConversationState
+from .supervisor import Supervisor
 from .talker import SpeechChunk, StreamsLLM, Talker
 from .toolexec import HttpFn, PythonToolFn
 
@@ -110,6 +111,8 @@ class PlaybookAgent:
         traversal_source: str = "",
         traversal_model: str = "",
         settle_before_speak: bool = False,
+        supervisor_llm: CompletesLLM | None = None,
+        intercept_llm: CompletesLLM | None = None,
     ) -> None:
         # Offline-eval knob: when True the Talker waits for the Director to
         # settle before speaking on EVERY turn (not just the greeting), so a
@@ -124,6 +127,12 @@ class PlaybookAgent:
             director_llm=self._director_timer,
             http=http,
             python_tools=python_tools,
+            intercept_llm=intercept_llm,
+        )
+        # Loop 2 (off the speech path): reviews the trajectory after a turn
+        # completes, only when a trigger fires. None ⇒ no supervision (legacy).
+        self._supervisor = (
+            Supervisor(supervisor_llm, playbook) if supervisor_llm else None
         )
         self._talker = Talker(
             playbook,
@@ -324,6 +333,7 @@ class PlaybookAgent:
         # speaks from the new checkpoint; if it timed out, speaks from entry_cp.
         speak_state = self.runtime.state
         talker_chunks: list[SpeechChunk] = []
+        completed_normally = False
         speech = self._talker.speak(speak_state, director_done=director_done)
         try:
             async for chunk in speech:
@@ -333,6 +343,7 @@ class PlaybookAgent:
                     # straight to the finally (no task group to exit), so the
                     # foreign-task abort is clean.
                     yield StreamChunk(text=chunk.text)
+            completed_normally = True
         finally:
             # Runs on normal completion AND on GeneratorExit; shield so the
             # async cleanup survives the abort. Entered and exited within this
@@ -370,6 +381,22 @@ class PlaybookAgent:
                         )
                     )
                 await self.runtime.check_repairs()
+                # Loop 2: trajectory review. Trigger detection is pure (free);
+                # an LLM verdict is spent only when derailed. Skipped on
+                # barge-in abort so cleanup stays fast — the triggers persist
+                # and the next completed turn picks them up.
+                if self._supervisor is not None and completed_normally:
+                    try:
+                        decision = await self._supervisor.review(self.runtime)
+                        if decision is not None:
+                            pass_through.extend(
+                                await self._supervisor.apply(self.runtime, decision)
+                            )
+                    except Exception as exc:  # noqa: BLE001 — loud, never fatal
+                        print(
+                            f"[SUPERVISOR] FAILED {type(exc).__name__}: {exc}",
+                            flush=True,
+                        )
                 if (
                     self._traversal_dir
                     and self.runtime.state.ended
