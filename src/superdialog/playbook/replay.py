@@ -13,12 +13,59 @@ from typing import Any, Literal, Sequence
 from pydantic import BaseModel, Field
 
 from .director import CompletesLLM, Director
+from .editable import Edit
 from .events import AdvanceEvent, Event, EventLog, SlotWriteEvent, UtteranceEvent
 from .models import Playbook
 from .state import ConversationState
 
 # Runtime-made advance rules: not Director decisions, never diffed.
 _RUNTIME_RULES = ("init", "auto", "pipeline", "on_failure")
+
+
+def _edit_checkpoint_refs(playbook: Playbook, edits: Sequence[Edit]) -> set[str] | None:
+    """Full checkpoint refs (``journey.id``) the edits target; None = global.
+
+    FullDoc addresses (``journeys.<j>.checkpoints.<cp>.*``) name their ref
+    directly; SimpleDoc addresses (``steps.<id>.*``) match any compiled
+    checkpoint whose short id equals the step id. Anything else (persona,
+    opening, closing, ...) affects every turn, so the whole set is global.
+    """
+    refs: set[str] = set()
+    all_refs = playbook.checkpoint_ids()
+    for edit in edits:
+        parts = edit.address.split(".")
+        if parts[0] == "journeys" and len(parts) >= 4 and parts[2] == "checkpoints":
+            refs.add(f"{parts[1]}.{parts[3]}")
+        elif parts[0] == "steps" and len(parts) >= 2:
+            matched = {r for r in all_refs if r.partition(".")[2] == parts[1]}
+            if not matched:
+                return None  # unknown step: be conservative, replay everything
+            refs.update(matched)
+        else:
+            return None
+    return refs
+
+
+def first_affected_version(
+    log: EventLog, playbook: Playbook, edits: Sequence[Edit]
+) -> int | None:
+    """Version of the first event the edits could have influenced (CRO split).
+
+    Checkpoint-scoped edits only matter once the recorded conversation enters
+    an edited checkpoint: the boundary is the ``AdvanceEvent`` into it (0 when
+    an edited checkpoint is the initial one). Global edits return 0. Returns
+    None when no edited checkpoint is ever visited — the edits provably cannot
+    change this log's decisions, so nothing needs replaying.
+    """
+    refs = _edit_checkpoint_refs(playbook, edits)
+    if refs is None:
+        return 0
+    if playbook.initial_checkpoint_id in refs:
+        return 0
+    for e in log.events:
+        if isinstance(e, AdvanceEvent) and e.to_checkpoint in refs:
+            return e.version
+    return None
 
 
 class DecisionDiff(BaseModel):
@@ -34,6 +81,7 @@ class ReplayReport(BaseModel):
     """Outcome of replaying a recorded log against a playbook."""
 
     turns: int  # user utterances replayed
+    turns_held: int = 0  # prefix turns held constant (before from_version)
     advance_matches: int = 0
     slot_matches: int = 0
     diffs: list[DecisionDiff] = Field(default_factory=list)
@@ -112,7 +160,11 @@ def _diff_slots(
 
 
 async def replay(
-    log: EventLog, playbook: Playbook, director_llm: CompletesLLM
+    log: EventLog,
+    playbook: Playbook,
+    director_llm: CompletesLLM,
+    *,
+    from_version: int = 0,
 ) -> ReplayReport:
     """Re-run the Director over each recorded user utterance and diff decisions.
 
@@ -121,15 +173,23 @@ async def replay(
     compared against the Director-attributable events recorded between V and
     the next user utterance. Degraded decisions count as "no decision". Pure
     over ``log``: reads only, never mutates.
+
+    ``from_version`` is the CRO suffix boundary (``first_affected_version``):
+    user utterances recorded before it are held constant (counted in
+    ``turns_held``), so a candidate edit pays Director calls only for the
+    turns it could actually have changed.
     """
     director = Director(playbook, director_llm)
     events = log.events
-    user_idx = [
+    all_user_idx = [
         i
         for i, e in enumerate(events)
         if isinstance(e, UtteranceEvent) and e.role == "user"
     ]
-    report = ReplayReport(turns=len(user_idx))
+    user_idx = [i for i in all_user_idx if events[i].version >= from_version]
+    report = ReplayReport(
+        turns=len(user_idx), turns_held=len(all_user_idx) - len(user_idx)
+    )
     for n, i in enumerate(user_idx):
         at = events[i].version
         end = user_idx[n + 1] if n + 1 < len(user_idx) else len(events)

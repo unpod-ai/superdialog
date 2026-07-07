@@ -20,7 +20,9 @@ from .eval_bridge import (
     run_eval,
 )
 from .eval.scorer import ObjectiveBreakdown, score_report
+from .events import EventLog
 from .models import Playbook
+from .replay import first_affected_version, replay
 
 AgentFactory = Callable[[Playbook], PlaybookAgent]
 
@@ -28,7 +30,9 @@ AgentFactory = Callable[[Playbook], PlaybookAgent]
 _JINJA = Environment()
 _EVENT_LOG_CAP = 6000  # chars of event log shown per worst session
 _JINJA_CHECKED_SUFFIXES = (".guidance", ".say_verbatim", ".say")
-_REGRESSION_FLOOR = 0.05  # max allowed drop per individual metric before candidate is rejected
+_REGRESSION_FLOOR = (
+    0.05  # max allowed drop per individual metric before candidate is rejected
+)
 
 _REFLECT_RULES = """\
 You improve conversational voice-agent playbook prose.
@@ -106,11 +110,50 @@ def _no_regression(
     # Skip when incumbent had no completed sessions (mean_tpc=0 means no baseline, not "0 turns").
     if (
         inc.mean_turns_per_checkpoint > 0
-        and cand.mean_turns_per_checkpoint > inc.mean_turns_per_checkpoint + _REGRESSION_FLOOR * 10
+        and cand.mean_turns_per_checkpoint
+        > inc.mean_turns_per_checkpoint + _REGRESSION_FLOOR * 10
     ):
         return False, (
             f"mean_turns regressed {inc.mean_turns_per_checkpoint:.2f}→{cand.mean_turns_per_checkpoint:.2f}"
         )
+    return True, ""
+
+
+async def cro_guard(
+    candidate: EditableDoc,
+    edits: list[Edit],
+    report: EvalReport,
+    director_llm: CompletesLLM,
+    *,
+    k: int = 2,
+) -> tuple[bool, str]:
+    """CRO gate (Shepherd §5.2): suffix-replay the candidate over guard logs.
+
+    The guard set is the incumbent's best completed sessions. Each log is
+    forked at ``first_affected_version`` and only that suffix is re-judged —
+    turns the edits cannot touch are held constant, and a session whose path
+    never visits an edited checkpoint costs zero LLM calls. A candidate that
+    flips Director decisions on a previously-good session is rejected before
+    paying for a full paired eval.
+    """
+    guards = [
+        s for s in _best_sessions(report, k=k) if s.completed and s.event_log_jsonl
+    ]
+    if not guards:
+        return True, ""
+    playbook = candidate.compile()
+    for s in guards:
+        log = EventLog.from_jsonl(s.event_log_jsonl)
+        start = first_affected_version(log, playbook, edits)
+        if start is None:
+            continue  # edits never touch this session's path
+        rep = await replay(log, playbook, director_llm, from_version=start)
+        if not rep.stable:
+            d = rep.diffs[0]
+            return False, (
+                f"cro-guard: persona={s.persona} destabilized at v{d.at_version} "
+                f"({d.kind}: {d.recorded!r} -> {d.replayed!r})"
+            )
     return True, ""
 
 
@@ -149,6 +192,7 @@ def _reflect_messages(
         try:
             # Import lazily — supervoice may not be on the path in pure superdialog tests.
             from playground.harness.langfuse_fetch import summarise_traces  # type: ignore[import]
+
             real_block = summarise_traces(real_traces)
         except ImportError:
             real_block = f"(real_traces available: {len(real_traces)} calls)"
@@ -290,17 +334,31 @@ async def optimize(
     reflect_attempts: int = 3,
     golden_transcript: str | None = None,
     real_traces: "list[dict] | None" = None,
+    director_llm: CompletesLLM | None = None,
 ) -> OptimizeReport:
     """Paired-round reflective optimization. Returns the final incumbent.
 
     Acceptance compares only same-round scores: each round evaluates the
     incumbent AND the candidate fresh, so both face the same sampling noise.
     The Pareto frontier is reported but never picks the output.
+
+    ``director_llm`` enables the CRO guard gate: candidates are suffix-replayed
+    over the incumbent's best recorded sessions and rejected (no paired eval
+    spent) when they destabilize a previously-good session. Pass the same
+    model the agent's Director runs on.
     """
 
     async def _eval(d: EditableDoc) -> EvalReport:
         playbook = d.compile()
         return await run_eval(lambda: agent_factory(playbook), personas, user_llm, n)
+
+    async def _gate(
+        candidate: EditableDoc, edits: list[Edit], report: EvalReport
+    ) -> tuple[bool, str]:
+        """CRO guard when a director_llm is provided; open gate otherwise."""
+        if director_llm is None:
+            return True, ""
+        return await cro_guard(candidate, edits, report, director_llm)
 
     incumbent = doc
     last_report = await _eval(incumbent)
@@ -325,6 +383,17 @@ async def optimize(
                     accepted=False,
                     incumbent_breakdown=final_b,
                     detail="no valid candidate",
+                )
+            )
+            stale += 1
+        elif not (gate := await _gate(*proposal, last_report))[0]:
+            trace.append(
+                RoundTrace(
+                    round_no=round_no,
+                    accepted=False,
+                    incumbent_breakdown=final_b,
+                    edits=proposal[1],
+                    detail=gate[1],
                 )
             )
             stale += 1
