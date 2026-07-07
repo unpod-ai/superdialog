@@ -10,6 +10,7 @@ from typing import Any, Callable, Literal, Protocol
 from pydantic import BaseModel, Field
 
 from ..llm.prompt_cache import CACHE_PREFIX_KEY
+from ._canon import canonical_json
 from ._guidelines import DATE_DISCIPLINE, datetime_anchor_line, normalize_date
 from .events import AdvanceEvent, Event, SlotWriteEvent, SteeringNoteEvent
 from .expr import ExprError, evaluate
@@ -226,7 +227,9 @@ def _verdict_prompt(
         f"Advance rules:\n{rule_lines}\n"
         + date_block
         + resolve_block
-        + f"Already known: {json.dumps(known, default=str)}\n"
+        # Canonical bytes: same known-slots ⇒ same prompt bytes, so provider
+        # prompt caching survives dict-iteration-order accidents.
+        + f"Already known: {canonical_json(known)}\n"
         f"Tool results:\n{tool_lines}"
     )
     return [

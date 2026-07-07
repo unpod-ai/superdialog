@@ -10,10 +10,13 @@ re-declaring inline classes.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Awaitable, Callable, Mapping
 
 from ..llm.provider import LLMProvider
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -41,7 +44,7 @@ def _usage_event(
     meta: Mapping[str, Any] | None, model: str, role: str = ""
 ) -> LLMUsageEvent:
     m = meta or {}
-    return LLMUsageEvent(
+    event = LLMUsageEvent(
         model=model,
         tokens_in=int(m.get("prompt_tokens", 0) or 0),
         tokens_out=int(m.get("completion_tokens", 0) or 0),
@@ -49,6 +52,19 @@ def _usage_event(
         cache_write=int(m.get("cache_write_tokens", 0) or 0),
         role=role,
     )
+    # Cache-hit telemetry (measure the prompt cache, never hand-place it): a
+    # low read ratio on a warm call means a prompt prefix went unstable — the
+    # byte-identical-prefix invariant broke somewhere upstream.
+    if event.tokens_in > 0 and (event.cached or event.cache_write):
+        logger.debug(
+            "[llm-usage] role=%s cache_read_ratio=%.2f (in=%d cached=%d write=%d)",
+            role,
+            event.cached / event.tokens_in,
+            event.tokens_in,
+            event.cached,
+            event.cache_write,
+        )
+    return event
 
 
 class ProviderDirector:

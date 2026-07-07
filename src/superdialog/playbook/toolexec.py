@@ -17,6 +17,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from jinja2 import TemplateError, Undefined
 from jinja2.sandbox import SandboxedEnvironment
 
+from ._canon import canonical_json
 from .events import (
     EnvWriteEvent,
     Event,
@@ -25,7 +26,7 @@ from .events import (
     ToolResultEvent,
 )
 from .expr import ExprError, evaluate
-from .models import SlotSpec, ToolSpec
+from .models import SAFE_HTTP_METHODS, SlotSpec, ToolSpec
 from .state import ConversationState
 
 HttpFn = Callable[..., Awaitable[tuple[int, Any]]]
@@ -115,10 +116,6 @@ def coerce_args(args: dict[str, Any], specs: dict[str, SlotSpec]) -> dict[str, A
     return out
 
 
-#: HTTP methods that are safe/idempotent by spec — they get no idempotency key.
-_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
-
-
 def _idempotency_key(spec: ToolSpec, url: str, body: Any) -> str:
     """Deterministic idempotency key for a side-effecting tool call.
 
@@ -126,14 +123,11 @@ def _idempotency_key(spec: ToolSpec, url: str, body: Any) -> str:
     middleware-replayed call — the same logical operation — reuses the key and
     is de-duplicated server-side, while a materially different request gets a
     different key. Headers are excluded so a refreshed auth token (401 →
-    refresh → replay) keeps the same key.
+    refresh → replay) keeps the same key. canonical_json emits byte-identical
+    output to the json.dumps call it replaced, so keys are stable across
+    deploys.
     """
-    payload = json.dumps(
-        [spec.id, spec.method.upper(), url, body],
-        sort_keys=True,
-        default=str,
-        separators=(",", ":"),
-    )
+    payload = canonical_json([spec.id, spec.method.upper(), url, body])
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
@@ -263,7 +257,7 @@ class ToolExecutor:
         # Idempotency: a retried or middleware-replayed side-effecting call is
         # the same logical operation, so give it a stable key the server can
         # de-dupe on (POST/PATCH/DELETE/PUT). An author-supplied key wins.
-        if spec.method.upper() not in _SAFE_METHODS and not any(
+        if spec.method.upper() not in SAFE_HTTP_METHODS and not any(
             h.lower() == "idempotency-key" for h in headers
         ):
             headers["Idempotency-Key"] = _idempotency_key(spec, url, body)
