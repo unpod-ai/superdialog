@@ -65,6 +65,27 @@ REWIND_YAML = textwrap.dedent("""
         url: "https://api.test/sms"
         store_response_as: sms_result
         tier: irreversible
+      - id: hold_pay
+        method: POST
+        url: "https://api.test/pay/hold"
+        store_response_as: pay_result
+        tier: compensable
+        compensate: release_pay
+      - id: release_pay
+        method: POST
+        url: "https://api.test/pay/release"
+        tier: reversible
+      - id: hold_once
+        method: POST
+        url: "https://api.test/once/hold"
+        store_response_as: once_result
+        tier: compensable
+        compensate: release_once
+      - id: release_once
+        method: POST
+        url: "https://api.test/once/release"
+        run_once: true
+        tier: reversible
 """)
 
 
@@ -231,6 +252,56 @@ async def test_rewind_compensation_failure_aborts() -> None:
     assert "compensation failed" in outcome.detail
     assert not any(isinstance(e, RevertEvent) for e in rt.log.events)
     assert "hold_result" in rt.state.tool_results  # state untouched
+
+
+async def test_rewind_partial_compensation_failure_is_surfaced_loudly() -> None:
+    """Two compensable holds; the 2nd compensation fails after the 1st fired."""
+    from superdialog.playbook.events import DegradedEvent
+
+    # reversed(pending) compensates the LATER-added tool first. Seed hold_pay
+    # then hold_slot so release_hold (for hold_slot) runs first (ok), then
+    # release_pay (for hold_pay) runs second and fails.
+    http = FakeHttp([(200, {"released": True}), (500, {"error": "down"})])
+    rt = _runtime(http)
+    _seed(rt)
+    rt.log.append(
+        ToolResultEvent(tool="hold_pay", store_as="pay_result", ok=True, data={})
+    )
+    rt.log.append(
+        ToolResultEvent(tool="hold_slot", store_as="hold_result", ok=True, data={})
+    )
+    outcome = await rt.rewind(2, "undo both", confirmed=True)
+    assert outcome.status == "refused"
+    assert len(http.calls) == 2  # first release fired, second attempted
+    assert not any(isinstance(e, RevertEvent) for e in rt.log.events)
+    # The already-fired compensation must not be silent: a human reconciles.
+    partial = [
+        e
+        for e in rt.log.events
+        if isinstance(e, DegradedEvent) and "partial_compensation" in e.detail
+    ]
+    assert partial and "release_hold" in partial[0].detail
+
+
+async def test_rewind_skipped_compensation_is_not_a_failure() -> None:
+    """A run_once compensation already fired counts as nothing-to-undo, not fail."""
+    http = FakeHttp([(200, {"ok": True})])  # only ONE release call available
+    rt = _runtime(http)
+    _seed(rt)
+    rt.log.append(
+        ToolResultEvent(tool="hold_once", store_as="once_result", ok=True, data={})
+    )
+    # First rewind releases (run_once consumed).
+    assert (await rt.rewind(2, "undo", confirmed=True)).status == "done"
+    assert len(http.calls) == 1
+    # A fresh hold_once, then a rewind: release_once is run_once-skipped
+    # (executor returns []). That is "already released", not a failure.
+    rt.log.append(
+        ToolResultEvent(tool="hold_once", store_as="once_result", ok=True, data={})
+    )
+    outcome = await rt.rewind(rt.log.version - 1, "undo again", confirmed=True)
+    assert outcome.status == "done"
+    assert len(http.calls) == 1  # no second release; skip is not failure
 
 
 async def test_rewind_ignores_already_superseded_effects() -> None:

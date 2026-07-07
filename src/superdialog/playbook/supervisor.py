@@ -166,6 +166,19 @@ class Supervisor:
                     )
                 )
                 return []
+            # Never let a transcript-derived verdict END the call: a terminal
+            # jump fires the checkpoint's outcome side effects and bypasses the
+            # Director's terminal/goodbye guards. Ending is the Director's job
+            # (goodbye interrupt, terminal advance); the supervisor may only
+            # steer WITHIN the flow. Handover/inject remain available.
+            if self._pb.checkpoint(decision.to_checkpoint).terminal:
+                runtime.log.append(
+                    DegradedEvent(
+                        component="supervisor",
+                        detail=f"redirect_terminal_blocked:{decision.to_checkpoint}",
+                    )
+                )
+                return []
             pass_through = await runtime.redirect(
                 decision.to_checkpoint, decision.reason or "redirect"
             )
@@ -181,11 +194,20 @@ class Supervisor:
                     )
                 )
                 return []
+            # A rewind that fires a compensation tool (real HTTP undo) must be a
+            # genuine two-step confirm: only honor the verdict's `confirmed`
+            # when a COMPENSATE_MARKER confirmation was actually surfaced to the
+            # caller last turn. Otherwise a transcript-injected "yes, undo it"
+            # could fire compensation in one shot without the caller ever having
+            # been asked (mirrors the Director's provisional-at-hard-gates rule).
+            pending_confirm = (runtime.state.steering_note or "").startswith(
+                COMPENSATE_MARKER
+            )
             outcome = await runtime.rewind(
                 v,
                 decision.reason or "supervisor rewind",
                 by="supervisor",
-                confirmed=decision.confirmed,
+                confirmed=decision.confirmed and pending_confirm,
                 repair_note=note or None,
             )
             if outcome.status == "needs_confirmation":

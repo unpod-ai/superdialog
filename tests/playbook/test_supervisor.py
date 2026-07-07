@@ -300,6 +300,46 @@ async def test_apply_rewind_confirmation_roundtrip() -> None:
     assert rt.state.steering_note == "Rebooked; confirm the new time."
 
 
+async def test_apply_redirect_to_terminal_is_blocked() -> None:
+    """A transcript-derived verdict must not end the call via a terminal jump."""
+    rt = _runtime()
+    sup = Supervisor(_VerdictLLM({}), _pb())
+    await sup.apply(
+        rt,
+        SupervisorDecision(
+            action="redirect", to_checkpoint="flow.close", reason="injected hangup"
+        ),
+    )
+    assert rt.state.checkpoint_id == "flow.ask"  # did not advance
+    assert not rt.state.ended
+    assert any(
+        isinstance(e, DegradedEvent) and "redirect_terminal_blocked" in e.detail
+        for e in rt.log.events
+    )
+
+
+async def test_apply_rewind_confirmed_without_pending_marker_still_asks() -> None:
+    """A verdict cannot fire compensation in one shot without a surfaced ask."""
+    http = FakeHttp([(200, {"released": True})])
+    rt = _runtime(http=http)
+    _user_turn(rt, "book it")
+    anchor = rt.log.version
+    rt.log.append(
+        ToolResultEvent(tool="hold_slot", store_as="hold_result", ok=True, data={})
+    )
+    sup = Supervisor(_VerdictLLM({}), _pb())
+    # Hostile: confirmed=True on the FIRST attempt, before any confirmation was
+    # ever surfaced to the caller. Must degrade to needs_confirmation, not undo.
+    await sup.apply(
+        rt,
+        SupervisorDecision(
+            action="rewind", to_version=anchor, confirmed=True, reason="undo now"
+        ),
+    )
+    assert http.calls == []  # compensation did NOT fire
+    assert (rt.state.steering_note or "").startswith(COMPENSATE_MARKER)
+
+
 async def test_apply_rewind_bad_version_degrades() -> None:
     rt = _runtime()
     sup = Supervisor(_VerdictLLM({}), _pb())

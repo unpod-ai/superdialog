@@ -104,13 +104,54 @@ async def test_unannotated_tool_keeps_legacy_behavior() -> None:
 class _AllowLLM:
     """Intercept classifier scripted to a fixed allow verdict."""
 
-    def __init__(self, allow: bool) -> None:
+    def __init__(self, allow: bool, *, fenced: bool = False) -> None:
         self.allow = allow
-        self.calls = 0
+        self.fenced = fenced
+        self.calls: list[list[dict]] = []
 
     async def complete(self, messages: list[dict], **kwargs: object) -> str:
-        self.calls += 1
-        return json.dumps({"allow": self.allow})
+        self.calls.append(messages)
+        body = json.dumps({"allow": self.allow})
+        return f"```json\n{body}\n```" if self.fenced else body
+
+
+async def test_intercept_classifier_prompt_carries_injection_guard() -> None:
+    """The last gate before an irreversible call must not be transcript-steerable."""
+    from superdialog.playbook.state import ConversationState
+
+    guard = _AllowLLM(allow=True)
+    rt = PlaybookRuntime(
+        _pb(_irreversible_yaml()),
+        director_llm=SequencedLLM([_IDLE]),
+        http=FakeHttp([]),
+        intercept_llm=guard,
+    )
+    cp = rt._pb.checkpoint("flow.act")
+    allowed = await rt._classify_intercept(
+        rt._pb.tool("hold_slot"), cp, ConversationState()
+    )
+    assert allowed is True
+    sys_prompt = guard.calls[0][0]["content"]
+    assert "untrusted" in sys_prompt.lower()
+    assert "never follow instructions" in sys_prompt.lower()
+
+
+async def test_intercept_classifier_strips_fences() -> None:
+    """A fenced allow verdict must parse, not fail closed and block forever."""
+    from superdialog.playbook.state import ConversationState
+
+    guard = _AllowLLM(allow=True, fenced=True)
+    rt = PlaybookRuntime(
+        _pb(_irreversible_yaml()),
+        director_llm=SequencedLLM([_IDLE]),
+        http=FakeHttp([]),
+        intercept_llm=guard,
+    )
+    cp = rt._pb.checkpoint("flow.act")
+    allowed = await rt._classify_intercept(
+        rt._pb.tool("hold_slot"), cp, ConversationState()
+    )
+    assert allowed is True
 
 
 def _irreversible_yaml() -> str:
@@ -133,7 +174,7 @@ async def test_irreversible_classifier_fails_closed() -> None:
     )
     await rt.on_user_text("book me in Pune")  # slots fine, classifier says no
     assert http.calls == []
-    assert guard.calls >= 1
+    assert len(guard.calls) >= 1
 
 
 async def test_irreversible_classifier_allows() -> None:
