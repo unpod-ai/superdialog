@@ -181,6 +181,10 @@ class PipelineSpec(BaseModel):
     steps: list[PipelineStep]
 
 
+#: HTTP methods that are safe/idempotent by spec (RFC 9110).
+SAFE_HTTP_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
+
+
 class ToolSpec(BaseModel):
     id: str
     type: Literal["http", "python"] = "http"
@@ -199,6 +203,28 @@ class ToolSpec(BaseModel):
     ttl_seconds: float | None = None  # reserved — TTL scheduling is deferred
     on_expire: str | None = None  # reserved — handler id
     args: dict[str, SlotSpec] = Field(default_factory=dict)
+    # Reversibility tier (Shepherd-style effect classes). Governs conversation
+    # rewind and pre-materialization interception:
+    # - reversible: pure state (reads); a rewind undoes it structurally.
+    # - compensable: has a real-world side effect that ``compensate`` (a tool
+    #   id) can undo — rewinding across it requires caller confirmation, then
+    #   runs the compensation tool.
+    # - irreversible: cannot be undone; a rewind across it is refused.
+    # ``None`` (default) infers conservatively at rewind time (safe methods →
+    # reversible, writes → compensable-without-compensate, i.e. rewind refuses)
+    # and — deliberately — never activates the interception guard, so
+    # unannotated playbooks behave exactly as before.
+    tier: Literal["reversible", "compensable", "irreversible"] | None = None
+    compensate: str | None = None  # tool id that undoes an ok result on rewind
+
+    @property
+    def effective_tier(self) -> str:
+        """Tier used by rewind safety: explicit tier, else a conservative guess."""
+        if self.tier:
+            return self.tier
+        if self.type == "http" and self.method.upper() in SAFE_HTTP_METHODS:
+            return "reversible"
+        return "compensable"  # unannotated writes/python tools: assume effects
 
 
 class MiddlewareSpec(BaseModel):
@@ -350,6 +376,13 @@ class Playbook(BaseModel):
                 raise ValueError(
                     f"tool {t.id!r}: store_response_as 'pipeline' is reserved"
                 )
+            if t.compensate:
+                if t.tier != "compensable":
+                    raise ValueError(
+                        f"tool {t.id!r}: compensate requires tier 'compensable'"
+                    )
+                if t.compensate == t.id:
+                    raise ValueError(f"tool {t.id!r}: compensate cannot be itself")
         pipe_seen: set[str] = set()
         for p in self.pipelines:
             need_unique(pipe_seen, p.id, "pipelines")
@@ -363,6 +396,12 @@ class Playbook(BaseModel):
                 "middleware.refresh_with: unknown tool "
                 f"{self.middleware.refresh_with!r}"
             )
+
+        for t in self.tools:
+            if t.compensate and t.compensate not in tool_ids:
+                raise ValueError(
+                    f"tool {t.id!r}: unknown compensate tool {t.compensate!r}"
+                )
 
         def need_cp(ref: str, ctx: str) -> None:
             if ref not in ids:

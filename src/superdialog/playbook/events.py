@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated, Any, Iterator, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
@@ -35,9 +36,9 @@ class AdvanceEvent(_Base):
     from_checkpoint: str | None
     to_checkpoint: str
     # rule id, "init", "auto", "pipeline", "on_failure",
-    # "interrupt:<id>", "policy:<name>"
+    # "interrupt:<id>", "policy:<name>", "supervisor:<reason>"
     rule: str
-    by: Literal["director", "expr", "policy"] = "director"
+    by: Literal["director", "expr", "policy", "supervisor"] = "director"
 
 
 class SteeringNoteEvent(_Base):
@@ -95,8 +96,27 @@ class DegradedEvent(_Base):
     """Director failure marker — degraded mode is auditable, never silent."""
 
     type: Literal["degraded"] = "degraded"
-    component: Literal["director", "talker"] = "director"
+    component: Literal["director", "talker", "supervisor"] = "director"
     detail: str = ""
+
+
+class RevertEvent(_Base):
+    """Supersede a range of earlier state effects — rewind state, never speech.
+
+    The fold skips state-bearing events whose version falls in
+    ``[superseded_from, superseded_to]``; utterances always stay in the
+    transcript (the caller heard them) and ``SessionStartEvent`` is never
+    superseded (the call's time anchor is not conversational state). The log
+    stays append-only: a revert is itself an event, so the audit trail and
+    traversal exports remain complete. A later revert may supersede an earlier
+    ``RevertEvent``, which re-activates the events that one had superseded.
+    """
+
+    type: Literal["revert"] = "revert"
+    superseded_from: int
+    superseded_to: int
+    reason: str = ""
+    by: Literal["director", "supervisor", "runtime"] = "runtime"
 
 
 class SessionEndEvent(_Base):
@@ -119,6 +139,7 @@ Event = Annotated[
         ExternalEvent,
         DegradedEvent,
         SessionEndEvent,
+        RevertEvent,
     ],
     Field(discriminator="type"),
 ]
@@ -135,6 +156,10 @@ class EventLog:
             raise ValueError(
                 f"event versions must be contiguous starting at 1, got {versions}"
             )
+        # Live observers (Shepherd-style non-perturbing observation): every
+        # appended event is pushed to each subscriber queue. Observers read
+        # only; the log never blocks on them (put_nowait on unbounded queues).
+        self._subscribers: list["asyncio.Queue[Event]"] = []
 
     @property
     def version(self) -> int:
@@ -145,7 +170,25 @@ class EventLog:
             raise ValueError(f"event already stamped with version {event.version}")
         stamped = event.model_copy(update={"version": self.version + 1})
         self.events.append(stamped)
+        for q in self._subscribers:
+            q.put_nowait(stamped)
         return stamped
+
+    def subscribe(self) -> "asyncio.Queue[Event]":
+        """Register a live observer; every future append lands on the queue.
+
+        Observation is non-perturbing: the log's behavior is identical with or
+        without subscribers. A wholesale ``load_log`` swap orphans subscribers
+        of the old log — re-subscribe after restoring a session.
+        """
+        q: "asyncio.Queue[Event]" = asyncio.Queue()
+        self._subscribers.append(q)
+        return q
+
+    def unsubscribe(self, q: "asyncio.Queue[Event]") -> None:
+        """Remove a subscriber queue; unknown queues are ignored."""
+        if q in self._subscribers:
+            self._subscribers.remove(q)
 
     def replay(self) -> Iterator[Event]:
         return iter(self.events)

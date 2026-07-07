@@ -13,6 +13,7 @@ from .events import (
     EnvWriteEvent,
     EventLog,
     ExternalEvent,
+    RevertEvent,
     ScratchpadEvent,
     SessionEndEvent,
     SessionStartEvent,
@@ -24,6 +25,20 @@ from .events import (
     UtteranceEvent,
 )
 from .models import Playbook, SlotSpec
+
+
+def _superseded_versions(log: EventLog) -> set[int]:
+    """Versions whose STATE effects were rewound by an active ``RevertEvent``.
+
+    Walked newest-first so a later revert that covers an earlier revert's own
+    version deactivates it — the earlier revert's range then re-applies, which
+    is exactly "state as of the later revert's target".
+    """
+    dead: set[int] = set()
+    for e in reversed(log.events):
+        if isinstance(e, RevertEvent) and e.version not in dead:
+            dead.update(range(e.superseded_from, e.superseded_to + 1))
+    return dead
 
 
 def _ekey(entity: str, key: str) -> str:
@@ -116,8 +131,23 @@ class ConversationState(BaseModel):
             for itr in playbook.interrupts:
                 interrupt_resume[itr.id] = itr.resume
         s = cls()
+        dead = _superseded_versions(log)
         for e in log.replay():
             s.version = e.version
+            if e.version in dead and not isinstance(e, SessionStartEvent):
+                # Rewound: the event's STATE effect is superseded. Speech is
+                # irreversible — utterances stay in the transcript (and keep
+                # the sticky language: the caller's language doesn't un-happen)
+                # but stop counting toward checkpoint progress. SessionStart is
+                # never superseded: the call's time anchor isn't conversational
+                # state.
+                if isinstance(e, UtteranceEvent):
+                    s.transcript.append(
+                        TranscriptEntry(role=e.role, text=e.text, version=e.version)
+                    )
+                    if e.role == "user" and e.language:
+                        s.language = e.language
+                continue
             if isinstance(e, UtteranceEvent):
                 s.transcript.append(
                     TranscriptEntry(role=e.role, text=e.text, version=e.version)

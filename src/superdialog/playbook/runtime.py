@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from ._canon import canonical_json
 from .director import CompletesLLM, Director
 from .events import (
     AdvanceEvent,
@@ -16,27 +18,46 @@ from .events import (
     Event,
     EventLog,
     ExternalEvent,
+    RevertEvent,
     SessionEndEvent,
     SessionStartEvent,
     SlotWriteEvent,
     SteeringNoteEvent,
+    ToolCallEvent,
     ToolResultEvent,
     UtteranceEvent,
 )
-from .models import Checkpoint, Playbook
+from .models import Checkpoint, Playbook, ToolSpec
 from .pipeline import PipelineRunner
 from .render import render_template
-from .state import ConversationState
+from .state import ConversationState, _superseded_versions
 from .toolexec import HttpFn, PythonToolFn, ToolExecutor
 
 _WRAP_UP_NOTE = "wrap this step up; offer the essentials and move on"
 _TURN_BUDGET_GRACE = 2  # extra turns past budget before on_failure routing
+
+#: Prefix of the compensation-confirmation steer; its presence in the live
+#: steering note tells the supervisor a rewind is awaiting caller approval
+#: (one-shot marker, same pattern as the Director's _WRAP_MARKER).
+COMPENSATE_MARKER = "Confirm before undoing"
+
+#: Prefix of interception denial steers. The intercept guard's own repair
+#: notes must not re-trigger its repair-in-flight check (self-deadlock).
+_DENY_PREFIX = "Do not perform or promise"
 
 
 class ExternalResult(BaseModel):
     """Outcome of an external event the host may need to act on."""
 
     prompt: str | None = None  # speech the host should play (silence policy)
+
+
+class RewindOutcome(BaseModel):
+    """Result of a rewind attempt (see ``PlaybookRuntime.rewind``)."""
+
+    status: Literal["done", "needs_confirmation", "refused"]
+    detail: str = ""
+    pending: list[str] = Field(default_factory=list)  # tool ids blocking the rewind
 
 
 class PlaybookRuntime:
@@ -55,6 +76,7 @@ class PlaybookRuntime:
         http: HttpFn,
         python_tools: dict[str, PythonToolFn] | None = None,
         max_hops: int = 8,
+        intercept_llm: CompletesLLM | None = None,
     ) -> None:
         self.log = EventLog()
         self._pb = playbook
@@ -62,6 +84,9 @@ class PlaybookRuntime:
         self._executor = ToolExecutor(http=http, python_tools=python_tools)
         self._pipelines = PipelineRunner(playbook, self._executor)
         self._max_hops = max_hops
+        # Optional fast classifier for irreversible-tool interception (the
+        # quality rung above the expr guard). None ⇒ expr guard only.
+        self._intercept_llm = intercept_llm
         self._state_cache: ConversationState | None = None
         self._state_cache_version = -1
 
@@ -226,6 +251,206 @@ class PlaybookRuntime:
                 )
                 return
 
+    # -- rewind (reversible trace) ---------------------------------------------
+
+    async def rewind(
+        self,
+        to_version: int,
+        reason: str,
+        *,
+        by: Literal["director", "supervisor", "runtime"] = "runtime",
+        confirmed: bool = False,
+        repair_note: str | None = None,
+    ) -> RewindOutcome:
+        """Rewind conversation STATE to how it was at ``to_version``.
+
+        Speech is irreversible, so nothing is deleted: a ``RevertEvent`` marks
+        the range ``(to_version, now]`` superseded and the fold skips those
+        state effects while keeping every utterance in the transcript.
+
+        Side effects in the range are tier-guarded:
+
+        - reversible tools: undone structurally by the revert.
+        - compensable tools: require ``confirmed=True`` (ask the caller first —
+          the ``needs_confirmation`` outcome carries the pending tool ids);
+          their ``compensate`` tool then runs BEFORE the revert so its
+          templates still see the to-be-reverted results (e.g. a hold id).
+        - irreversible tools (or compensable ones without a ``compensate``
+          tool): the rewind is refused — fall back to inject/redirect.
+
+        ``repair_note`` becomes a repair steer so the Talker acknowledges the
+        correction naturally instead of resetting the conversation.
+        """
+        if not 0 <= to_version < self.log.version:
+            raise ValueError(
+                f"rewind target {to_version} outside [0, {self.log.version})"
+            )
+        dead = _superseded_versions(self.log)
+        pending: list[tuple[ToolSpec, ToolResultEvent]] = []
+        blocked: list[str] = []
+        for e in self.log.events[to_version:]:
+            if e.version in dead or not isinstance(e, ToolResultEvent) or not e.ok:
+                continue
+            try:
+                spec = self._pb.tool(e.tool)
+            except KeyError:
+                continue  # synthetic result (pipeline marker): no side effect
+            tier = spec.effective_tier
+            if tier == "irreversible" or (
+                tier == "compensable" and not spec.compensate
+            ):
+                blocked.append(spec.id)
+            elif tier == "compensable":
+                pending.append((spec, e))
+        if blocked:
+            return RewindOutcome(
+                status="refused",
+                detail=f"cannot undo: {', '.join(sorted(set(blocked)))}",
+                pending=sorted(set(blocked)),
+            )
+        if pending and not confirmed:
+            return RewindOutcome(
+                status="needs_confirmation",
+                detail=f"compensation required: {', '.join(s.id for s, _ in pending)}",
+                pending=[s.id for s, _ in pending],
+            )
+        end = self.log.version  # compensation events land OUTSIDE the range
+        for spec, _result in reversed(pending):
+            comp = self._pb.tool(spec.compensate or "")
+            events = await self._executor.execute(comp, self.state)
+            self._apply(events)
+            undone = any(isinstance(ev, ToolResultEvent) and ev.ok for ev in events)
+            if not undone:
+                return RewindOutcome(
+                    status="refused",
+                    detail=f"compensation failed: {comp.id} (for {spec.id})",
+                    pending=[spec.id],
+                )
+        self.log.append(
+            RevertEvent(
+                superseded_from=to_version + 1,
+                superseded_to=end,
+                reason=reason,
+                by=by,
+            )
+        )
+        if repair_note:
+            self.log.append(
+                SteeringNoteEvent(
+                    text=" ".join(repair_note.split())[:300], kind="repair"
+                )
+            )
+        return RewindOutcome(status="done")
+
+    # -- supervisor verbs -------------------------------------------------------
+
+    async def redirect(self, to: str, reason: str) -> list[str]:
+        """Supervisor-grade redirect: advance to ``to`` and run to quiescence."""
+        pass_through: list[str] = []
+        slug = "-".join(reason.split())[:60] or "redirect"
+        await self._advance(to, f"supervisor:{slug}", pass_through)
+        pass_through.extend(await self._quiesce())
+        return pass_through
+
+    async def pop_detour(self) -> list[str]:
+        """Abandon the current detour: return to the step under it, if any."""
+        if not self.state.resume_stack:
+            return []
+        pass_through: list[str] = []
+        await self._advance(self.state.resume_stack[-1], "resume", pass_through)
+        pass_through.extend(await self._quiesce())
+        return pass_through
+
+    # -- interception (intent before materialization) ---------------------------
+
+    async def _intercept(self, spec: ToolSpec) -> str | None:
+        """Deny reason for materializing ``spec`` now, or None to allow.
+
+        Guard ladder, cost proportional to risk (only EXPLICITLY tiered tools
+        are ever guarded — unannotated playbooks keep today's behavior):
+
+        - reversible / unannotated: no check (rewind is the undo).
+        - compensable: pure expr guard — the checkpoint's required slots must
+          meet the same per-slot gate the Director uses to advance, and no
+          repair may be in flight.
+        - irreversible: strict guard — every required slot confirmed — plus,
+          when an ``intercept_llm`` is configured, a single fast classifier
+          call that fails CLOSED.
+        """
+        if spec.tier not in ("compensable", "irreversible"):
+            return None
+        state = self.state
+        if state.checkpoint_id is None:
+            return None
+        cp = self._pb.checkpoint(state.checkpoint_id)
+        if (
+            state.steering_kind == "repair"
+            and state.steering_note
+            and not state.steering_note.startswith(_DENY_PREFIX)
+        ):
+            return "a correction is in flight"
+        required = [k for k, s in cp.slots.items() if s.required]
+        if spec.tier == "irreversible":
+            unconfirmed = [
+                k for k in required if not state.confirmed([k], entity=cp.entity)
+            ]
+            if unconfirmed:
+                return f"unconfirmed: {', '.join(unconfirmed)}"
+            if self._intercept_llm is not None:
+                allowed = await self._classify_intercept(spec, cp, state)
+                if not allowed:
+                    return "the caller has not clearly asked for this yet"
+        elif not self._director._requires_met(required, cp, state):
+            # same per-slot gate basis as advance gating (hard→confirmed)
+            missing = [
+                k
+                for k in required
+                if not state.confirmed([k], entity=cp.entity)
+                and not state.filled([k], entity=cp.entity)
+            ]
+            return f"missing or unconfirmed: {', '.join(missing or required)}"
+        return None
+
+    async def _classify_intercept(
+        self, spec: ToolSpec, cp: Checkpoint, state: ConversationState
+    ) -> bool:
+        """One fast LLM check before an irreversible effect; fails CLOSED."""
+        slots = {
+            k: {"value": v.value, "status": v.status} for k, v in state.slots.items()
+        }
+        tail = "\n".join(f"{m.role}: {m.text}" for m in state.transcript[-6:])
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You guard an IRREVERSIBLE action inside a live call. Allow "
+                    "it only when the transcript shows the caller clearly asked "
+                    "for it and the details are settled. Reply STRICT JSON: "
+                    '{"allow": true|false}.\n'
+                    f"Action: {spec.id}\nStep goal: {cp.goal}\n"
+                    f"Known slots: {canonical_json(slots)}"
+                ),
+            },
+            {"role": "user", "content": tail},
+        ]
+        try:
+            assert self._intercept_llm is not None
+            raw = await self._intercept_llm.complete(messages, json_mode=True)
+            verdict = json.loads(getattr(raw, "text", raw))
+            return bool(verdict.get("allow") is True)
+        except Exception:
+            return False  # fail closed: an unchecked irreversible call is worse
+
+    def _deny_steer(self, spec: ToolSpec, reason: str) -> None:
+        """Steer the Talker off a denied action — once per distinct denial."""
+        text = (
+            f"{_DENY_PREFIX} '{spec.id}' yet — {reason}. "
+            "Confirm the details with the caller first."
+        )
+        if self.state.steering_note == text:
+            return  # already steering on exactly this; don't spam the log
+        self.log.append(SteeringNoteEvent(text=text, kind="repair"))
+
     # -- quiescence -----------------------------------------------------------
 
     async def _quiesce(self) -> list[str]:
@@ -246,6 +471,8 @@ class PlaybookRuntime:
         if state.ended or state.checkpoint_id is None:
             return False
         cp = self._pb.checkpoint(state.checkpoint_id)
+        if await self._retry_denied_on_enter(cp):
+            return True  # a previously-denied on_enter tool ran; re-hop
         if cp.pipeline and not self._pipeline_ran_this_entry(state):
             if await self._run_checkpoint_pipeline(cp, cp.pipeline, pass_through):
                 return True
@@ -282,10 +509,51 @@ class PlaybookRuntime:
             return True
         return False
 
+    async def _retry_denied_on_enter(self, cp: Checkpoint) -> bool:
+        """Re-attempt tier-guarded on_enter tools that were denied at entry.
+
+        ``on_enter`` normally fires exactly once, at entry — but an intercepted
+        tool never materialized (no ToolCallEvent), so once the caller supplies
+        what was missing it should still run. Only EXPLICITLY tiered tools are
+        retried: they are the only ones interception can deny, so unannotated
+        playbooks keep the fire-once semantics unchanged.
+        """
+        state = self.state
+        moved = False
+        for tool_id in cp.on_enter:
+            spec = self._pb.tool(tool_id)
+            if spec.tier not in ("compensable", "irreversible"):
+                continue
+            attempted = any(
+                isinstance(e, ToolCallEvent)
+                and e.tool == spec.id
+                and e.version > state.checkpoint_entered_version
+                for e in self.log.events
+            )
+            if attempted:
+                continue
+            deny = await self._intercept(spec)
+            if deny is not None:
+                self._deny_steer(spec, deny)  # dedupes; no spam across hops
+                continue
+            events = await self._executor.execute(spec, self.state)
+            if events:
+                self._apply(events)
+                moved = True
+        return moved
+
     async def _run_checkpoint_pipeline(
         self, cp: Checkpoint, pipeline_id: str, pass_through: list[str]
     ) -> bool:
         """Run the checkpoint's pipeline; True when it routed (hop consumed)."""
+        # Pre-materialization gate: check every step's tool BEFORE the first
+        # side effect, so a denial never leaves a half-run pipeline behind.
+        for step in self._pb.pipeline(pipeline_id).steps:
+            spec = self._pb.tool(step.tool)
+            deny = await self._intercept(spec)
+            if deny is not None:
+                self._deny_steer(spec, deny)
+                return False  # no route; the steer re-asks, next turn retries
         result = await self._pipelines.run(pipeline_id, self.state)
         self._apply(result.events)
         self.log.append(
@@ -361,8 +629,12 @@ class PlaybookRuntime:
 
     async def _advance(self, to: str, rule: str, pass_through: list[str]) -> None:
         """Leave the current checkpoint for ``to`` and enter the target."""
-        by: Literal["director", "policy"] = (
-            "policy" if rule.startswith("policy:") else "director"
+        by: Literal["director", "policy", "supervisor"] = (
+            "policy"
+            if rule.startswith("policy:")
+            else "supervisor"
+            if rule.startswith("supervisor:")
+            else "director"
         )
         self.log.append(
             AdvanceEvent(
@@ -378,7 +650,12 @@ class PlaybookRuntime:
         """Run on_enter tools (failures are data) and handle terminal ends."""
         cp = self._pb.checkpoint(cp_ref)
         for tool_id in cp.on_enter:
-            events = await self._executor.execute(self._pb.tool(tool_id), self.state)
+            spec = self._pb.tool(tool_id)
+            deny = await self._intercept(spec)
+            if deny is not None:
+                self._deny_steer(spec, deny)
+                continue
+            events = await self._executor.execute(spec, self.state)
             self._apply(events)
         if cp.terminal:
             self._speak_verbatim(cp, pass_through)
