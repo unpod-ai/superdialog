@@ -393,6 +393,16 @@ class PlaybookAgent:
                     try:
                         decision = await self._supervisor.review(self.runtime)
                         if decision is not None:
+                            # Loud like [DIRECTOR] verdict: a supervisor
+                            # intervention is visible in eval/run logs (it
+                            # otherwise lands only as silent events).
+                            if decision.action != "none":
+                                print(
+                                    f"[SUPERVISOR] action={decision.action} "
+                                    f"reason={decision.reason or '-'} "
+                                    f"cp={self.runtime.state.checkpoint_id}",
+                                    flush=True,
+                                )
                             pass_through.extend(
                                 await self._supervisor.apply(self.runtime, decision)
                             )

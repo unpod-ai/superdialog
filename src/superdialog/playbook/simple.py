@@ -91,6 +91,9 @@ class SimplePlaybook(BaseModel):
     followup_enabled: bool = False
     # Opt-in: scope slot storage/lookups per step entity. Off ⇒ unchanged.
     multi_entity: bool = False
+    # Opt-in: enable the trajectory-level Supervisor (loop 2 — recovery/redirect
+    # meta-agent). Off ⇒ unchanged. See GuidelineConfig.supervisor.
+    supervisor: bool = False
 
 
 def is_simple_playbook(doc: Any) -> bool:
@@ -334,6 +337,7 @@ def simple_to_playbook(doc: dict[str, Any]) -> Playbook:
         timezone=sp.timezone,
         memory_enabled=sp.memory_enabled,
         followup_enabled=sp.followup_enabled,
+        supervisor=sp.supervisor,
     )
     kb = sp.facts.get("knowledge_base") if isinstance(sp.facts, dict) else None
     knowledge_base = (

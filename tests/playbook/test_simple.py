@@ -59,6 +59,16 @@ def test_detection_simple_vs_playbook() -> None:
     assert is_simple_playbook({"playbook": []}) is False
 
 
+def test_supervisor_flag_defaults_off_and_passes_through() -> None:
+    import yaml
+
+    off = simple_to_playbook(yaml.safe_load(SIMPLE))
+    assert off.guidelines.supervisor is False  # byte-compatible default
+    doc = yaml.safe_load(SIMPLE)
+    doc["supervisor"] = True
+    assert simple_to_playbook(doc).guidelines.supervisor is True
+
+
 def test_compiles_to_valid_playbook_with_expected_checkpoints() -> None:
     import yaml
 
