@@ -130,10 +130,14 @@ class PlaybookAgent:
             intercept_llm=intercept_llm,
         )
         # Loop 2 (off the speech path): reviews the trajectory after a turn
-        # completes, only when a trigger fires. None ⇒ no supervision (legacy).
-        self._supervisor = (
-            Supervisor(supervisor_llm, playbook) if supervisor_llm else None
+        # completes, only when a trigger fires. An explicit ``supervisor_llm``
+        # wins; else ``guidelines.supervisor`` opts in and reuses the Director
+        # model (raw, untimed — the call is off the speech path, so it must not
+        # smear the Director's latency stats). None ⇒ no supervision (legacy).
+        sup_llm = supervisor_llm or (
+            director_llm if playbook.guidelines.supervisor else None
         )
+        self._supervisor = Supervisor(sup_llm, playbook) if sup_llm else None
         self._talker = Talker(
             playbook,
             self._talker_timer,

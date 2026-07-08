@@ -385,3 +385,40 @@ async def test_agent_runs_supervisor_after_a_derailed_turn() -> None:
         pass
     assert supervisor_llm.calls == 1
     assert agent.runtime.state.steering_note == "Slow down; re-confirm the city."
+
+
+def test_supervisor_is_off_by_default() -> None:
+    """No flag, no explicit llm -> no loop 2 (legacy, byte-compatible)."""
+    agent = PlaybookAgent(
+        playbook=Playbook.from_yaml(MINIMAL_YAML),
+        talker_llm=StreamLLM(["hi"]),
+        director_llm=SequencedLLM([_IDLE]),
+        http=FakeHttp([]),
+    )
+    assert agent._supervisor is None
+
+
+async def test_guidelines_flag_wires_supervisor_without_explicit_llm() -> None:
+    """guidelines.supervisor=true is the live wire: loop 2 runs with no
+    supervisor_llm passed, reusing the Director model. This is the path the
+    production handler / DialogMachine / CLI take — they construct a
+    PlaybookAgent from the playbook and never pass supervisor_llm."""
+    pb = Playbook.from_yaml(MINIMAL_YAML)
+    pb.guidelines.supervisor = True
+    # One model doubles as Director (turn verdict) and Supervisor (trajectory
+    # review): idle for the turn, then an inject decision for the review.
+    llm = SequencedLLM([_IDLE, {"action": "inject", "note": "Re-confirm the city."}])
+    agent = PlaybookAgent(
+        playbook=pb,
+        talker_llm=StreamLLM(["Which", " city?"]),
+        director_llm=llm,
+        http=FakeHttp([]),
+        # NB: no supervisor_llm — the guidelines flag alone must wire it.
+    )
+    assert agent._supervisor is not None
+    await agent.runtime.start()
+    agent.runtime.log.append(SteeringNoteEvent(text="fix a", kind="repair"))
+    agent.runtime.log.append(SteeringNoteEvent(text="fix b", kind="repair"))
+    async for _chunk in agent.stream_turn("uh, hmm"):
+        pass
+    assert agent.runtime.state.steering_note == "Re-confirm the city."
