@@ -130,7 +130,16 @@ class Supervisor:
             return None
         turn = sum(1 for m in state.transcript if m.role == "user")
         pending = "compensation_pending" in triggers
-        if not pending and turn - self._last_fired_turn < self._cooldown:
+        cooling = not pending and turn - self._last_fired_turn < self._cooldown
+        # Loud so trigger activity is visible in eval/run logs even when the
+        # verdict later chooses "none": distinguishes "no trigger fired" from
+        # "fired but held" (cooldown) from "fired and acted".
+        print(
+            f"[SUPERVISOR] triggers={','.join(triggers)} cp={state.checkpoint_id} "
+            f"{'held(cooldown)' if cooling else 'reviewing'}",
+            flush=True,
+        )
+        if cooling:
             return None
         self._last_fired_turn = turn
         messages = self._prompt(state, runtime.log, triggers)

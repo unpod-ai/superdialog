@@ -398,6 +398,44 @@ def test_supervisor_is_off_by_default() -> None:
     assert agent._supervisor is None
 
 
+async def test_supervisor_fires_through_dialogmachine_eval_path() -> None:
+    """End-to-end through DialogMachine -> PlaybookAgent — the SAME path the
+    eval harness (InProcessPlaybook) and production LiteV2 handler take.
+
+    guidelines.supervisor=true activates loop 2 with no explicit supervisor_llm;
+    a director that churns 'city' three times trips slot_churn on turn 3, so the
+    supervisor reviews the trajectory and injects a repair brief. This is the
+    proof the loop is linked to the real communication system, not just to the
+    agent constructor in isolation.
+    """
+    import yaml as _yaml
+
+    from superdialog import DialogMachine
+
+    doc = _yaml.safe_load(MINIMAL_YAML)
+    doc["guidelines"] = {"supervisor": True}  # the live wire
+    dm = DialogMachine(source=doc, llm="openai/gpt-4o-mini", engine="playbook")
+    # One override doubles as Director (each turn) and Supervisor (on trigger):
+    # three distinct 'city' values -> slot_churn on turn 3 -> the inject verdict.
+    dm._talker_override = StreamLLM(["ok"])
+    dm._director_override = SequencedLLM(
+        [
+            {"slots": {"city": "Pune"}, "advance": None, "note": None},
+            {"slots": {"city": "Mumbai"}, "advance": None, "note": None},
+            {"slots": {"city": "Delhi"}, "advance": None, "note": None},
+            {"action": "inject", "note": "Caller keeps changing the city — pin it."},
+        ]
+    )
+    await dm.turn("Pune")
+    await dm.turn("no, Mumbai")
+    await dm.turn("actually Delhi")
+    agent = dm._pb
+    assert agent._supervisor is not None  # the flag wired it, no explicit llm
+    assert (
+        agent.runtime.state.steering_note == "Caller keeps changing the city — pin it."
+    )
+
+
 async def test_guidelines_flag_wires_supervisor_without_explicit_llm() -> None:
     """guidelines.supervisor=true is the live wire: loop 2 runs with no
     supervisor_llm passed, reusing the Director model. This is the path the
