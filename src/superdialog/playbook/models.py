@@ -326,6 +326,22 @@ class Playbook(BaseModel):
                 return cp
         raise KeyError(ref)
 
+    def next_checkpoint_id(self, ref: str) -> str | None:
+        """Journey-order successor of ``ref``; None if it is the last one.
+
+        The turn-budget backstop routes here when a checkpoint declares no
+        ``on_failure``: authored list order is the happy-path sequence, so the
+        successor is where the flow was heading next anyway.
+        """
+        # ponytail: list order == happy path (branch steps live at the tail);
+        # authors who interleave branches should set on_failure explicitly.
+        journey, _, cp_id = ref.partition(".")
+        checkpoints = self.journeys[journey].checkpoints
+        for i in range(len(checkpoints) - 1):
+            if checkpoints[i].id == cp_id:
+                return f"{journey}.{checkpoints[i + 1].id}"
+        return None
+
     @property
     def initial_checkpoint_id(self) -> str:
         if self.initial:

@@ -163,6 +163,55 @@ async def test_turn_budget_steers() -> None:
     assert rt.state.checkpoint_id == "j.a"
 
 
+FORCE_ADVANCE_YAML = textwrap.dedent("""
+    journeys:
+      j:
+        checkpoints:
+          - id: a
+            goal: "collect x"
+            turn_budget: 1
+            slots:
+              x: {type: str}
+            advance_when:
+              - {when: "user is done", judge: llm, to: j.b}
+          - id: b
+            goal: "next step"
+            advance_when:
+              - {when: "user is done", judge: llm, to: j.c}
+          - id: c
+            terminal: true
+            outcome: done
+""")
+
+
+async def test_turn_budget_forces_progress_without_on_failure() -> None:
+    # Regression (real Kairali call): an unsatisfiable gate (Director never
+    # advances) with a turn budget and NO on_failure used to livelock — the
+    # agent re-asked the same question 5+ times. Past budget+grace the runtime
+    # must force linear progress to the journey successor so a call can never
+    # wedge, marking the escape loudly.
+    pb = Playbook.from_yaml(FORCE_ADVANCE_YAML)
+    rt = PlaybookRuntime(
+        pb,
+        director_llm=CannedLLM({"slots": {}, "advance": None, "note": None}),
+        http=FakeHttp([]),
+    )
+    await rt.start()
+    for _ in range(4):  # budget=1, grace=2 -> force-advance on turn 4 (>3)
+        await rt.on_user_text("still stuck, never satisfies the gate")
+    assert rt.state.checkpoint_id == "j.b"  # escaped, not wedged on j.a
+    forced = [
+        e
+        for e in rt.log.events
+        if e.type == "degraded" and e.detail.startswith("turn_budget_forced:j.a")
+    ]
+    assert forced, "the forced escape must be marked with a DegradedEvent"
+    assert any(
+        e.type == "advance" and e.rule == "policy:turn_budget_forced"
+        for e in rt.log.events
+    )
+
+
 INTERRUPT_YAML = textwrap.dedent("""
     journeys:
       j:

@@ -651,11 +651,28 @@ class PlaybookRuntime:
         if not cp.turn_budget or state.user_turns_in_checkpoint <= cp.turn_budget:
             return
         self.log.append(SteeringNoteEvent(text=_WRAP_UP_NOTE, kind="steer"))
-        over_grace = (
-            state.user_turns_in_checkpoint > cp.turn_budget + _TURN_BUDGET_GRACE
+        if state.user_turns_in_checkpoint <= cp.turn_budget + _TURN_BUDGET_GRACE:
+            return
+        # Past grace the wrap-up nudge above has clearly not landed: an
+        # over-strict advance gate the Director cannot satisfy (e.g. noisy ASR
+        # against a "do not infer" rule) livelocks here, re-asking the same
+        # question forever. Route to on_failure if declared; otherwise force
+        # linear progress so a call can NEVER wedge, and mark it loudly.
+        target = cp.on_failure or self._pb.next_checkpoint_id(state.checkpoint_id)
+        if target is None:
+            return
+        if cp.on_failure is None:
+            self.log.append(
+                DegradedEvent(
+                    component="runtime",
+                    detail=f"turn_budget_forced:{state.checkpoint_id}",
+                )
+            )
+        await self._advance(
+            target,
+            "policy:turn_budget" if cp.on_failure else "policy:turn_budget_forced",
+            pass_through,
         )
-        if over_grace and cp.on_failure:
-            await self._advance(cp.on_failure, "policy:turn_budget", pass_through)
 
     # -- transitions --------------------------------------------------------------
 

@@ -96,7 +96,7 @@ class DegradedEvent(_Base):
     """Director failure marker — degraded mode is auditable, never silent."""
 
     type: Literal["degraded"] = "degraded"
-    component: Literal["director", "talker", "supervisor"] = "director"
+    component: Literal["director", "talker", "supervisor", "runtime"] = "director"
     detail: str = ""
 
 
