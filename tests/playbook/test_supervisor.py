@@ -204,6 +204,34 @@ async def test_review_fires_on_trigger_and_respects_cooldown() -> None:
     assert llm.calls == 2
 
 
+async def test_turn_budget_camp_forces_forward_inject_when_verdict_none() -> None:
+    # A caller camping in an early step (turn_budget) must not be judged benign:
+    # even when the verdict passively returns none, the supervisor floors it to a
+    # forward-steering inject so the camp is broken before the hard backstop.
+    llm = _VerdictLLM({"action": "none"})
+    sup = Supervisor(llm, _pb())
+    rt = _runtime()
+    for _ in range(3):  # budget on flow.ask is 2 -> turn_budget fires
+        _user_turn(rt)
+    decision = await sup.review(rt)
+    assert decision is not None
+    assert decision.action == "inject"
+    assert decision.reason == "turn_budget_camp"
+    assert decision.note.strip()  # a real forward steer, not empty
+    assert "Route the caller" in decision.note  # references the step's goal
+
+
+async def test_turn_budget_camp_keeps_a_real_verdict() -> None:
+    # The floor only rescues passive verdicts; a decisive redirect is untouched.
+    llm = _VerdictLLM({"action": "redirect", "to_checkpoint": "flow.book"})
+    sup = Supervisor(llm, _pb())
+    rt = _runtime()
+    for _ in range(3):
+        _user_turn(rt)
+    decision = await sup.review(rt)
+    assert decision is not None and decision.action == "redirect"
+
+
 async def test_malformed_verdict_degrades_loudly_but_safely() -> None:
     sup = Supervisor(_VerdictLLM("not json at all"), _pb())
     rt = _runtime()
