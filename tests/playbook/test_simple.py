@@ -69,6 +69,20 @@ def test_supervisor_flag_defaults_off_and_passes_through() -> None:
     assert simple_to_playbook(doc).guidelines.supervisor is True
 
 
+def test_step_gate_defaults_hard_and_passes_soft_through() -> None:
+    import yaml
+
+    pb = simple_to_playbook(yaml.safe_load(SIMPLE))
+    cps = {c.id: c for j in pb.journeys.values() for c in j.checkpoints}
+    assert cps["greet"].gate == "hard"  # byte-compatible default
+    doc = yaml.safe_load(SIMPLE)
+    doc["playbook"][0]["gate"] = "soft"  # pure-talk step opts out of barrier
+    pb2 = simple_to_playbook(doc)
+    cps2 = {c.id: c for j in pb2.journeys.values() for c in j.checkpoints}
+    assert cps2["greet"].gate == "soft"
+    assert cps2["collect"].gate == "hard"  # others untouched
+
+
 def test_compiles_to_valid_playbook_with_expected_checkpoints() -> None:
     import yaml
 

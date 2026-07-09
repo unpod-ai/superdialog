@@ -14,7 +14,7 @@ NOT env — to stay visible during speech.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -57,6 +57,11 @@ class SimpleStep(BaseModel):
     # `collect` for focused capture steps (<=2 slots), NONE for branchy steps
     # collecting many per-path slots (requiring all would deadlock the step).
     require: list[str] | None = None
+    # Talker sync barrier. None = "hard" (Talker waits for the Director, so it
+    # speaks from post-advance state — the safe default). Set "soft" on
+    # pure-talk steps (no collect) to speak immediately: saves the Director's
+    # settle time (~1-2s p50) per turn; harmless where nothing is captured.
+    gate: Literal["hard", "soft"] | None = None
 
 
 class SimpleObjection(BaseModel):
@@ -294,10 +299,11 @@ def _step_to_checkpoint(
             requires=list(required),
         )
     )
-    # Hard gate on ALL steps: Talker barriers on the Director so it always
+    # Hard gate by default: Talker barriers on the Director so it always
     # speaks from post-advance state.  The opening greeting is spoken via
     # PlaybookAgent.greet() which passes director_done=None, bypassing the
     # barrier; the first user utterance then barriers and advances normally.
+    # A step may opt into gate: soft (pure-talk steps) to skip the barrier.
     return Checkpoint(
         id=step.id,
         goal=step.purpose,
@@ -305,7 +311,7 @@ def _step_to_checkpoint(
         slots=slots,
         entity=step.entity,
         advance_when=rules,
-        gate="hard",
+        gate=step.gate or "hard",
         turn_budget=step.turn_budget or _DEFAULT_TURN_BUDGET,
         uses_kb=step.kb,
     )
