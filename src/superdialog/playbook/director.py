@@ -60,6 +60,34 @@ _RECOVER_NOTE = (
 #: steering note lets the caller's NEXT goodbye through (one-shot guard).
 _WRAP_MARKER = "Caller wants to end the call"
 
+#: Deterministic goodbye backstop. A literal bye/goodbye token that the LLM
+#: verdict missed (ASR noise, a mid-pitch barge-in) must still route to close.
+#: Deliberately narrow — the LLM handles soft signals ('ok thanks'); frustration
+#: utterances ('I already told you') carry no bye token, so they never match.
+_GOODBYE_RE = re.compile(r"\b(good\s?bye|bye)\b", re.IGNORECASE)
+
+
+def _clear_goodbye(text: str) -> bool:
+    """True only for an unambiguous spoken close.
+
+    'goodbye' is a close on its own; a bare 'bye' counts only in a short
+    utterance, so 'bye for now, but first tell me about X' does not fire.
+    """
+    t = (text or "").strip()
+    if not _GOODBYE_RE.search(t):
+        return False
+    if re.search(r"\bgood\s?bye\b", t, re.IGNORECASE):
+        return True
+    return len(t.split()) <= 8
+
+
+def _last_user_text(state: ConversationState) -> str:
+    for m in reversed(state.transcript):
+        if m.role == "user":
+            return m.text or ""
+    return ""
+
+
 _TIME_RE = re.compile(r"^\s*(\d{1,2})(?::(\d{2}))?\s*([ap]\.?m\.?)?\s*$", re.IGNORECASE)
 
 
@@ -353,6 +381,20 @@ class Director:
             return "confirmed"
         return "confirmed" if self.quick_verdict(key, cp, confidence) else "provisional"
 
+    def _goodbye_interrupt(self):
+        """The interrupt that ends the call on a caller goodbye, if the playbook
+        declares one (a bye-ish trigger routing to a terminal checkpoint)."""
+        for i in self._pb.interrupts:
+            hay = f"{i.id} {i.when}".lower()
+            if "goodbye" not in hay and "bye" not in hay:
+                continue
+            try:
+                if self._pb.checkpoint(i.to).terminal:
+                    return i
+            except KeyError:
+                continue
+        return None
+
     def _slot_gate(self, key: str, cp: Checkpoint) -> str:
         """Effective gate for ``key``: the slot's own ``gate`` if set, else the
         checkpoint's. Lets risk be annotated per slot (D5) while unannotated
@@ -492,6 +534,15 @@ class Director:
                 )
 
         interrupt_id = verdict.get("interrupt")
+        # Deterministic goodbye backstop: a clear spoken 'bye'/'goodbye' must
+        # route to closing even when the LLM verdict misses it. Only fills in
+        # when the model chose NO interrupt, and only the goodbye one — the
+        # existing terminal-slot guard below still applies (one quick wrap for
+        # missing required slots, then the close proceeds).
+        if not interrupt_id:
+            gb = self._goodbye_interrupt()
+            if gb is not None and _clear_goodbye(_last_user_text(state)):
+                interrupt_id = gb.id
         if interrupt_id:
             spec = next((i for i in self._pb.interrupts if i.id == interrupt_id), None)
             # Guard: suppress interrupt if its target is already in the completed
