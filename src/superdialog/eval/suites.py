@@ -62,6 +62,18 @@ class SuiteExpect(BaseModel):
     # goodbye once finished (a goodbye:absent assertion would flag the honest
     # close; a premature hangup shows up as a short section instead).
     min_turns: int | None = None
+    # Route integrity (from [turn-trace] checkpoints): no checkpoint may be
+    # RE-entered after the flow moved past it (A..B..A = restart/regression).
+    # Caveat: resume=true interrupt detours legitimately revisit — only use
+    # on playbooks without resume interrupts.
+    no_reentry: bool = False
+    # Post-end probing must draw NO reply: an ended session that answers
+    # ("Hello?" -> goodbye replay / re-engagement) is a zombie (observed in
+    # production). Requires the persona to define afterlife_probes.
+    silent_afterlife: bool = False
+    # No assistant reply may exactly repeat the previous one (closing loops,
+    # parrot loops) — asserted via the runner's [repeat-reply] markers.
+    no_repeat_replies: bool = False
 
 
 class Suite(BaseModel):
@@ -219,6 +231,51 @@ def evaluate_expectations(
                     check=f"turns>={exp.min_turns}",
                     passed=turns >= exp.min_turns,
                     detail=f"got {turns}",
+                )
+            )
+        if exp.no_reentry and section is not None:
+            cps = re.findall(r"\[turn-trace\].*?checkpoint=(\S+)", section)
+            route: list[str] = []
+            for cp in cps:
+                if not route or route[-1] != cp:
+                    route.append(cp)
+            revisited = sorted({cp for cp in route if route.count(cp) > 1})
+            checks.append(
+                CheckResult(
+                    case_id=case_id,
+                    check="no_reentry",
+                    passed=not revisited,
+                    detail=(
+                        f"route={'>'.join(route)}"
+                        + (f" REVISITED={revisited}" if revisited else "")
+                    )[:300],
+                )
+            )
+        if exp.silent_afterlife and section is not None:
+            replies = re.findall(
+                r"\[afterlife\] probe=.*? reply='(.*)'$", section, re.M
+            )
+            noisy = [r for r in replies if r.strip()]
+            checks.append(
+                CheckResult(
+                    case_id=case_id,
+                    check="silent_afterlife",
+                    passed=bool(replies) and not noisy,
+                    detail=(
+                        f"{len(noisy)}/{len(replies)} probes drew a reply"
+                        if replies
+                        else "no afterlife probes ran (session never ended?)"
+                    ),
+                )
+            )
+        if exp.no_repeat_replies and section is not None:
+            repeats = len(re.findall(r"\[repeat-reply\]", section))
+            checks.append(
+                CheckResult(
+                    case_id=case_id,
+                    check="no_repeat_replies",
+                    passed=repeats == 0,
+                    detail=f"{repeats} repeated replies",
                 )
             )
         if exp.min_task_success is not None:

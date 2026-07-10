@@ -34,8 +34,16 @@ class Transcript:
         self.records.append(TurnRecord(role, text, latency_ms, metadata or {}))
 
     def to_messages(self) -> list[dict[str, str]]:
-        """RAGAS/LLM-judge friendly [{role, content}] view."""
-        return [{"role": r.role, "content": r.text} for r in self.records]
+        """RAGAS/LLM-judge friendly [{role, content}] view.
+
+        Afterlife records (post-end probes) are excluded: judges score the
+        living conversation; the suite runner asserts on the afterlife.
+        """
+        return [
+            {"role": r.role, "content": r.text}
+            for r in self.records
+            if not r.metadata.get("afterlife")
+        ]
 
     def assistant_latencies_ms(self) -> list[float]:
         """Latencies (ms) of every assistant turn that recorded one."""
@@ -47,7 +55,11 @@ class Transcript:
 
     def turn_count(self) -> int:
         """Number of user turns (a proxy for conversation length)."""
-        return sum(1 for r in self.records if r.role == "user")
+        return sum(
+            1
+            for r in self.records
+            if r.role == "user" and not r.metadata.get("afterlife")
+        )
 
     def assistant_meta_values(self, key: str) -> list[float]:
         """Numeric ``metadata[key]`` of every assistant turn that recorded one."""

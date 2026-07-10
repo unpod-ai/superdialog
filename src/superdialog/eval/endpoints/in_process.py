@@ -89,10 +89,12 @@ class InProcessPlaybook:
         agent_model: str,
         director_model: str | None = None,
         talker_model: str | None = None,
+        traversal_dir: str | None = None,
     ) -> None:
         self._path = playbook_path
         self._talker = talker_model or agent_model
         self._director = director_model or agent_model
+        self._traversal_dir = traversal_dir
         self._turn_events: list[Any] = []
         self._machine = self._new_machine()
 
@@ -105,6 +107,7 @@ class InProcessPlaybook:
             barrier_timeout=_OFFLINE_BARRIER_S,
             hold_timeout=_OFFLINE_HOLD_S,
             settle_before_speak=True,
+            traversal_dir=self._traversal_dir,
         )
         # Duck-typed: real DialogMachine has it; test fakes may not.
         register = getattr(machine, "register_llm_callback", None)

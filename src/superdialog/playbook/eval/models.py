@@ -17,6 +17,12 @@ class PersonaSpec(BaseModel):
     max_turns: int = 12
     opening: str = "Hello"
     ground_truth_slots: dict[str, Any] = Field(default_factory=dict)
+    # Post-end probing (the "afterlife"): utterances sent AFTER the endpoint
+    # reports ended — reproduces real callers speaking into a closed session
+    # ("Hello?", "I have time now"). Replies are recorded with
+    # metadata.afterlife=True and excluded from judged messages; the suite
+    # runner asserts on them (silent_afterlife).
+    afterlife_probes: list[str] = Field(default_factory=list)
 
 
 class SessionMetrics(BaseModel):

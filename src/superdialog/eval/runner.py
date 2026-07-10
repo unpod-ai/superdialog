@@ -63,10 +63,27 @@ async def drive_journey(
         reply, ms = await _timed(endpoint.turn(user_text))
         print(f"[eval-progress]   turn {_turn_i}: reply in {ms:.0f}ms", flush=True)
         t.add("assistant", reply, latency_ms=ms, metadata=_turn_meta(endpoint))
+        # Loud marker for parrot/closing loops: the same reply twice in a row
+        # is never intended (observed live: the closing verbatim replayed 4x).
+        prev = [r.text for r in t.records if r.role == "assistant"][-2:-1]
+        if prev and prev[0].strip() and prev[0].strip() == (reply or "").strip():
+            print(f"[repeat-reply] turn {_turn_i}", flush=True)
         # Stop at the natural call end (duck-typed; endpoints without a
         # session model never report ended) or when the caller hung up.
         if hanging_up or bool(getattr(endpoint, "ended", False)):
             break
+    # Afterlife probing: the session has ended — a real caller may keep
+    # talking ("Hello?"). A correct engine stays closed and SILENT; replies
+    # here are breaking points, recorded but never judged.
+    if persona.afterlife_probes and bool(getattr(endpoint, "ended", False)):
+        for probe in persona.afterlife_probes:
+            t.add("user", probe, metadata={"afterlife": True})
+            reply, ms = await _timed(endpoint.turn(probe))
+            t.add("assistant", reply, latency_ms=ms, metadata={"afterlife": True})
+            print(
+                f"[afterlife] probe={probe[:40]!r} reply={(reply or '')[:80]!r}",
+                flush=True,
+            )
     return t
 
 

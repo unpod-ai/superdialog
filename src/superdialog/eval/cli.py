@@ -166,11 +166,16 @@ def cmd_bench(args: argparse.Namespace) -> int:
             def _playbook(case: EvalCase, _m: str = model) -> InProcessPlaybook:
                 # director/talker default to the model unless overridden — lets a
                 # strong Director drive B while a cheap Talker speaks.
+                # Traversals record every session's route (checkpoint path,
+                # slots, latency) for breaking-point analysis.
                 return InProcessPlaybook(
                     args.playbook,
                     agent_model=_m,
                     director_model=args.director_model,
                     talker_model=args.talker_model,
+                    traversal_dir=os.path.join(
+                        args.out, _m.replace("/", "_"), "traversals"
+                    ),
                 )
 
             factories = {"vanilla": _vanilla, "playbook": _playbook}

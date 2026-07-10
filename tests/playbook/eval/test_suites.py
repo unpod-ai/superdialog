@@ -376,3 +376,63 @@ def test_min_turns_floor() -> None:
     checks = evaluate_expectations(s2, _report(), log)
     assert [c.passed for c in checks] == [False]
     assert "got 3" in checks[0].detail
+
+
+def test_no_reentry_detects_flow_restart() -> None:
+    log = (
+        "[eval-progress] mode=playbook case 1/1 rep 1/1 id=bye-case\n"
+        "[turn-trace] side=brain version=2 checkpoint=main.greet lang=-\n"
+        "[turn-trace] side=brain version=5 checkpoint=main.ask lang=-\n"
+        "[turn-trace] side=brain version=9 checkpoint=main.greet lang=-\n"  # restart!
+    )
+    s = _suite(expect={"bye-case": SuiteExpect(no_reentry=True)}, min_composite=None)
+    checks = evaluate_expectations(s, _report(), log)
+    assert [c.passed for c in checks] == [False]
+    assert "REVISITED" in checks[0].detail and "main.greet" in checks[0].detail
+    clean = log.replace(
+        "checkpoint=main.greet lang=-\n[turn-trace] side=brain version=5",
+        "checkpoint=main.greet lang=-\n[turn-trace] side=brain version=5",
+    )
+    clean = (
+        "[eval-progress] mode=playbook case 1/1 rep 1/1 id=bye-case\n"
+        "[turn-trace] side=brain version=2 checkpoint=main.greet lang=-\n"
+        "[turn-trace] side=brain version=3 checkpoint=main.greet lang=-\n"  # consecutive = fine
+        "[turn-trace] side=brain version=5 checkpoint=main.ask lang=-\n"
+    )
+    checks = evaluate_expectations(s, _report(), clean)
+    assert [c.passed for c in checks] == [True]
+
+
+def test_silent_afterlife_flags_zombie_replies() -> None:
+    noisy = (
+        "[eval-progress] mode=playbook case 1/1 rep 1/1 id=bye-case\n"
+        "[afterlife] probe='Hello?' reply='Thank you. Goodbye.'\n"
+        "[afterlife] probe='I have time now' reply=''\n"
+    )
+    s = _suite(
+        expect={"bye-case": SuiteExpect(silent_afterlife=True)}, min_composite=None
+    )
+    checks = evaluate_expectations(s, _report(), noisy)
+    assert [c.passed for c in checks] == [False]
+    assert "1/2 probes drew a reply" in checks[0].detail
+    silent = noisy.replace("reply='Thank you. Goodbye.'", "reply=''")
+    checks = evaluate_expectations(s, _report(), silent)
+    assert [c.passed for c in checks] == [True]
+    # no probes at all -> fail loudly (session never ended)
+    bare = "[eval-progress] mode=playbook case 1/1 rep 1/1 id=bye-case\n"
+    checks = evaluate_expectations(s, _report(), bare)
+    assert [c.passed for c in checks] == [False]
+
+
+def test_no_repeat_replies_counts_markers() -> None:
+    log = (
+        "[eval-progress] mode=playbook case 1/1 rep 1/1 id=bye-case\n"
+        "[repeat-reply] turn 4\n"
+        "[repeat-reply] turn 5\n"
+    )
+    s = _suite(
+        expect={"bye-case": SuiteExpect(no_repeat_replies=True)}, min_composite=None
+    )
+    checks = evaluate_expectations(s, _report(), log)
+    assert [c.passed for c in checks] == [False]
+    assert "2 repeated replies" in checks[0].detail
