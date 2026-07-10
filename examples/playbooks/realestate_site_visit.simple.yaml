@@ -1,6 +1,8 @@
 # Authored simple-playbook form. Compiles via superdialog.playbook.load_simple
 # to the Playbook in examples/playbooks/realestate_site_visit.yaml.
 name: "Parkview Residences Site-Visit Booking"
+supervisor: true  # loop-2 trajectory reviewer: breaks re-ask loops / camps
+# (e.g. the location step) at turn 5 with a forward steer, before the backstop.
 goal: >-
   Book a site visit for the Parkview Residences project, but only after
   confirming alignment on Budget, Possession timeline, Configuration, and
@@ -64,6 +66,7 @@ playbook:
     collect: [permission_to_continue]
     done_when: "Customer permits or declines continuation."
   - id: pitch_project_short
+    gate: soft  # pure-talk: no capture, skip the Talker barrier (~1-2s/turn)
     purpose: "Compact project introduction."
     say: >-
       Give the short version: gated community in a developing suburb near the
@@ -76,12 +79,18 @@ playbook:
       Discover where they live/work and whether it's for investment or
       self-use.
     say: >-
-      Ask current stay location and work location (if both missing — otherwise
-      only the missing one). Then ask whether they're considering Parkview
+      Ask where they currently live. Once they name a place, acknowledge it and
+      move on — do NOT re-ask it. If they also mention a work location, note it,
+      but work location is optional: never insist on it and never assume it is
+      the same as where they live. Then ask whether they're considering Parkview
       Residences for investment or self-use. Use the answer to set a soft frame
       for the rest of the pitch.
     collect: [stay_location, work_location, reason_for_looking]
-    done_when: "Both location and purpose are captured."
+    done_when: >-
+      The caller has stated where they currently live (in their own words) AND
+      stated their purpose (investment or self-use). Work location is optional —
+      do not wait for it. Never infer a location or purpose the caller did not
+      say; if only one of the two is given, it is NOT yet captured.
   - id: qualify_configuration
     purpose: "Capture configuration preference and family size."
     say: >-
@@ -100,6 +109,7 @@ playbook:
     collect: [budget_fit]
     done_when: "Customer has responded on whether the price is workable."
   - id: explain_value
+    gate: soft  # pure-talk: no capture, skip the Talker barrier (~1-2s/turn)
     purpose: "Briefly reinforce why Parkview Residences before pitching the visit."
     say: >-
       Use one or two sentences from facts.value_props — branded development,
@@ -136,6 +146,7 @@ playbook:
     collect: [visit_day, visit_time]
     done_when: "Day and time are captured."
   - id: confirm_visit_and_family
+    gate: soft  # pure-talk: no capture, skip the Talker barrier (~1-2s/turn)
     purpose: "Confirm the slot and suggest bringing family."
     say: >-
       Read back the captured day and time. Mention the sales expert will assist
