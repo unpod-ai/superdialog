@@ -112,14 +112,70 @@ def test_kb_uses_kb_true_injects_without_mention():
 # --- terminal-interrupt slot guard ---------------------------------------------
 
 
-async def test_goodbye_interrupt_steers_once_when_required_slots_missing():
+async def test_goodbye_closes_immediately_when_capture_cold():
+    # New contract (live QA + disconnect-eval finding): a caller who says
+    # goodbye once and hangs up never repeats it — deflecting a cold call
+    # (little/nothing captured) loses the close. 0 of 2 required filled ->
+    # honor the goodbye NOW, no wrap.
     pb, state = _state()  # at booking.collect; city+date required, unfilled
+    llm = CannedLLM({"slots": {}, "interrupt": "goodbye"})
+    decision = await Director(pb, llm).evaluate(state)
+    adv = [e for e in decision.events if isinstance(e, AdvanceEvent)]
+    assert adv and adv[0].to_checkpoint == "booking.close"
+    notes = [e for e in decision.events if isinstance(e, SteeringNoteEvent)]
+    assert not [n for n in notes if n.text.startswith(_WRAP_MARKER)]
+
+
+_INVESTED_YAML = textwrap.dedent("""
+    persona: "You are a booking assistant."
+    journeys:
+      booking:
+        checkpoints:
+          - id: collect
+            goal: "Have city, date and phone"
+            gate: soft
+            slots:
+              city: {type: str, required: true}
+              date: {type: date, required: true}
+              phone: {type: str, required: true}
+            advance_when:
+              - {when: "details complete", judge: llm, to: booking.close,
+                 requires: [city, date, phone]}
+          - id: close
+            terminal: true
+            outcome: closed
+    interrupts:
+      - {id: goodbye, when: "caller says goodbye", judge: llm,
+         to: booking.close, resume: false}
+""")
+
+
+async def test_goodbye_wraps_once_when_capture_nearly_complete():
+    # 2 of 3 required filled (>=2/3): losing the last slot is genuinely
+    # costly -> ONE wrap steer for the missing slot, no advance yet.
+    from superdialog.playbook.events import SlotWriteEvent
+
+    pb = Playbook.from_yaml(_INVESTED_YAML)
+    log = EventLog()
+    log.append(
+        AdvanceEvent(from_checkpoint=None, to_checkpoint="booking.collect", rule="init")
+    )
+    log.append(
+        SlotWriteEvent(key="city", value="Pune", status="confirmed", by="director")
+    )
+    log.append(
+        SlotWriteEvent(
+            key="date", value="2026-07-12", status="confirmed", by="director"
+        )
+    )
+    log.append(UtteranceEvent(role="user", text="ok bye"))
+    state = ConversationState.fold(log, playbook=pb)
     llm = CannedLLM({"slots": {}, "interrupt": "goodbye"})
     decision = await Director(pb, llm).evaluate(state)
     assert not [e for e in decision.events if isinstance(e, AdvanceEvent)]
     notes = [e for e in decision.events if isinstance(e, SteeringNoteEvent)]
     assert notes and notes[0].text.startswith(_WRAP_MARKER)
-    assert "city" in notes[0].text and "date" in notes[0].text
+    assert "phone" in notes[0].text
 
 
 async def test_goodbye_interrupt_passes_on_second_ask():
@@ -141,3 +197,21 @@ async def test_goodbye_interrupt_passes_when_slots_filled():
     decision = await Director(pb, llm).evaluate(state)
     adv = [e for e in decision.events if isinstance(e, AdvanceEvent)]
     assert adv and adv[0].to_checkpoint == "booking.close"
+
+
+def test_verdict_prompt_names_soft_disconnect_intent():
+    # Fix for the flaky soft-intent case: the interrupt instruction must name
+    # intent-to-leave phrasing (no bye token) and multilingual closings, while
+    # explicitly excluding frustration.
+    from superdialog.playbook.director import _verdict_prompt
+
+    pb, state = _state()
+    messages = _verdict_prompt(pb, pb.checkpoint("booking.collect"), state)
+    sys_txt = messages[0]["content"]
+    for phrase in (
+        "INTENT to leave",
+        "call me later",
+        "फोन रखती हूँ",
+        "Frustration or repeating an answer is NOT a goodbye",
+    ):
+        assert phrase in sys_txt
