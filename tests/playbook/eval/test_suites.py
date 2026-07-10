@@ -436,3 +436,18 @@ def test_no_repeat_replies_counts_markers() -> None:
     checks = evaluate_expectations(s, _report(), log)
     assert [c.passed for c in checks] == [False]
     assert "2 repeated replies" in checks[0].detail
+
+
+def test_no_reentry_ignores_probe_phase_version_reset() -> None:
+    # A version RESET (18 -> 2) is the factual-probe phase on a fresh machine,
+    # not an in-conversation restart; its greeting must not read as a revisit.
+    log = (
+        "[eval-progress] mode=playbook case 1/1 rep 1/1 id=bye-case\n"
+        "[turn-trace] side=brain version=2 checkpoint=main.greet lang=-\n"
+        "[turn-trace] side=brain version=10 checkpoint=main.ask lang=-\n"
+        "[turn-trace] side=brain version=18 checkpoint=main.close lang=-\n"
+        "[turn-trace] side=brain version=2 checkpoint=main.greet lang=-\n"
+    )
+    s = _suite(expect={"bye-case": SuiteExpect(no_reentry=True)}, min_composite=None)
+    checks = evaluate_expectations(s, _report(), log)
+    assert [c.passed for c in checks] == [True]

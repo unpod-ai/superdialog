@@ -234,9 +234,20 @@ def evaluate_expectations(
                 )
             )
         if exp.no_reentry and section is not None:
-            cps = re.findall(r"\[turn-trace\].*?checkpoint=(\S+)", section)
+            # A version RESET (later version < earlier) marks a fresh machine —
+            # the factual-probe phase rebuilds it, legitimately re-greeting.
+            # Reentry is only meaningful WITHIN one session segment, so reset
+            # the route there; otherwise the probe greeting reads as a restart.
+            traces = re.findall(
+                r"\[turn-trace\].*?version=(\d+).*?checkpoint=(\S+)", section
+            )
             route: list[str] = []
-            for cp in cps:
+            prev_ver = -1
+            for ver_s, cp in traces:
+                ver = int(ver_s)
+                if ver < prev_ver:  # new session segment (probe/reset)
+                    route = []
+                prev_ver = ver
                 if not route or route[-1] != cp:
                     route.append(cp)
             revisited = sorted({cp for cp in route if route.count(cp) > 1})
