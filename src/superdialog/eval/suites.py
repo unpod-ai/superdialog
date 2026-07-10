@@ -57,6 +57,11 @@ class SuiteExpect(BaseModel):
 
     goodbye: Literal["fired", "absent"] | None = None
     min_task_success: float | None = None
+    # Floor on conversation length — encodes "not ended prematurely" for
+    # control personas whose business takes N turns but who legitimately say
+    # goodbye once finished (a goodbye:absent assertion would flag the honest
+    # close; a premature hangup shows up as a short section instead).
+    min_turns: int | None = None
 
 
 class Suite(BaseModel):
@@ -203,6 +208,17 @@ def evaluate_expectations(
                     check=f"goodbye:{exp.goodbye}",
                     passed=fired == want,
                     detail=f"goodbye interrupt {'fired' if fired else 'absent'}",
+                )
+            )
+        if exp.min_turns is not None and section is not None:
+            turn_ids = [int(m) for m in re.findall(r"turn (\d+):", section)]
+            turns = (max(turn_ids) + 1) if turn_ids else 0
+            checks.append(
+                CheckResult(
+                    case_id=case_id,
+                    check=f"turns>={exp.min_turns}",
+                    passed=turns >= exp.min_turns,
+                    detail=f"got {turns}",
                 )
             )
         if exp.min_task_success is not None:

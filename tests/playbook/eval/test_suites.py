@@ -358,3 +358,21 @@ def test_fallback_behavioral_failure_still_gates(tmp_path, monkeypatch) -> None:
         min_composite=None,
     )
     assert run_suite(s, tmp_path / "out").status == "failed"
+
+
+def test_min_turns_floor() -> None:
+    # LOG's bye-case section has one turn marker style? Build a section with
+    # explicit turn markers to count.
+    log = (
+        "[eval-progress] mode=playbook case 1/1 rep 1/1 id=bye-case\n"
+        "[eval-progress]   turn 0: user said 'hi'\n"
+        "[eval-progress]   turn 1: user said 'no'\n"
+        "[eval-progress]   turn 2: user said 'bye'\n"
+    )
+    s = _suite(expect={"bye-case": SuiteExpect(min_turns=3)}, min_composite=None)
+    checks = evaluate_expectations(s, _report(), log)
+    assert [c.passed for c in checks] == [True]
+    s2 = _suite(expect={"bye-case": SuiteExpect(min_turns=5)}, min_composite=None)
+    checks = evaluate_expectations(s2, _report(), log)
+    assert [c.passed for c in checks] == [False]
+    assert "got 3" in checks[0].detail
