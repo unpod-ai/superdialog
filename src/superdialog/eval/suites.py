@@ -121,6 +121,23 @@ def _suite_hash(suite: Suite) -> str:
     return h.hexdigest()
 
 
+def _exc_chain_text(exc: BaseException) -> str:
+    """Concatenated messages of ``exc`` and its cause/context chain.
+
+    Providers wrap the interesting error (`LLMResilienceError ... from
+    RateLimitError`), so quota detection must read the whole chain, not just
+    the top-level message.
+    """
+    parts: list[str] = []
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen and len(parts) < 10:
+        seen.add(id(cur))
+        parts.append(f"{type(cur).__name__}: {cur}")
+        cur = cur.__cause__ or cur.__context__
+    return " | ".join(parts)
+
+
 def _subset_dataset(dataset: str, case_ids: list[str], out: Path) -> str:
     """Write a smoke-tier dataset containing only ``case_ids``."""
     doc = yaml.safe_load(Path(dataset).read_text(encoding="utf-8"))
@@ -297,7 +314,7 @@ def run_suite(
         try:
             log = _run_bench(suite, dataset, out_dir, suite.judge, suite.user_model)
         except Exception as exc:  # noqa: BLE001 — inspect for quota, else re-raise
-            blob = f"{exc}"
+            blob = _exc_chain_text(exc)
             if any(s in blob for s in _QUOTA_SIGNALS) and suite.fallback_judge:
                 print(f"[suite:{suite.name}] quota hit — retrying via fallback models")
                 log = _run_bench(

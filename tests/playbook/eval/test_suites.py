@@ -274,3 +274,30 @@ def test_smoke_tier_filters_expectations_to_ran_cases(tmp_path, monkeypatch) -> 
     r = run_suite(s, tmp_path / "out", tier="smoke")
     assert r.status == "passed"
     assert [c.case_id for c in r.checks] == ["bye-case"]
+
+
+def test_quota_fallback_detects_chained_cause(tmp_path, monkeypatch) -> None:
+    # Real shape: LLMResilienceError("failed after 3 attempts") from
+    # RateLimitError("... insufficient_quota ...") — the signal is in the
+    # CAUSE, not the top-level message.
+    pb, ds = _write_inputs(tmp_path)
+    calls: list[tuple[str, str]] = []
+    inner = _fake_bench(tmp_path, calls)
+
+    def flaky(suite: Suite, dataset: str, out_dir: Path, judge: str, user: str) -> str:
+        if judge == "openai/gpt-4.1-mini":
+            try:
+                raise RuntimeError("Error code: 429 - insufficient_quota")
+            except RuntimeError as cause:
+                raise RuntimeError("LLM complete failed after 3 attempt(s)") from cause
+        return inner(suite, dataset, out_dir, judge, user)
+
+    monkeypatch.setattr(su, "_run_bench", flaky)
+    s = _suite(
+        playbook=pb,
+        dataset=ds,
+        judge="openai/gpt-4.1-mini",
+        fallback_judge="livekit/openai/gpt-4o-mini",
+    )
+    assert run_suite(s, tmp_path / "out").status == "passed"
+    assert calls == [("livekit/openai/gpt-4o-mini", "livekit/openai/gpt-4o-mini")]
