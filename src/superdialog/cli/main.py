@@ -931,8 +931,12 @@ def _build_parser() -> argparse.ArgumentParser:
     bench_p.add_argument(
         "--talker-model", default=None, help="Override Talker LLM (else --models)"
     )
-    bench_p.add_argument("--personas", default=None, help="Persona YAML/JSON; else auto")
-    bench_p.add_argument("--dataset", default=None, help="Reuse this dataset; else auto")
+    bench_p.add_argument(
+        "--personas", default=None, help="Persona YAML/JSON; else auto"
+    )
+    bench_p.add_argument(
+        "--dataset", default=None, help="Reuse this dataset; else auto"
+    )
     bench_p.add_argument("--regen", action="store_true", help="Rebuild the dataset")
     bench_p.add_argument("--n-probes", type=int, default=8)
     bench_p.add_argument(
@@ -963,24 +967,45 @@ def _build_parser() -> argparse.ArgumentParser:
     serve_p.add_argument("--port", type=int, default=8000)
     serve_p.set_defaults(fn=cmd_serve)
 
+    from superdialog.eval.suites import register as register_suites
+
+    register_suites(eval_sub)
+
     bench = sub.add_parser(
         "benchmark",
         help="RAGAS + deterministic benchmark over a dataset (raw vs SuperDialog)",
     )
-    bench.add_argument("--data", default="universal",
-                       help="dataset: short name (e.g. universal) or path to a .jsonl")
-    bench.add_argument("--flow", default=None,
-                       help="playbook YAML to run (default: from dataset's playbook field)")
-    bench.add_argument("--prompt", default=None,
-                       help="raw-LLM system-prompt .txt (needed to run the raw baseline)")
-    bench.add_argument("--models", default=",".join(_BENCH_ALL),
-                       help="comma-separated models (aliases or litellm ids). "
-                            f"default: {','.join(_BENCH_ALL)}")
+    bench.add_argument(
+        "--data",
+        default="universal",
+        help="dataset: short name (e.g. universal) or path to a .jsonl",
+    )
+    bench.add_argument(
+        "--flow",
+        default=None,
+        help="playbook YAML to run (default: from dataset's playbook field)",
+    )
+    bench.add_argument(
+        "--prompt",
+        default=None,
+        help="raw-LLM system-prompt .txt (needed to run the raw baseline)",
+    )
+    bench.add_argument(
+        "--models",
+        default=",".join(_BENCH_ALL),
+        help="comma-separated models (aliases or litellm ids). "
+        f"default: {','.join(_BENCH_ALL)}",
+    )
     bench.add_argument("--sd-only", action="store_true", help="only with-SuperDialog")
     bench.add_argument("--raw-only", action="store_true", help="only raw LLM")
-    bench.add_argument("--no-ragas", action="store_true",
-                       help="deterministic metrics only (no judge, fast/free)")
-    bench.add_argument("--out", default=None, help="write the big-table report to this path")
+    bench.add_argument(
+        "--no-ragas",
+        action="store_true",
+        help="deterministic metrics only (no judge, fast/free)",
+    )
+    bench.add_argument(
+        "--out", default=None, help="write the big-table report to this path"
+    )
     bench.set_defaults(fn=_cmd_benchmark)
 
     return parser
@@ -1026,13 +1051,23 @@ def _cmd_benchmark(args: argparse.Namespace) -> int:
         print(f"\n# model: {ms}", file=sys.stderr)
         if not sd_only:
             reports.append(
-                run_raw_mode(samples, ms, args.prompt,
-                             label=f"Raw LLM ({ms})", run_ragas=run_ragas)
+                run_raw_mode(
+                    samples,
+                    ms,
+                    args.prompt,
+                    label=f"Raw LLM ({ms})",
+                    run_ragas=run_ragas,
+                )
             )
         if not args.raw_only:
             reports.append(
-                run_sd_mode(samples, ms, playbook,
-                            label=f"With SuperDialog ({ms})", run_ragas=run_ragas)
+                run_sd_mode(
+                    samples,
+                    ms,
+                    playbook,
+                    label=f"With SuperDialog ({ms})",
+                    run_ragas=run_ragas,
+                )
             )
 
     judge = None if args.no_ragas else DEFAULT_JUDGES[0]
