@@ -269,6 +269,27 @@ class PlaybookAgent:
         task group / cancel scope; the background task sidesteps that.
         """
         pass_through = await self._ensure_started()
+        # Post-terminal short-circuit: once the session has ended, a further
+        # user turn must NOT resurrect the call. Both production Westgate
+        # transcripts show the flow speaking after it ended — the closing
+        # replayed on every "Hello?", and a post-close utterance restarted the
+        # pitch. Neither the Director (an LLM call per zombie turn) nor the
+        # Talker (which re-speaks the terminal verbatim / re-greets) may run
+        # here. Record the utterance for transcript/audit continuity, mark it,
+        # and return silence so the host can disconnect cleanly.
+        if self.runtime.state.ended:
+            self.runtime.log.append(
+                UtteranceEvent(role="user", text=text, language=language)
+            )
+            print(
+                f"[PlaybookAgent] post-terminal turn ignored (ended); "
+                f"cp={self.runtime.state.checkpoint_id}",
+                flush=True,
+            )
+            for line in pass_through:  # normally empty; flush any pending speech
+                yield StreamChunk(text=line)
+            yield StreamChunk(done=True, turn=Turn(text="", metadata=self._metadata()))
+            return
         self._director_timer.begin_turn()
         self._talker_timer.begin_turn()
         quiescent = anyio.Event()

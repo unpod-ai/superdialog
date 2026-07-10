@@ -96,3 +96,91 @@ async def test_embedded_bye_in_a_continuing_utterance_does_not_close() -> None:
     )
     assert not rt.state.ended
     assert rt.state.checkpoint_id == "main.collect"
+
+
+# -- post-terminal silence (Westgate resurrection fix) ---------------------------
+
+
+class _CountingTalker:
+    """Streams a re-engagement line; counts how many times it is asked to speak."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(self, messages, **kw):
+        self.calls += 1
+        yield "Hello! How can I help you with Westgate today?"
+
+
+class _CountingDirector:
+    """Canned verdict; counts completions (each = one post-turn LLM call)."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete(self, messages, **kw):
+        self.calls += 1
+        import json as _json
+
+        return _json.dumps({"slots": {}, "advance": "main.done", "note": None})
+
+
+_END_PB = textwrap.dedent("""
+    journeys:
+      main:
+        checkpoints:
+          - id: ask
+            goal: "ask"
+            advance_when: [{when: "done", judge: llm, to: main.done}]
+          - id: done
+            terminal: true
+            outcome: completed
+            say_verbatim: "Thank you. Goodbye."
+""")
+
+
+async def _ended_agent():
+    from superdialog.playbook.agent import PlaybookAgent
+
+    talker, director = _CountingTalker(), _CountingDirector()
+    agent = PlaybookAgent(
+        playbook=Playbook.from_yaml(_END_PB),
+        talker_llm=talker,
+        director_llm=director,
+        http=FakeHttp([]),
+    )
+    async for _ in agent.greet():
+        pass
+    async for _ in agent.stream_turn("ok done"):  # -> terminal
+        pass
+    assert agent.runtime.state.ended
+    return agent, talker, director
+
+
+async def test_post_terminal_turn_is_silent() -> None:
+    agent, talker, director = await _ended_agent()
+    t_before, d_before = talker.calls, director.calls
+    spoken = [c.text async for c in agent.stream_turn("Hello?") if c.text]
+    assert spoken == []  # no resurrection speech
+    # neither the Talker nor the Director ran on the post-terminal turn
+    assert talker.calls == t_before
+    assert director.calls == d_before
+    assert agent.runtime.state.ended  # still ended
+
+
+async def test_post_terminal_turn_is_recorded_for_audit() -> None:
+    agent, _, _ = await _ended_agent()
+    n_before = sum(1 for e in agent.runtime.log.events if e.type == "utterance")
+    async for _ in agent.stream_turn("मेरे पास टाइम है, बात करोगी?"):
+        pass
+    utts = [e for e in agent.runtime.log.events if e.type == "utterance"]
+    assert len(utts) == n_before + 1
+    assert utts[-1].text == "मेरे पास टाइम है, बात करोगी?"
+
+
+async def test_repeated_post_terminal_turns_never_resurrect() -> None:
+    agent, talker, _ = await _ended_agent()
+    for probe in ("Hello?", "Hello? Hello?", "I have time now"):
+        spoken = [c.text async for c in agent.stream_turn(probe) if c.text]
+        assert spoken == []
+    assert talker.calls == 1  # only the pre-terminal turn ever spoke
