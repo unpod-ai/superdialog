@@ -301,3 +301,60 @@ def test_quota_fallback_detects_chained_cause(tmp_path, monkeypatch) -> None:
     )
     assert run_suite(s, tmp_path / "out").status == "passed"
     assert calls == [("livekit/openai/gpt-4o-mini", "livekit/openai/gpt-4o-mini")]
+
+
+def test_fallback_downgrades_score_floors_to_advisory(tmp_path, monkeypatch) -> None:
+    # Under the fallback judge, behavioral checks still gate but score floors
+    # (judge-calibrated) become advisory WARNs, and no hash stamp is written.
+    pb, ds = _write_inputs(tmp_path)
+    calls: list[tuple[str, str]] = []
+    inner = _fake_bench(tmp_path, calls)
+
+    def low_score_fallback(
+        suite: Suite, dataset: str, out_dir: Path, judge: str, user: str
+    ) -> str:
+        if judge == "primary":
+            raise RuntimeError("insufficient_quota")
+        inner(suite, dataset, out_dir, judge, user)
+        mdir = su._model_dir(out_dir, suite.models[0])
+        (mdir / "report.json").write_text(json.dumps(_report(ts_bye=0.3, comp=0.4)))
+        return LOG
+
+    monkeypatch.setattr(su, "_run_bench", low_score_fallback)
+    s = _suite(judge="primary", fallback_judge="fb", playbook=pb, dataset=ds)
+    r = run_suite(s, tmp_path / "out")
+    assert r.status == "passed" and r.detail == "(fallback judge)"
+    advisories = [c for c in r.checks if c.advisory]
+    assert advisories and all(
+        c.check.startswith(("task_success>=", "composite>=")) for c in advisories
+    )
+    # behavioral checks still gated (and passed)
+    assert any(c.check == "goodbye:fired" and c.passed for c in r.checks)
+    # no stamp -> next run executes again instead of skipping
+    assert run_suite(s, tmp_path / "out").status == "passed"
+    assert len(calls) == 2
+
+
+def test_fallback_behavioral_failure_still_gates(tmp_path, monkeypatch) -> None:
+    pb, ds = _write_inputs(tmp_path)
+
+    def fallback_no_goodbye(
+        suite: Suite, dataset: str, out_dir: Path, judge: str, user: str
+    ) -> str:
+        if judge == "primary":
+            raise RuntimeError("insufficient_quota")
+        mdir = su._model_dir(out_dir, suite.models[0])
+        mdir.mkdir(parents=True, exist_ok=True)
+        (mdir / "report.json").write_text(json.dumps(_report()))
+        return LOG.replace("interrupt:global_goodbye", "advance=STAY")
+
+    monkeypatch.setattr(su, "_run_bench", fallback_no_goodbye)
+    s = _suite(
+        judge="primary",
+        fallback_judge="fb",
+        playbook=pb,
+        dataset=ds,
+        expect={"bye-case": SuiteExpect(goodbye="fired")},
+        min_composite=None,
+    )
+    assert run_suite(s, tmp_path / "out").status == "failed"

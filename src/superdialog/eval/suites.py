@@ -89,6 +89,12 @@ class CheckResult(BaseModel):
     check: str
     passed: bool
     detail: str = ""
+    # Advisory checks report but do not gate. Score floors (task_success,
+    # composite) are calibrated against the suite's PRIMARY judge; when the
+    # quota fallback swaps the judge, those numbers aren't comparable, so
+    # they downgrade to advisory. Behavioral checks (goodbye fired/absent)
+    # are judge-independent and always gate.
+    advisory: bool = False
 
 
 class SuiteResult(BaseModel):
@@ -311,12 +317,14 @@ def run_suite(
                     }
                 }
             )
+        fallback_used = False
         try:
             log = _run_bench(suite, dataset, out_dir, suite.judge, suite.user_model)
         except Exception as exc:  # noqa: BLE001 — inspect for quota, else re-raise
             blob = _exc_chain_text(exc)
             if any(s in blob for s in _QUOTA_SIGNALS) and suite.fallback_judge:
                 print(f"[suite:{suite.name}] quota hit — retrying via fallback models")
+                fallback_used = True
                 log = _run_bench(
                     suite,
                     dataset,
@@ -332,15 +340,28 @@ def run_suite(
     report_path = _model_dir(out_dir, suite.models[0]) / "report.json"
     report = json.loads(report_path.read_text(encoding="utf-8"))
     checks = evaluate_expectations(suite, report, log)
+    if fallback_used:
+        # Score floors were calibrated against the primary judge; under the
+        # fallback judge they inform but do not gate.
+        for c in checks:
+            if not c.passed and (
+                c.check.startswith("task_success>=")
+                or c.check.startswith("composite>=")
+            ):
+                c.advisory = True
+                c.detail += " [advisory: fallback judge]"
     composite = (report.get("modes") or [{}])[0].get("composite_mean")
-    passed = all(c.passed for c in checks)
-    if passed:
+    passed = all(c.passed or c.advisory for c in checks)
+    # A fallback run never stamps: the suite re-verifies under the calibrated
+    # judge once the primary provider recovers.
+    if passed and not fallback_used:
         stamp.write_text(digest)
     return SuiteResult(
         name=suite.name,
         status="passed" if passed else "failed",
         checks=checks,
         composite=composite,
+        detail="(fallback judge)" if fallback_used else "",
     )
 
 
@@ -360,7 +381,7 @@ def cmd_suite(args: argparse.Namespace) -> int:
         comp = f" composite={r.composite:.3f}" if r.composite is not None else ""
         print(f"[{r.status.upper():7}] {r.name}{comp} {r.detail}")
         for c in r.checks:
-            mark = "ok " if c.passed else "FAIL"
+            mark = "ok  " if c.passed else ("WARN" if c.advisory else "FAIL")
             print(f"    {mark} {c.case_id}: {c.check} ({c.detail})")
         failed = failed or r.status in ("failed", "errored")
     return 1 if failed else 0
