@@ -39,6 +39,12 @@ class SimplePersona(BaseModel):
     identity: str = ""
 
 
+class SimpleBranch(BaseModel):
+    when: str
+    to: str
+    requires: list[str] = Field(default_factory=list)
+
+
 class SimpleStep(BaseModel):
     id: str
     purpose: str = ""
@@ -65,6 +71,9 @@ class SimpleStep(BaseModel):
     # `collect` for focused capture steps (<=2 slots), NONE for branchy steps
     # collecting many per-path slots (requiring all would deadlock the step).
     require: list[str] | None = None
+    # Optional multi-way routing, judged by the Director in author order and
+    # AHEAD of the done_when default. Each compiles to one llm AdvanceRule.
+    branches: list[SimpleBranch] = Field(default_factory=list)
 
 
 class SimpleObjection(BaseModel):
@@ -271,6 +280,10 @@ def _step_to_checkpoint(
         for c in step.collect
     }
     if next_id is None:
+        # Terminal checkpoints carry no advance rules, so branches here would
+        # silently compile to nothing — reject instead of losing routing.
+        if step.branches:
+            raise ValueError(f"step {step.id}: terminal steps cannot have branches")
         return Checkpoint(
             id=step.id,
             goal=step.purpose,
@@ -294,6 +307,17 @@ def _step_to_checkpoint(
         # Caller-entity only: the expr `slots.*` namespace is caller-scoped.
         expr = " and ".join(f"slots.{c} is not None" for c in required)
         rules.append(AdvanceRule(when=expr, judge="expr", to=next_id))
+    # Branch rules ahead of the done_when default: the first llm rule whose
+    # target the Director's verdict names wins, in author order.
+    for b in step.branches:
+        rules.append(
+            AdvanceRule(
+                when=b.when,
+                judge="llm",
+                to=f"main.{b.to}",
+                requires=list(b.requires),
+            )
+        )
     rules.append(
         AdvanceRule(
             when=step.done_when.strip() or "step complete",
@@ -329,6 +353,8 @@ def simple_to_playbook(doc: dict[str, Any]) -> Playbook:
         # every hop), so reject it at compile time.
         if step.then and step.then == step.id:
             raise ValueError(f"step {step.id!r}: then cannot target itself")
+        if any(b.to == step.id for b in step.branches):
+            raise ValueError(f"step {step.id!r}: branch cannot target itself")
         if step.then:
             next_id = f"main.{step.then}"
         else:

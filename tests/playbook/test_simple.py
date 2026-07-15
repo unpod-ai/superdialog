@@ -523,6 +523,110 @@ def test_then_targeting_itself_is_rejected() -> None:
         )
 
 
+def test_branches_compile_to_llm_rules_in_author_order() -> None:
+    pb = simple_to_playbook(
+        _doc(
+            [
+                {
+                    "id": "pitch",
+                    "done_when": "customer responded",
+                    "branches": [
+                        {"when": "customer accepts the visit", "to": "book"},
+                        {"when": "customer firmly declines", "to": "fallback"},
+                    ],
+                },
+                {"id": "book", "done_when": "done"},
+                {"id": "fallback", "terminal": True},
+            ]
+        )
+    )
+    rules = [r for r in pb.checkpoint("main.pitch").advance_when if r.judge == "llm"]
+    # branches first (author order), then the done_when default to the successor
+    assert [r.to for r in rules] == ["main.book", "main.fallback", "main.book"]
+    assert rules[0].when == "customer accepts the visit"
+
+
+def test_branch_requires_gates_the_branch() -> None:
+    pb = simple_to_playbook(
+        _doc(
+            [
+                {
+                    "id": "a",
+                    "collect": ["day"],
+                    "branches": [
+                        {"when": "slot given", "to": "b", "requires": ["day"]}
+                    ],
+                },
+                {"id": "b"},
+            ]
+        )
+    )
+    branch = pb.checkpoint("main.a").advance_when[-2]  # before default rule
+    assert branch.requires == ["day"]
+
+
+def test_branch_to_unknown_step_is_rejected() -> None:
+    import pytest as _pytest
+
+    # Playbook target validation (need_cp) rejects the dangling ref
+    with _pytest.raises(ValueError):
+        simple_to_playbook(
+            _doc(
+                [
+                    {"id": "a", "branches": [{"when": "x", "to": "ghost"}]},
+                    {"id": "b"},
+                ]
+            )
+        )
+
+
+def test_branch_targeting_itself_is_rejected() -> None:
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="cannot target itself"):
+        simple_to_playbook(
+            _doc(
+                [
+                    {"id": "a", "branches": [{"when": "x", "to": "a"}]},
+                    {"id": "b"},
+                ]
+            )
+        )
+
+
+def test_terminal_step_with_branches_is_rejected() -> None:
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="terminal steps cannot have branches"):
+        simple_to_playbook(
+            _doc(
+                [
+                    {"id": "a", "done_when": "done"},
+                    {
+                        "id": "bye",
+                        "terminal": True,
+                        "branches": [{"when": "x", "to": "a"}],
+                    },
+                ]
+            )
+        )
+
+
+def test_last_step_with_branches_is_rejected() -> None:
+    import pytest as _pytest
+
+    # last step without a then: is implicitly terminal -> same rejection
+    with _pytest.raises(ValueError, match="terminal steps cannot have branches"):
+        simple_to_playbook(
+            _doc(
+                [
+                    {"id": "a", "done_when": "done"},
+                    {"id": "z", "branches": [{"when": "x", "to": "a"}]},
+                ]
+            )
+        )
+
+
 def test_linear_compile_unchanged_without_new_fields() -> None:
     pb = simple_to_playbook(
         _doc(
