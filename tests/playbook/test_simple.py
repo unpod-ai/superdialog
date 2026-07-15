@@ -509,6 +509,20 @@ def test_then_to_unknown_step_is_rejected() -> None:
         )
 
 
+def test_then_targeting_itself_is_rejected() -> None:
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="cannot target itself"):
+        simple_to_playbook(
+            _doc(
+                [
+                    {"id": "a", "collect": ["x"], "then": "a"},
+                    {"id": "b"},
+                ]
+            )
+        )
+
+
 def test_linear_compile_unchanged_without_new_fields() -> None:
     pb = simple_to_playbook(
         _doc(

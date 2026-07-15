@@ -325,6 +325,10 @@ def simple_to_playbook(doc: dict[str, Any]) -> Playbook:
     checkpoints: list[Checkpoint] = []
     for i, step in enumerate(sp.playbook):
         is_last = i == len(sp.playbook) - 1
+        # A self-then livelocks the quiesce loop (expr rule re-fires
+        # every hop), so reject it at compile time.
+        if step.then and step.then == step.id:
+            raise ValueError(f"step {step.id!r}: then cannot target itself")
         if step.then:
             next_id = f"main.{step.then}"
         else:
