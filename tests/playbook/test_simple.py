@@ -447,6 +447,82 @@ def test_explicit_require_overrides_heuristic() -> None:
     assert cp.slots["a"].required and not cp.slots["c"].required
 
 
+def _doc(steps: list[dict]) -> dict:
+    return {"playbook": steps}
+
+
+def test_then_overrides_linear_successor() -> None:
+    pb = simple_to_playbook(
+        _doc(
+            [
+                {"id": "a", "done_when": "done", "then": "close"},
+                {"id": "b", "done_when": "done"},
+                {"id": "close"},
+            ]
+        )
+    )
+    a = pb.checkpoint("main.a")
+    assert [r.to for r in a.advance_when if r.judge == "llm"] == ["main.close"]
+
+
+def test_terminal_mid_list_ends_the_chain() -> None:
+    pb = simple_to_playbook(
+        _doc(
+            [
+                {"id": "a", "done_when": "done"},
+                {"id": "bye", "terminal": True, "outcome": "callback_scheduled"},
+                {"id": "z"},
+            ]
+        )
+    )
+    bye = pb.checkpoint("main.bye")
+    assert bye.terminal is True
+    assert bye.outcome == "callback_scheduled"
+    assert bye.advance_when == []  # terminal steps get no advance rules
+
+
+def test_terminal_default_outcome_is_closed() -> None:
+    pb = simple_to_playbook(
+        _doc(
+            [
+                {"id": "a", "done_when": "done"},
+                {"id": "bye", "terminal": True},
+                {"id": "z"},
+            ]
+        )
+    )
+    assert pb.checkpoint("main.bye").outcome == "closed"
+
+
+def test_then_to_unknown_step_is_rejected() -> None:
+    import pytest as _pytest
+
+    # Playbook target validation (need_cp) rejects the dangling ref
+    with _pytest.raises(ValueError):
+        simple_to_playbook(
+            _doc(
+                [
+                    {"id": "a", "done_when": "done", "then": "nope"},
+                    {"id": "b"},
+                ]
+            )
+        )
+
+
+def test_linear_compile_unchanged_without_new_fields() -> None:
+    pb = simple_to_playbook(
+        _doc(
+            [
+                {"id": "a", "done_when": "done"},
+                {"id": "b"},
+            ]
+        )
+    )
+    a = pb.checkpoint("main.a")
+    assert [r.to for r in a.advance_when] == ["main.b"]
+    assert pb.checkpoint("main.b").terminal is True  # last step still terminal
+
+
 def test_kb_false_step_compiles_uses_kb_false() -> None:
     import yaml
 

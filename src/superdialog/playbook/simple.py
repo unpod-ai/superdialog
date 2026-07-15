@@ -45,6 +45,14 @@ class SimpleStep(BaseModel):
     say: str = ""
     collect: list[str] = Field(default_factory=list)
     done_when: str = ""
+    # Step to advance to when done_when holds. Default: the next step in list
+    # order (the original linear-chain behavior).
+    then: str = ""
+    # Marks this step as a call ending. Compiles to a terminal checkpoint —
+    # previously only the LAST list element could end the call, which made
+    # fallback steps (whatsapp/callback/DNC) structurally unclosable.
+    terminal: bool = False
+    outcome: str = "closed"  # recorded on SessionEnd when terminal
     # Which person this step collects for (multi-entity). Defaults to "caller"
     # so single-entity playbooks are unchanged.
     entity: str = "caller"
@@ -270,7 +278,7 @@ def _step_to_checkpoint(
             slots=slots,
             entity=step.entity,
             terminal=True,
-            outcome="closed",
+            outcome=step.outcome,
             uses_kb=step.kb,
         )
     # requires=collect: the Director may not advance past unfilled slots (a
@@ -317,7 +325,12 @@ def simple_to_playbook(doc: dict[str, Any]) -> Playbook:
     checkpoints: list[Checkpoint] = []
     for i, step in enumerate(sp.playbook):
         is_last = i == len(sp.playbook) - 1
-        next_id = None if is_last else f"main.{sp.playbook[i + 1].id}"
+        if step.then:
+            next_id = f"main.{step.then}"
+        else:
+            next_id = None if is_last else f"main.{sp.playbook[i + 1].id}"
+        if step.terminal:
+            next_id = None
         opening = sp.opening if i == 0 else ""
         checkpoints.append(_step_to_checkpoint(step, next_id, opening))
     interrupts = [
