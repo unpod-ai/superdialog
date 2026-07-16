@@ -375,16 +375,28 @@ def _unknown_keys(doc: dict[str, Any]) -> list[str]:
     model_fields keys are field names; the simple format uses no aliases, so
     direct membership is correct.
     """
-    bad = [k for k in doc if k not in SimplePlaybook.model_fields]
+    # str(k): a non-string YAML key (e.g. `2024:`) must report cleanly,
+    # not TypeError inside ', '.join.
+    bad = [str(k) for k in doc if k not in SimplePlaybook.model_fields]
     steps = doc.get("playbook")
     if isinstance(steps, list):
         for i, step in enumerate(steps):
-            if isinstance(step, dict):
-                bad += [
-                    f"playbook[{i}].{k}"
-                    for k in step
-                    if k not in SimpleStep.model_fields
-                ]
+            if not isinstance(step, dict):
+                continue
+            bad += [
+                f"playbook[{i}].{k}" for k in step if k not in SimpleStep.model_fields
+            ]
+            # One level further into branches: a typo like `require` would
+            # silently drop the branch slot gate — the routing-critical case.
+            branches = step.get("branches")
+            if isinstance(branches, list):
+                for j, br in enumerate(branches):
+                    if isinstance(br, dict):
+                        bad += [
+                            f"playbook[{i}].branches[{j}].{k}"
+                            for k in br
+                            if k not in SimpleBranch.model_fields
+                        ]
     return bad
 
 

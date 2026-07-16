@@ -672,6 +672,32 @@ def test_unknown_step_keys_raise_with_path() -> None:
         simple_to_playbook(doc)
 
 
+def test_unknown_branch_keys_raise_with_path() -> None:
+    import pytest as _pytest
+
+    # `require` (missing s) would silently drop the branch slot gate
+    doc = {
+        "playbook": [
+            {
+                "id": "a",
+                "branches": [{"when": "x", "to": "c", "require": ["day"]}],
+            },
+            {"id": "b"},
+            {"id": "c"},
+        ]
+    }
+    with _pytest.raises(ValueError, match=r"playbook\[0\]\.branches\[0\].*require"):
+        simple_to_playbook(doc)
+
+
+def test_non_string_top_level_key_reports_cleanly() -> None:
+    import pytest as _pytest
+
+    doc = {"playbook": [{"id": "a"}], 2024: "foo"}
+    with _pytest.raises(ValueError, match="2024"):
+        simple_to_playbook(doc)
+
+
 def test_strict_false_warns_and_loads(recwarn) -> None:
     doc = {"playbook": [{"id": "a"}], "latency_optimization": {}}
     pb = simple_to_playbook(doc, strict=False)
