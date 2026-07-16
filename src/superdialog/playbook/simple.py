@@ -14,10 +14,11 @@ NOT env — to stay visible during speech.
 from __future__ import annotations
 
 import json
+import warnings
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .models import (
     AdvanceRule,
@@ -43,6 +44,19 @@ class SimpleBranch(BaseModel):
     when: str
     to: str
     requires: list[str] = Field(default_factory=list)
+
+    @field_validator("when")
+    @classmethod
+    def _when_not_blank(cls, v: str) -> str:
+        # An empty condition renders an empty rule into the Director prompt.
+        if not v.strip():
+            raise ValueError("branch `when` cannot be empty")
+        return v
+
+    @field_validator("to")
+    @classmethod
+    def _strip_to(cls, v: str) -> str:
+        return v.strip()
 
 
 class SimpleStep(BaseModel):
@@ -74,6 +88,12 @@ class SimpleStep(BaseModel):
     # Optional multi-way routing, judged by the Director in author order and
     # AHEAD of the done_when default. Each compiles to one llm AdvanceRule.
     branches: list[SimpleBranch] = Field(default_factory=list)
+
+    @field_validator("then")
+    @classmethod
+    def _strip_then(cls, v: str) -> str:
+        # `then: " close"` would otherwise compile to unknown "main. close".
+        return v.strip()
 
 
 class SimpleObjection(BaseModel):
@@ -283,7 +303,10 @@ def _step_to_checkpoint(
         # Terminal checkpoints carry no advance rules, so branches here would
         # silently compile to nothing — reject instead of losing routing.
         if step.branches:
-            raise ValueError(f"step {step.id}: terminal steps cannot have branches")
+            raise ValueError(
+                f"step {step.id!r}: terminal steps (including a last step "
+                "without then:) cannot have branches"
+            )
         return Checkpoint(
             id=step.id,
             goal=step.purpose,
@@ -343,8 +366,43 @@ def _step_to_checkpoint(
     )
 
 
-def simple_to_playbook(doc: dict[str, Any]) -> Playbook:
-    """Compile a simple-format dict into a validated ``Playbook``."""
+def _unknown_keys(doc: dict[str, Any]) -> list[str]:
+    """Dotted paths of keys the simple format does not recognize.
+
+    pydantic's default extra="ignore" would silently drop these — an authored
+    top-level section (e.g. ``language_lock``) or a step typo (``done_wehn``)
+    never reaches the runtime while the author believes it is configured.
+    model_fields keys are field names; the simple format uses no aliases, so
+    direct membership is correct.
+    """
+    bad = [k for k in doc if k not in SimplePlaybook.model_fields]
+    steps = doc.get("playbook")
+    if isinstance(steps, list):
+        for i, step in enumerate(steps):
+            if isinstance(step, dict):
+                bad += [
+                    f"playbook[{i}].{k}"
+                    for k in step
+                    if k not in SimpleStep.model_fields
+                ]
+    return bad
+
+
+def simple_to_playbook(doc: dict[str, Any], strict: bool = True) -> Playbook:
+    """Compile a simple-format dict into a validated ``Playbook``.
+
+    Unknown keys raise (``strict=True``, default) or warn (``strict=False``)
+    instead of being silently dropped by pydantic.
+    """
+    unknown = _unknown_keys(doc)
+    if unknown:
+        msg = (
+            "simple playbook has keys the format does not support "
+            f"(they would be silently dropped): {', '.join(unknown)}"
+        )
+        if strict:
+            raise ValueError(msg)
+        warnings.warn(msg, stacklevel=2)
     sp = SimplePlaybook.model_validate(doc)
     checkpoints: list[Checkpoint] = []
     for i, step in enumerate(sp.playbook):
@@ -361,6 +419,26 @@ def simple_to_playbook(doc: dict[str, Any]) -> Playbook:
             next_id = None if is_last else f"main.{sp.playbook[i + 1].id}"
         if step.terminal:
             next_id = None
+        # Non-default outcome on a non-terminal step is silently ignored at
+        # runtime (only SessionEnd records it) — reject so authors notice.
+        if next_id is not None and step.outcome != "closed":
+            raise ValueError(
+                f"step {step.id!r}: outcome is only used on terminal steps"
+            )
+        seen_targets: set[str] = set()
+        for b in step.branches:
+            if b.to in seen_targets:
+                raise ValueError(f"step {step.id!r}: duplicate branch target {b.to!r}")
+            seen_targets.add(b.to)
+            # The Director resolves verdicts by target and the first llm rule
+            # wins, so a branch aliasing the default advance target shadows
+            # the done_when rule's slot gate. done_when already covers that
+            # path — reject the redundant (and gate-bypassing) branch.
+            if next_id == f"main.{b.to}":
+                raise ValueError(
+                    f"step {step.id!r}: branch targets the default next step "
+                    f"{b.to!r}; use done_when for that path"
+                )
         opening = sp.opening if i == 0 else ""
         checkpoints.append(_step_to_checkpoint(step, next_id, opening))
     interrupts = [
@@ -396,9 +474,9 @@ def simple_to_playbook(doc: dict[str, Any]) -> Playbook:
     )
 
 
-def load_simple(path: str) -> Playbook:
+def load_simple(path: str, strict: bool = True) -> Playbook:
     """Load a simple-format file (YAML or JSON) and compile it to a Playbook."""
     with open(path, encoding="utf-8") as fh:
         text = fh.read()
     doc = json.loads(text) if path.endswith(".json") else yaml.safe_load(text)
-    return simple_to_playbook(doc)
+    return simple_to_playbook(doc, strict=strict)

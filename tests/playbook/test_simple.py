@@ -535,6 +535,7 @@ def test_branches_compile_to_llm_rules_in_author_order() -> None:
                         {"when": "customer firmly declines", "to": "fallback"},
                     ],
                 },
+                {"id": "clarify", "done_when": "done"},
                 {"id": "book", "done_when": "done"},
                 {"id": "fallback", "terminal": True},
             ]
@@ -542,7 +543,7 @@ def test_branches_compile_to_llm_rules_in_author_order() -> None:
     )
     rules = [r for r in pb.checkpoint("main.pitch").advance_when if r.judge == "llm"]
     # branches first (author order), then the done_when default to the successor
-    assert [r.to for r in rules] == ["main.book", "main.fallback", "main.book"]
+    assert [r.to for r in rules] == ["main.book", "main.fallback", "main.clarify"]
     assert rules[0].when == "customer accepts the visit"
 
 
@@ -554,10 +555,11 @@ def test_branch_requires_gates_the_branch() -> None:
                     "id": "a",
                     "collect": ["day"],
                     "branches": [
-                        {"when": "slot given", "to": "b", "requires": ["day"]}
+                        {"when": "slot given", "to": "c", "requires": ["day"]}
                     ],
                 },
                 {"id": "b"},
+                {"id": "c"},
             ]
         )
     )
@@ -597,7 +599,7 @@ def test_branch_targeting_itself_is_rejected() -> None:
 def test_terminal_step_with_branches_is_rejected() -> None:
     import pytest as _pytest
 
-    with _pytest.raises(ValueError, match="terminal steps cannot have branches"):
+    with _pytest.raises(ValueError, match="cannot have branches"):
         simple_to_playbook(
             _doc(
                 [
@@ -616,7 +618,7 @@ def test_last_step_with_branches_is_rejected() -> None:
     import pytest as _pytest
 
     # last step without a then: is implicitly terminal -> same rejection
-    with _pytest.raises(ValueError, match="terminal steps cannot have branches"):
+    with _pytest.raises(ValueError, match="cannot have branches"):
         simple_to_playbook(
             _doc(
                 [
@@ -649,3 +651,149 @@ def test_kb_false_step_compiles_uses_kb_false() -> None:
     pb = simple_to_playbook(doc)
     assert pb.checkpoint("main.collect").uses_kb is False
     assert pb.checkpoint("main.greet").uses_kb is None  # legacy default
+
+
+# -- strict unknown-key validation --------------------------------------------
+
+
+def test_unknown_top_level_keys_raise() -> None:
+    import pytest as _pytest
+
+    doc = {"playbook": [{"id": "a"}], "language_lock": {}, "agent_runtime": {}}
+    with _pytest.raises(ValueError, match="language_lock"):
+        simple_to_playbook(doc)
+
+
+def test_unknown_step_keys_raise_with_path() -> None:
+    import pytest as _pytest
+
+    doc = {"playbook": [{"id": "a", "done_wehn": "typo"}]}
+    with _pytest.raises(ValueError, match=r"playbook\[0\].*done_wehn"):
+        simple_to_playbook(doc)
+
+
+def test_strict_false_warns_and_loads(recwarn) -> None:
+    doc = {"playbook": [{"id": "a"}], "latency_optimization": {}}
+    pb = simple_to_playbook(doc, strict=False)
+    assert pb.checkpoint("main.a")
+    assert any("latency_optimization" in str(w.message) for w in recwarn.list)
+
+
+def test_clean_doc_no_warning(recwarn) -> None:
+    simple_to_playbook({"playbook": [{"id": "a"}]})
+    assert not recwarn.list
+
+
+def test_load_simple_passes_strict_through(tmp_path: Path) -> None:
+    import pytest as _pytest
+
+    from superdialog.playbook.simple import load_simple
+
+    p = tmp_path / "pb.yaml"
+    p.write_text("playbook:\n  - id: a\nlanguage_lock: {}\n", encoding="utf-8")
+    with _pytest.raises(ValueError, match="language_lock"):
+        load_simple(str(p))
+    with _pytest.warns(UserWarning, match="language_lock"):
+        assert load_simple(str(p), strict=False).checkpoint("main.a")
+
+
+# -- compile-time guards from review -------------------------------------------
+
+
+def test_branch_targeting_default_next_is_rejected() -> None:
+    import pytest as _pytest
+
+    # branch to the linear successor shadows the done_when slot gate
+    with _pytest.raises(ValueError, match="default next step"):
+        simple_to_playbook(
+            _doc(
+                [
+                    {"id": "a", "branches": [{"when": "x", "to": "b"}]},
+                    {"id": "b"},
+                ]
+            )
+        )
+    # same rejection when the default comes from then:
+    with _pytest.raises(ValueError, match="default next step"):
+        simple_to_playbook(
+            _doc(
+                [
+                    {
+                        "id": "a",
+                        "then": "c",
+                        "branches": [{"when": "x", "to": "c"}],
+                    },
+                    {"id": "b"},
+                    {"id": "c"},
+                ]
+            )
+        )
+
+
+def test_duplicate_branch_targets_rejected() -> None:
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="duplicate branch target"):
+        simple_to_playbook(
+            _doc(
+                [
+                    {
+                        "id": "a",
+                        "branches": [
+                            {"when": "x", "to": "c"},
+                            {"when": "y", "to": "c"},
+                        ],
+                    },
+                    {"id": "b"},
+                    {"id": "c"},
+                ]
+            )
+        )
+
+
+def test_outcome_on_non_terminal_step_rejected() -> None:
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="only used on terminal steps"):
+        simple_to_playbook(
+            _doc(
+                [
+                    {"id": "a", "outcome": "callback_scheduled"},
+                    {"id": "b"},
+                ]
+            )
+        )
+
+
+def test_then_and_branch_to_are_whitespace_stripped() -> None:
+    pb = simple_to_playbook(
+        _doc(
+            [
+                {
+                    "id": "a",
+                    "done_when": "done",
+                    "then": " close ",
+                    "branches": [{"when": "x", "to": " alt "}],
+                },
+                {"id": "alt"},
+                {"id": "close"},
+            ]
+        )
+    )
+    rules = pb.checkpoint("main.a").advance_when
+    assert [r.to for r in rules] == ["main.alt", "main.close"]
+
+
+def test_branch_empty_when_rejected() -> None:
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="when"):
+        simple_to_playbook(
+            _doc(
+                [
+                    {"id": "a", "branches": [{"when": "   ", "to": "c"}]},
+                    {"id": "b"},
+                    {"id": "c"},
+                ]
+            )
+        )
