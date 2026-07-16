@@ -677,6 +677,9 @@ class PlaybookRuntime:
                 by=by,
             )
         )
+        # Defensive: no current _advance caller passes an llm:/expr: rule
+        # (director advances flow through _apply_with_entry), so this is a
+        # no-op today; kept so a future rule_id-carrying caller isn't silent.
         self._emit_exit_say(from_ref, rule)
         await self._enter(to, pass_through)
 
@@ -687,8 +690,13 @@ class PlaybookRuntime:
         rule_id prefixes ("llm:"/"expr:"). Everything else is not a
         happy-path exit from the step: interrupts are detours, policy
         advances and on_failure are failures, resume abandons a detour,
-        supervisor redirects are recoveries. Appended AFTER the
-        AdvanceEvent so the advance's steering reset doesn't clear it.
+        supervisor redirects are recoveries, and auto exits already speak
+        their say_verbatim. Appended AFTER the AdvanceEvent so the
+        advance's steering reset doesn't clear it. A Director note on the
+        same advancing turn (the AdvanceEvent reset means any note present
+        now was written this turn) is composed in, not clobbered — notes
+        flag edge cases like objections, which must not be lost to a
+        canned transition line.
         """
         if not from_ref or not rule.startswith(("llm:", "expr:")):
             return
@@ -699,15 +707,14 @@ class PlaybookRuntime:
         if not cp.exit_say:
             return
         text = render_template(cp.exit_say, self._pb, self.state)
-        self.log.append(
-            SteeringNoteEvent(
-                text=(
-                    "Deliver this transition line first, then this "
-                    f"step's own goal: {text}"
-                ),
-                kind="steer",
-            )
+        line = (
+            "Deliver this transition line first, then pursue this step's "
+            f"own goal. Transition line: {text}"
         )
+        note = self.state.steering_note
+        if note:
+            line = f"{line} (Also: {note})"
+        self.log.append(SteeringNoteEvent(text=line, kind="steer"))
 
     async def _enter(self, cp_ref: str, pass_through: list[str]) -> None:
         """Run on_enter tools (failures are data) and handle terminal ends."""
