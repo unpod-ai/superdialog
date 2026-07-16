@@ -854,3 +854,44 @@ def test_then_say_on_terminal_step_rejected() -> None:
                 ]
             )
         )
+
+
+# -- Westgate end-to-end fixture (proves the authored intent is expressible) ----
+
+
+def test_westgate_fixture_compiles_and_routes() -> None:
+    from superdialog.playbook.simple import load_simple
+
+    pb = load_simple(str(FIXTURES / "westgate_routed.yaml"))
+    # Every fallback step routes to the closing instead of falling into
+    # whatever step happens to follow it in list order.
+    for fb in [
+        "busy_reschedule",
+        "whatsapp_only",
+        "wrong_number_or_dnc",
+        "advisor_callback",
+        "out_of_scope",
+        "user_silence",
+    ]:
+        targets = [r.to for r in pb.checkpoint(f"main.{fb}").advance_when]
+        assert targets and set(targets) == {"main.deliver_closing"}, fb
+    assert pb.checkpoint("main.summary_before_closing").advance_when[-1].to == (
+        "main.deliver_closing"
+    )
+    assert pb.checkpoint("main.deliver_closing").terminal
+    # Visit pitch: accept rides done_when to BPCL confirm; firm decline
+    # branches to the advisor-callback fallback.
+    pitch = [
+        r.to
+        for r in pb.checkpoint("main.pitch_site_visit").advance_when
+        if r.judge == "llm"
+    ]
+    assert pitch == [
+        "main.advisor_callback",
+        "main.confirm_qualification_bpcl",
+    ]
+    # Early decline routes to the reference ask, not accidental list order.
+    nie = [r.to for r in pb.checkpoint("main.not_interested_early").advance_when]
+    assert set(nie) == {"main.ask_for_reference"}
+    # The connectivity pitch rides the advance as exit_say.
+    assert "connectivity" in pb.checkpoint("main.qualify_location").exit_say

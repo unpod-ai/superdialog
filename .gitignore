@@ -40,4 +40,5 @@ benchmark_kairali_results.md
 eval-out
 examples/datasets
 *.yaml
+!tests/fixtures/playbooks/*.yaml
 *.sh
