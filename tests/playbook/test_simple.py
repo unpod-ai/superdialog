@@ -823,3 +823,34 @@ def test_branch_empty_when_rejected() -> None:
                 ]
             )
         )
+
+
+def test_then_say_compiles_to_exit_say() -> None:
+    pb = simple_to_playbook(
+        _doc(
+            [
+                {
+                    "id": "a",
+                    "collect": ["city"],
+                    "then_say": "Pitch connectivity for {{slots.city}}.",
+                },
+                {"id": "b"},
+            ]
+        )
+    )
+    assert pb.checkpoint("main.a").exit_say.startswith("Pitch connectivity")
+
+
+def test_then_say_on_terminal_step_rejected() -> None:
+    import pytest as _pytest
+
+    # A terminal step never advances OUT, so its exit_say would never fire.
+    with _pytest.raises(ValueError, match="then_say"):
+        simple_to_playbook(
+            _doc(
+                [
+                    {"id": "a"},
+                    {"id": "b", "then_say": "never spoken"},
+                ]
+            )
+        )

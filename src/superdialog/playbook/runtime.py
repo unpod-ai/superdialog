@@ -668,15 +668,46 @@ class PlaybookRuntime:
             if rule.startswith("supervisor:")
             else "director"
         )
+        from_ref = self.state.checkpoint_id
         self.log.append(
             AdvanceEvent(
-                from_checkpoint=self.state.checkpoint_id,
+                from_checkpoint=from_ref,
                 to_checkpoint=to,
                 rule=rule,
                 by=by,
             )
         )
+        self._emit_exit_say(from_ref, rule)
         await self._enter(to, pass_through)
+
+    def _emit_exit_say(self, from_ref: str | None, rule: str) -> None:
+        """One-shot steer carrying the left checkpoint's exit_say.
+
+        Director-rule advances only — the allowlist is the AdvanceRule
+        rule_id prefixes ("llm:"/"expr:"). Everything else is not a
+        happy-path exit from the step: interrupts are detours, policy
+        advances and on_failure are failures, resume abandons a detour,
+        supervisor redirects are recoveries. Appended AFTER the
+        AdvanceEvent so the advance's steering reset doesn't clear it.
+        """
+        if not from_ref or not rule.startswith(("llm:", "expr:")):
+            return
+        try:
+            cp = self._pb.checkpoint(from_ref)
+        except KeyError:
+            return
+        if not cp.exit_say:
+            return
+        text = render_template(cp.exit_say, self._pb, self.state)
+        self.log.append(
+            SteeringNoteEvent(
+                text=(
+                    "Deliver this transition line first, then this "
+                    f"step's own goal: {text}"
+                ),
+                kind="steer",
+            )
+        )
 
     async def _enter(self, cp_ref: str, pass_through: list[str]) -> None:
         """Run on_enter tools (failures are data) and handle terminal ends."""
@@ -729,4 +760,9 @@ class PlaybookRuntime:
         self._apply(events)
         after = self.state.checkpoint_id
         if after is not None and after != before:
+            adv = next(
+                (e for e in reversed(events) if isinstance(e, AdvanceEvent)), None
+            )
+            if adv is not None:
+                self._emit_exit_say(adv.from_checkpoint, adv.rule)
             await self._enter(after, pass_through)

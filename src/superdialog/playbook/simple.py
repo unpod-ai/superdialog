@@ -88,6 +88,8 @@ class SimpleStep(BaseModel):
     # Optional multi-way routing, judged by the Director in author order and
     # AHEAD of the done_when default. Each compiles to one llm AdvanceRule.
     branches: list[SimpleBranch] = Field(default_factory=list)
+    # Line to deliver while advancing out of this step (post-capture pitch).
+    then_say: str = ""
 
     @field_validator("then")
     @classmethod
@@ -307,6 +309,11 @@ def _step_to_checkpoint(
                 f"step {step.id!r}: terminal steps (including a last step "
                 "without then:) cannot have branches"
             )
+        # A terminal step never advances OUT, so its exit_say would never fire.
+        if step.then_say:
+            raise ValueError(
+                f"step {step.id!r}: then_say is never spoken on a terminal step"
+            )
         return Checkpoint(
             id=step.id,
             goal=step.purpose,
@@ -363,6 +370,7 @@ def _step_to_checkpoint(
         gate="hard",
         turn_budget=step.turn_budget or _DEFAULT_TURN_BUDGET,
         uses_kb=step.kb,
+        exit_say=step.then_say,
     )
 
 
