@@ -58,6 +58,16 @@ def test_clear_goodbye_recognizes_explicit_close() -> None:
     assert _clear_goodbye("bye bye")
 
 
+def test_clear_goodbye_recognizes_casual_elongation() -> None:
+    # A typed "byeee"/"byee" (common in real chat, not just voice ASR) must
+    # still route to close -- the word-boundary-only match previously missed
+    # these, leaving a finished conversation resumable indefinitely.
+    assert _clear_goodbye("byeee")
+    assert _clear_goodbye("byee")
+    assert _clear_goodbye("goodbyeee")
+    assert _clear_goodbye("byes")
+
+
 def test_clear_goodbye_ignores_frustration_and_embedded_bye() -> None:
     assert not _clear_goodbye("बता तो दिया")  # "I already told you" — no bye token
     assert not _clear_goodbye("maybe later")  # 'maybe' is not a bye

@@ -64,7 +64,9 @@ _WRAP_MARKER = "Caller wants to end the call"
 #: verdict missed (ASR noise, a mid-pitch barge-in) must still route to close.
 #: Deliberately narrow — the LLM handles soft signals ('ok thanks'); frustration
 #: utterances ('I already told you') carry no bye token, so they never match.
-_GOODBYE_RE = re.compile(r"\b(good\s?bye|bye)\b", re.IGNORECASE)
+#: `bye+`/`byes?` tolerates casual elongation/plurals a real caller actually
+#: types -- "byeee", "byee", "byes" -- without loosening the word itself.
+_GOODBYE_RE = re.compile(r"\b(good\s?bye+|bye+s?)\b", re.IGNORECASE)
 
 
 def _clear_goodbye(text: str) -> bool:
