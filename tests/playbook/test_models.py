@@ -1,4 +1,5 @@
 import textwrap
+import warnings
 
 import pytest
 from pydantic import ValidationError
@@ -137,6 +138,59 @@ def test_empty_journeys_rejected() -> None:
                     checkpoints: []
             """)
         )
+
+
+def test_no_llm_block_parses_unchanged() -> None:
+    pb = Playbook.from_yaml(MINIMAL_YAML)
+    assert pb.llm is None
+    assert pb.llm_uri() is None
+    assert pb.director_llm_uri() is None
+
+
+def test_llm_block_single_role() -> None:
+    yaml_text = MINIMAL_YAML + textwrap.dedent("""
+        llm: {provider: openai, model: gpt-4.1-mini}
+    """)
+    pb = Playbook.from_yaml(yaml_text)
+    assert pb.llm_uri() == "openai/gpt-4.1-mini"
+    # No director override → director shares the talker's model.
+    assert pb.director_llm_uri() == "openai/gpt-4.1-mini"
+
+
+def test_llm_block_with_director_override() -> None:
+    yaml_text = MINIMAL_YAML + textwrap.dedent("""
+        llm:
+          provider: openai
+          model: gpt-4.1-mini
+          director: {provider: anthropic, model: claude-haiku-4-5}
+    """)
+    pb = Playbook.from_yaml(yaml_text)
+    assert pb.llm_uri() == "openai/gpt-4.1-mini"
+    assert pb.director_llm_uri() == "anthropic/claude-haiku-4-5"
+
+
+def test_deprecated_talker_model_warns_without_llm_block() -> None:
+    yaml_text = MINIMAL_YAML.replace(
+        'persona: "You are a booking assistant."',
+        'persona: "You are a booking assistant."\n'
+        "guidelines: {talker_model: openai/gpt-4o}",
+    )
+    with pytest.warns(DeprecationWarning, match="talker_model"):
+        pb = Playbook.from_yaml(yaml_text)
+    assert pb.guidelines.talker_model == "openai/gpt-4o"
+
+
+def test_deprecated_talker_model_silent_when_llm_block_present() -> None:
+    yaml_text = MINIMAL_YAML.replace(
+        'persona: "You are a booking assistant."',
+        'persona: "You are a booking assistant."\n'
+        "guidelines: {talker_model: openai/gpt-4o}",
+    ) + textwrap.dedent("""
+        llm: {provider: openai, model: gpt-4.1-mini}
+    """)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        Playbook.from_yaml(yaml_text)  # must not raise
 
 
 def test_duplicate_ids_rejected() -> None:
