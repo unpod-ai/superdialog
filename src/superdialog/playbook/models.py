@@ -422,6 +422,64 @@ class Playbook(BaseModel):
         """The director model URI: ``llm.director`` if set, else the talker's."""
         return self.llm.director_uri if self.llm else None
 
+    async def resolve_llm_providers(
+        self, *, override: str | None = None
+    ) -> tuple[Any, Any]:
+        """Resolve ready-to-use ``(talker_llm, director_llm)`` providers.
+
+        One call does everything a host script needs: priority (an explicit
+        ``override`` wins, with a warning if this playbook ALSO declares
+        ``llm:`` — it's being shadowed; else the playbook's own ``llm:``
+        block; neither present raises), live-API validation per model (see
+        :func:`superdialog.llm.check_model_available` — a confirmed-invalid
+        model raises, an unverifiable one only warns), and resolution to
+        actual provider instances via :func:`superdialog.llm.resolve_llm`.
+        Self-contained: no host framework (e.g. a playground) required.
+        """
+        from ..llm import check_model_available, resolve_llm
+
+        declared_talker = self.llm_uri()
+        declared_director = self.director_llm_uri()
+
+        if override:
+            if declared_talker:
+                warnings.warn(
+                    f"playbook declares llm={declared_talker!r} but an "
+                    f"explicit override {override!r} takes priority",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            talker_uri = director_uri = override
+        elif declared_talker:
+            talker_uri = declared_talker
+            director_uri = declared_director or declared_talker
+        else:
+            raise ValueError(
+                "No LLM defined: pass override=, or add an "
+                "`llm: {provider: ..., model: ...}` block to the playbook YAML."
+            )
+
+        for uri in {talker_uri, director_uri}:
+            verdict = await check_model_available(uri)
+            if verdict is False:
+                raise ValueError(
+                    f"Model {uri!r} isn't recognized by its provider's API — "
+                    "check the provider/model spelling."
+                )
+            if verdict is None:
+                warnings.warn(
+                    f"couldn't verify {uri!r} against its provider (no API "
+                    "key found) — proceeding unverified",
+                    UserWarning,
+                    stacklevel=2,
+                )
+
+        talker_llm = resolve_llm(talker_uri)
+        director_llm = (
+            talker_llm if director_uri == talker_uri else resolve_llm(director_uri)
+        )
+        return talker_llm, director_llm
+
     # -- validation ----------------------------------------------------------
     @model_validator(mode="after")
     def _warn_deprecated_llm_fields(self) -> "Playbook":

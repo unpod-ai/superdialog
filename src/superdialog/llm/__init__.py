@@ -7,7 +7,7 @@ from .prompt_cache import CACHE_PREFIX_KEY, PromptCacheConfig, mark_cache_prefix
 from .provider import CompletionResult, LLMProvider, StreamChunk
 from .registry import CustomProviderConfig, get_custom, register_llm_provider
 from .resilience import LLMResilienceError, ResilienceConfig, ResilientProvider
-from .resolver import resolve_backend, resolve_llm
+from .resolver import check_model_available, resolve_backend, resolve_llm
 
 __all__ = [
     "CACHE_PREFIX_KEY",
@@ -22,6 +22,7 @@ __all__ = [
     "ResilienceConfig",
     "ResilientProvider",
     "StreamChunk",
+    "check_model_available",
     "get_custom",
     "mark_cache_prefix",
     "register_llm_provider",
