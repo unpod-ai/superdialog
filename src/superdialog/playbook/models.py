@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import warnings
 from typing import Any, Literal, Union
 
 import yaml
@@ -40,10 +41,11 @@ class GuidelineConfig(BaseModel):
     # from the selected voice profile's gender so the agent's verb/adjective
     # forms (करूँगी vs करूँगा) match the voice. "neutral" emits no gender block.
     gender: Literal["male", "female", "neutral"] = "neutral"
-    # Optional per-role LLM overrides (provider/model URI, e.g. "openai/gpt-4o").
-    # superdialog runs a routing Director and a speaking Talker; these let an
-    # authoring harness pin a different model per role. ``None`` (the default)
-    # preserves today's behavior: both roles use the agent's configured model.
+    # DEPRECATED: superseded by the top-level ``Playbook.llm`` block, which a
+    # host actually reads (these two never were — see ``LLMConfig`` below).
+    # Kept parseable for one release so an in-flight draft doesn't hard-fail;
+    # setting either without an ``llm`` block warns rather than silently
+    # dropping the author's intent.
     director_model: str | None = None
     talker_model: str | None = None
     # Loop-2 opt-in: enable the trajectory-level Supervisor (recovery/redirect
@@ -52,6 +54,39 @@ class GuidelineConfig(BaseModel):
     # passes an explicit ``supervisor_llm``. Set ``guidelines: {supervisor: true}``
     # in the playbook to turn it on everywhere the agent is constructed.
     supervisor: bool = False
+
+
+class LLMRoleConfig(BaseModel):
+    """A single role's provider/model pair (used for the ``director`` override)."""
+
+    provider: str
+    model: str
+
+    @property
+    def uri(self) -> str:
+        return f"{self.provider}/{self.model}"
+
+
+class LLMConfig(BaseModel):
+    """Playbook-declared LLM: the model a host should actually run this on.
+
+    ``director`` is optional — unset, the Director shares the talker's
+    provider/model (today's implicit behavior made explicit). This replaces
+    ``GuidelineConfig.director_model``/``talker_model``, which no host ever
+    read back.
+    """
+
+    provider: str
+    model: str
+    director: LLMRoleConfig | None = None
+
+    @property
+    def uri(self) -> str:
+        return f"{self.provider}/{self.model}"
+
+    @property
+    def director_uri(self) -> str:
+        return self.director.uri if self.director else self.uri
 
 
 class ResolveFrom(BaseModel):
@@ -304,6 +339,10 @@ class Playbook(BaseModel):
     # Opt-in: scope slot storage/lookups per checkpoint entity. Off ⇒ today.
     multi_entity: bool = False
     guidelines: GuidelineConfig = Field(default_factory=GuidelineConfig)
+    # The model a host should actually run this playbook on. ``None`` (the
+    # default) preserves today's behavior byte-for-byte: the host's caller-
+    # supplied session model applies to both roles, unvalidated.
+    llm: LLMConfig | None = None
     # Authored pronunciation rules (additive; empty preserves prior behavior).
     pronunciations: list[PronunciationSpec] = Field(default_factory=list)
     journeys: dict[str, Journey] = Field(min_length=1)
@@ -379,7 +418,91 @@ class Playbook(BaseModel):
                     return cp.slots[key]
         return None
 
+    def llm_uri(self) -> str | None:
+        """The talker model URI this playbook declares, or ``None`` if unset."""
+        return self.llm.uri if self.llm else None
+
+    def director_llm_uri(self) -> str | None:
+        """The director model URI: ``llm.director`` if set, else the talker's."""
+        return self.llm.director_uri if self.llm else None
+
+    async def resolve_llm_providers(
+        self, *, override: str | None = None
+    ) -> tuple[Any, Any]:
+        """Resolve ready-to-use ``(talker_llm, director_llm)`` providers.
+
+        One call does everything a host script needs: priority (an explicit
+        ``override`` wins, with a warning if this playbook ALSO declares
+        ``llm:`` — it's being shadowed; else the playbook's own ``llm:``
+        block; neither present raises), live-API validation per model (see
+        :func:`superdialog.llm.check_model_available` — a confirmed-invalid
+        model raises, an unverifiable one only warns), and resolution to
+        actual provider instances via :func:`superdialog.llm.resolve_llm`.
+        Self-contained: no host framework (e.g. a playground) required.
+        """
+        from ..llm import check_model_available, resolve_llm
+
+        declared_talker = self.llm_uri()
+        declared_director = self.director_llm_uri()
+
+        if override:
+            if declared_talker:
+                warnings.warn(
+                    f"playbook declares llm={declared_talker!r} but an "
+                    f"explicit override {override!r} takes priority",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            talker_uri = director_uri = override
+        elif declared_talker:
+            talker_uri = declared_talker
+            director_uri = declared_director or declared_talker
+        else:
+            raise ValueError(
+                "No LLM defined: pass override=, or add an "
+                "`llm: {provider: ..., model: ...}` block to the playbook YAML."
+            )
+
+        for uri in {talker_uri, director_uri}:
+            verdict = await check_model_available(uri)
+            if verdict is False:
+                raise ValueError(
+                    f"Model {uri!r} isn't recognized by its provider's API — "
+                    "check the provider/model spelling."
+                )
+            if verdict is None:
+                warnings.warn(
+                    f"couldn't verify {uri!r} against its provider (no API "
+                    "key found) — proceeding unverified",
+                    UserWarning,
+                    stacklevel=2,
+                )
+
+        talker_llm = resolve_llm(talker_uri)
+        director_llm = (
+            talker_llm if director_uri == talker_uri else resolve_llm(director_uri)
+        )
+        return talker_llm, director_llm
+
     # -- validation ----------------------------------------------------------
+    @model_validator(mode="after")
+    def _warn_deprecated_llm_fields(self) -> "Playbook":
+        deprecated = [
+            name
+            for name in ("director_model", "talker_model")
+            if getattr(self.guidelines, name, None)
+        ]
+        if deprecated and self.llm is None:
+            warnings.warn(
+                "guidelines."
+                + " / guidelines.".join(deprecated)
+                + " is deprecated and no longer read by any host — set the"
+                " top-level `llm:` block instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        return self
+
     @model_validator(mode="after")
     def _check_references(self) -> "Playbook":
         def need_unique(seen: set[str], item_id: str, ctx: str) -> None:

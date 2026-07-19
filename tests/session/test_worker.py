@@ -142,3 +142,28 @@ async def test_close_session_evicts_and_persists() -> None:
     assert "Z" not in worker._cache
     record = await store.load("Z")
     assert record is not None
+
+
+@pytest.mark.asyncio
+async def test_close_session_persist_false_deletes_store_record() -> None:
+    """A session closed with persist=False must not be resumable.
+
+    Regression: close_session used to always persist, so a later acquire()
+    for the same id reloaded the dead transcript into a fresh Agent instance
+    -- indistinguishable from silently restarting the conversation. The next
+    acquire() here must build a genuinely new, empty-history Agent.
+    """
+    store = InMemorySessionStore()
+    worker = SessionWorker(agent_factory=_CountingAgent, store=store)
+    async with worker.acquire("Z") as h:
+        await h.turn("hello")
+    first_instance_id = worker._cache["Z"][1].instance_id
+
+    await worker.close_session("Z", persist=False)
+    assert "Z" not in worker._cache
+    assert await store.load("Z") is None
+
+    async with worker.acquire("Z") as h:
+        second_instance_id = h.agent.instance_id
+        assert h.agent.chat_ctx.items == []
+    assert second_instance_id != first_instance_id

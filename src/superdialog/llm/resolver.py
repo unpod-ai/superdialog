@@ -133,3 +133,45 @@ def resolve_llm(uri: str) -> LLMProvider:
         except Exception:
             hedge = None
     return ResilientProvider(inner, cfg, hedge)
+
+
+async def check_model_available(
+    uri: str, *, api_key: str | None = None
+) -> bool | None:
+    """Whether ``uri`` (``provider/model``) is real and currently servable.
+
+    Checked against the provider's OWN live endpoint (litellm's
+    ``get_valid_models(check_provider_endpoint=True)``), not a fixed list —
+    self-contained in superdialog, no host-specific allowlist required.
+
+    Returns ``None`` (not ``False``) when availability can't be determined at
+    all — no resolvable API key for the provider — so a caller can tell "not
+    available" apart from "couldn't check" rather than treating both as a
+    hard rejection.
+    """
+    import asyncio
+
+    provider, _, model = uri.partition("/")
+    if not provider or not model:
+        return False
+    key = api_key or os.environ.get(f"{provider.upper()}_API_KEY")
+    if not key:
+        return None
+
+    def _check() -> bool:
+        import litellm
+
+        valid = litellm.get_valid_models(
+            check_provider_endpoint=True,
+            custom_llm_provider=provider,
+            api_key=key,
+        )
+        return any(model == v or v.endswith(f"/{model}") for v in valid)
+
+    try:
+        return await asyncio.to_thread(_check)
+    except Exception:
+        # A transient network/provider-API failure is "couldn't check", not
+        # "model doesn't exist" — never let this path silently reject a real
+        # model over a flaky endpoint.
+        return None

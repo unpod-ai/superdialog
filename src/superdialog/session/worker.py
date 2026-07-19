@@ -80,15 +80,32 @@ class SessionWorker:
                 self._sync_session_from_agent(session, agent)
                 await self._persist(session)
 
-    async def close_session(self, session_id: str) -> None:
-        """Evict a session explicitly: flush state, drop the cache entry."""
+    async def close_session(self, session_id: str, *, persist: bool = True) -> None:
+        """Evict a session explicitly, dropping the cache entry.
+
+        ``persist=True`` (default): flush final state to the store, same as
+        LRU eviction -- unchanged behavior for existing callers.
+
+        ``persist=False``: delete the store record instead of saving it. A
+        session that reached a terminal state (e.g. the playbook said
+        goodbye) must not be resumable -- the store still holding its
+        chat_ctx would let the next ``acquire`` for the same ``session_id``
+        reload that transcript into a fresh Agent whose state machine
+        restarts at checkpoint 0, silently resurrecting a conversation that
+        looked closed.
+        """
         async with self._lock_backend.acquire(session_id):
             pair = self._cache.pop(session_id, None)
             if pair is None:
+                if not persist:
+                    await self._store.delete(session_id)
                 return
             session, agent = pair
-            self._sync_session_from_agent(session, agent)
-            await self._persist(session)
+            if persist:
+                self._sync_session_from_agent(session, agent)
+                await self._persist(session)
+            else:
+                await self._store.delete(session_id)
 
     # ---- internals --------------------------------------------------------
 
