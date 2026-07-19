@@ -461,6 +461,202 @@ def test_explicit_require_overrides_heuristic() -> None:
     assert cp.slots["a"].required and not cp.slots["c"].required
 
 
+def _doc(steps: list[dict]) -> dict:
+    return {"playbook": steps}
+
+
+def test_then_overrides_linear_successor() -> None:
+    pb = simple_to_playbook(
+        _doc(
+            [
+                {"id": "a", "done_when": "done", "then": "close"},
+                {"id": "b", "done_when": "done"},
+                {"id": "close"},
+            ]
+        )
+    )
+    a = pb.checkpoint("main.a")
+    assert [r.to for r in a.advance_when if r.judge == "llm"] == ["main.close"]
+
+
+def test_terminal_mid_list_ends_the_chain() -> None:
+    pb = simple_to_playbook(
+        _doc(
+            [
+                {"id": "a", "done_when": "done"},
+                {"id": "bye", "terminal": True, "outcome": "callback_scheduled"},
+                {"id": "z"},
+            ]
+        )
+    )
+    bye = pb.checkpoint("main.bye")
+    assert bye.terminal is True
+    assert bye.outcome == "callback_scheduled"
+    assert bye.advance_when == []  # terminal steps get no advance rules
+
+
+def test_terminal_default_outcome_is_closed() -> None:
+    pb = simple_to_playbook(
+        _doc(
+            [
+                {"id": "a", "done_when": "done"},
+                {"id": "bye", "terminal": True},
+                {"id": "z"},
+            ]
+        )
+    )
+    assert pb.checkpoint("main.bye").outcome == "closed"
+
+
+def test_then_to_unknown_step_is_rejected() -> None:
+    import pytest as _pytest
+
+    # Playbook target validation (need_cp) rejects the dangling ref
+    with _pytest.raises(ValueError):
+        simple_to_playbook(
+            _doc(
+                [
+                    {"id": "a", "done_when": "done", "then": "nope"},
+                    {"id": "b"},
+                ]
+            )
+        )
+
+
+def test_then_targeting_itself_is_rejected() -> None:
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="cannot target itself"):
+        simple_to_playbook(
+            _doc(
+                [
+                    {"id": "a", "collect": ["x"], "then": "a"},
+                    {"id": "b"},
+                ]
+            )
+        )
+
+
+def test_branches_compile_to_llm_rules_in_author_order() -> None:
+    pb = simple_to_playbook(
+        _doc(
+            [
+                {
+                    "id": "pitch",
+                    "done_when": "customer responded",
+                    "branches": [
+                        {"when": "customer accepts the visit", "to": "book"},
+                        {"when": "customer firmly declines", "to": "fallback"},
+                    ],
+                },
+                {"id": "clarify", "done_when": "done"},
+                {"id": "book", "done_when": "done"},
+                {"id": "fallback", "terminal": True},
+            ]
+        )
+    )
+    rules = [r for r in pb.checkpoint("main.pitch").advance_when if r.judge == "llm"]
+    # branches first (author order), then the done_when default to the successor
+    assert [r.to for r in rules] == ["main.book", "main.fallback", "main.clarify"]
+    assert rules[0].when == "customer accepts the visit"
+
+
+def test_branch_requires_gates_the_branch() -> None:
+    pb = simple_to_playbook(
+        _doc(
+            [
+                {
+                    "id": "a",
+                    "collect": ["day"],
+                    "branches": [
+                        {"when": "slot given", "to": "c", "requires": ["day"]}
+                    ],
+                },
+                {"id": "b"},
+                {"id": "c"},
+            ]
+        )
+    )
+    branch = pb.checkpoint("main.a").advance_when[-2]  # before default rule
+    assert branch.requires == ["day"]
+
+
+def test_branch_to_unknown_step_is_rejected() -> None:
+    import pytest as _pytest
+
+    # Playbook target validation (need_cp) rejects the dangling ref
+    with _pytest.raises(ValueError):
+        simple_to_playbook(
+            _doc(
+                [
+                    {"id": "a", "branches": [{"when": "x", "to": "ghost"}]},
+                    {"id": "b"},
+                ]
+            )
+        )
+
+
+def test_branch_targeting_itself_is_rejected() -> None:
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="cannot target itself"):
+        simple_to_playbook(
+            _doc(
+                [
+                    {"id": "a", "branches": [{"when": "x", "to": "a"}]},
+                    {"id": "b"},
+                ]
+            )
+        )
+
+
+def test_terminal_step_with_branches_is_rejected() -> None:
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="cannot have branches"):
+        simple_to_playbook(
+            _doc(
+                [
+                    {"id": "a", "done_when": "done"},
+                    {
+                        "id": "bye",
+                        "terminal": True,
+                        "branches": [{"when": "x", "to": "a"}],
+                    },
+                ]
+            )
+        )
+
+
+def test_last_step_with_branches_is_rejected() -> None:
+    import pytest as _pytest
+
+    # last step without a then: is implicitly terminal -> same rejection
+    with _pytest.raises(ValueError, match="cannot have branches"):
+        simple_to_playbook(
+            _doc(
+                [
+                    {"id": "a", "done_when": "done"},
+                    {"id": "z", "branches": [{"when": "x", "to": "a"}]},
+                ]
+            )
+        )
+
+
+def test_linear_compile_unchanged_without_new_fields() -> None:
+    pb = simple_to_playbook(
+        _doc(
+            [
+                {"id": "a", "done_when": "done"},
+                {"id": "b"},
+            ]
+        )
+    )
+    a = pb.checkpoint("main.a")
+    assert [r.to for r in a.advance_when] == ["main.b"]
+    assert pb.checkpoint("main.b").terminal is True  # last step still terminal
+
+
 def test_kb_false_step_compiles_uses_kb_false() -> None:
     import yaml
 
@@ -469,3 +665,247 @@ def test_kb_false_step_compiles_uses_kb_false() -> None:
     pb = simple_to_playbook(doc)
     assert pb.checkpoint("main.collect").uses_kb is False
     assert pb.checkpoint("main.greet").uses_kb is None  # legacy default
+
+
+# -- strict unknown-key validation --------------------------------------------
+
+
+def test_unknown_top_level_keys_raise() -> None:
+    import pytest as _pytest
+
+    doc = {"playbook": [{"id": "a"}], "language_lock": {}, "agent_runtime": {}}
+    with _pytest.raises(ValueError, match="language_lock"):
+        simple_to_playbook(doc)
+
+
+def test_unknown_step_keys_raise_with_path() -> None:
+    import pytest as _pytest
+
+    doc = {"playbook": [{"id": "a", "done_wehn": "typo"}]}
+    with _pytest.raises(ValueError, match=r"playbook\[0\].*done_wehn"):
+        simple_to_playbook(doc)
+
+
+def test_unknown_branch_keys_raise_with_path() -> None:
+    import pytest as _pytest
+
+    # `require` (missing s) would silently drop the branch slot gate
+    doc = {
+        "playbook": [
+            {
+                "id": "a",
+                "branches": [{"when": "x", "to": "c", "require": ["day"]}],
+            },
+            {"id": "b"},
+            {"id": "c"},
+        ]
+    }
+    with _pytest.raises(ValueError, match=r"playbook\[0\]\.branches\[0\].*require"):
+        simple_to_playbook(doc)
+
+
+def test_non_string_top_level_key_reports_cleanly() -> None:
+    import pytest as _pytest
+
+    doc = {"playbook": [{"id": "a"}], 2024: "foo"}
+    with _pytest.raises(ValueError, match="2024"):
+        simple_to_playbook(doc)
+
+
+def test_strict_false_warns_and_loads(recwarn) -> None:
+    doc = {"playbook": [{"id": "a"}], "latency_optimization": {}}
+    pb = simple_to_playbook(doc, strict=False)
+    assert pb.checkpoint("main.a")
+    assert any("latency_optimization" in str(w.message) for w in recwarn.list)
+
+
+def test_clean_doc_no_warning(recwarn) -> None:
+    simple_to_playbook({"playbook": [{"id": "a"}]})
+    assert not recwarn.list
+
+
+def test_load_simple_passes_strict_through(tmp_path: Path) -> None:
+    import pytest as _pytest
+
+    from superdialog.playbook.simple import load_simple
+
+    p = tmp_path / "pb.yaml"
+    p.write_text("playbook:\n  - id: a\nlanguage_lock: {}\n", encoding="utf-8")
+    with _pytest.raises(ValueError, match="language_lock"):
+        load_simple(str(p))
+    with _pytest.warns(UserWarning, match="language_lock"):
+        assert load_simple(str(p), strict=False).checkpoint("main.a")
+
+
+# -- compile-time guards from review -------------------------------------------
+
+
+def test_branch_targeting_default_next_is_rejected() -> None:
+    import pytest as _pytest
+
+    # branch to the linear successor shadows the done_when slot gate
+    with _pytest.raises(ValueError, match="default next step"):
+        simple_to_playbook(
+            _doc(
+                [
+                    {"id": "a", "branches": [{"when": "x", "to": "b"}]},
+                    {"id": "b"},
+                ]
+            )
+        )
+    # same rejection when the default comes from then:
+    with _pytest.raises(ValueError, match="default next step"):
+        simple_to_playbook(
+            _doc(
+                [
+                    {
+                        "id": "a",
+                        "then": "c",
+                        "branches": [{"when": "x", "to": "c"}],
+                    },
+                    {"id": "b"},
+                    {"id": "c"},
+                ]
+            )
+        )
+
+
+def test_duplicate_branch_targets_rejected() -> None:
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="duplicate branch target"):
+        simple_to_playbook(
+            _doc(
+                [
+                    {
+                        "id": "a",
+                        "branches": [
+                            {"when": "x", "to": "c"},
+                            {"when": "y", "to": "c"},
+                        ],
+                    },
+                    {"id": "b"},
+                    {"id": "c"},
+                ]
+            )
+        )
+
+
+def test_outcome_on_non_terminal_step_rejected() -> None:
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="only used on terminal steps"):
+        simple_to_playbook(
+            _doc(
+                [
+                    {"id": "a", "outcome": "callback_scheduled"},
+                    {"id": "b"},
+                ]
+            )
+        )
+
+
+def test_then_and_branch_to_are_whitespace_stripped() -> None:
+    pb = simple_to_playbook(
+        _doc(
+            [
+                {
+                    "id": "a",
+                    "done_when": "done",
+                    "then": " close ",
+                    "branches": [{"when": "x", "to": " alt "}],
+                },
+                {"id": "alt"},
+                {"id": "close"},
+            ]
+        )
+    )
+    rules = pb.checkpoint("main.a").advance_when
+    assert [r.to for r in rules] == ["main.alt", "main.close"]
+
+
+def test_branch_empty_when_rejected() -> None:
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="when"):
+        simple_to_playbook(
+            _doc(
+                [
+                    {"id": "a", "branches": [{"when": "   ", "to": "c"}]},
+                    {"id": "b"},
+                    {"id": "c"},
+                ]
+            )
+        )
+
+
+def test_then_say_compiles_to_exit_say() -> None:
+    pb = simple_to_playbook(
+        _doc(
+            [
+                {
+                    "id": "a",
+                    "collect": ["city"],
+                    "then_say": "Pitch connectivity for {{slots.city}}.",
+                },
+                {"id": "b"},
+            ]
+        )
+    )
+    assert pb.checkpoint("main.a").exit_say.startswith("Pitch connectivity")
+
+
+def test_then_say_on_terminal_step_rejected() -> None:
+    import pytest as _pytest
+
+    # A terminal step never advances OUT, so its exit_say would never fire.
+    with _pytest.raises(ValueError, match="then_say"):
+        simple_to_playbook(
+            _doc(
+                [
+                    {"id": "a"},
+                    {"id": "b", "then_say": "never spoken"},
+                ]
+            )
+        )
+
+
+# -- Westgate end-to-end fixture (proves the authored intent is expressible) ----
+
+
+def test_westgate_fixture_compiles_and_routes() -> None:
+    from superdialog.playbook.simple import load_simple
+
+    pb = load_simple(str(FIXTURES / "westgate_routed.yaml"))
+    # Every fallback step routes to the closing instead of falling into
+    # whatever step happens to follow it in list order.
+    for fb in [
+        "busy_reschedule",
+        "whatsapp_only",
+        "wrong_number_or_dnc",
+        "advisor_callback",
+        "out_of_scope",
+        "user_silence",
+    ]:
+        targets = [r.to for r in pb.checkpoint(f"main.{fb}").advance_when]
+        assert targets and set(targets) == {"main.deliver_closing"}, fb
+    assert pb.checkpoint("main.summary_before_closing").advance_when[-1].to == (
+        "main.deliver_closing"
+    )
+    assert pb.checkpoint("main.deliver_closing").terminal
+    # Visit pitch: accept rides done_when to BPCL confirm; firm decline
+    # branches to the advisor-callback fallback.
+    pitch = [
+        r.to
+        for r in pb.checkpoint("main.pitch_site_visit").advance_when
+        if r.judge == "llm"
+    ]
+    assert pitch == [
+        "main.advisor_callback",
+        "main.confirm_qualification_bpcl",
+    ]
+    # Early decline routes to the reference ask, not accidental list order.
+    nie = [r.to for r in pb.checkpoint("main.not_interested_early").advance_when]
+    assert set(nie) == {"main.ask_for_reference"}
+    # The connectivity pitch rides the advance as exit_say.
+    assert "connectivity" in pb.checkpoint("main.qualify_location").exit_say

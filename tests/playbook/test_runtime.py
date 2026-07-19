@@ -388,3 +388,153 @@ async def test_degraded_path_still_applies_policies() -> None:
     # turn budget (LLM-free) still steers despite Director degradation
     notes = [e for e in rt.log.events if e.type == "steering_note"]
     assert any("wrap" in n.text for n in notes)
+
+
+EXIT_SAY_YAML = textwrap.dedent("""
+    journeys:
+      j:
+        checkpoints:
+          - id: a
+            goal: "collect city"
+            exit_say: "After capturing, pitch connectivity for {{slots.city}}."
+            slots:
+              city: {type: str}
+            advance_when:
+              - {when: "city captured", judge: llm, to: j.b}
+          - id: b
+            goal: "book a visit"
+            advance_when:
+              - {when: "user is done", judge: llm, to: j.done}
+          - id: done
+            terminal: true
+            outcome: done
+    interrupts:
+      - {id: goodbye, when: "caller says goodbye", judge: llm,
+         to: j.done, resume: false}
+    policies:
+      silence: {max_prompts: 1, prompts: ["Hello?"], then: j.done}
+""")
+
+
+async def test_exit_say_becomes_steer_on_advance() -> None:
+    pb = Playbook.from_yaml(EXIT_SAY_YAML)
+    rt = PlaybookRuntime(
+        pb,
+        director_llm=CannedLLM(
+            {"slots": {"city": "Powai"}, "advance": "j.b", "note": None}
+        ),
+        http=FakeHttp([]),
+    )
+    await rt.start()
+    await rt.on_user_text("I'm in Powai")
+    # the steer is appended AFTER the AdvanceEvent, so the advance's
+    # steering reset must not clear it
+    assert rt.state.checkpoint_id == "j.b"
+    assert rt.state.steering_note is not None
+    assert "Powai" in rt.state.steering_note
+    assert rt.state.steering_kind == "steer"
+
+
+async def test_exit_say_skipped_on_interrupt_and_policy_advances() -> None:
+    pb = Playbook.from_yaml(EXIT_SAY_YAML)
+    # interrupt detour: bail-out must not deliver the happy-path pitch
+    rt = PlaybookRuntime(
+        pb,
+        director_llm=CannedLLM(
+            {"slots": {}, "advance": None, "note": None, "interrupt": "goodbye"}
+        ),
+        http=FakeHttp([]),
+    )
+    await rt.start()
+    await rt.on_user_text("goodbye now")
+    assert rt.state.ended
+    assert rt.state.steering_note is None
+    # policy advance (silence routing): a failure exit, not a pitch moment
+    rt2 = PlaybookRuntime(
+        pb,
+        director_llm=CannedLLM({"slots": {}, "advance": None, "note": None}),
+        http=FakeHttp([]),
+    )
+    await rt2.start()
+    await rt2.on_external(ExternalEvent(kind="silence", name="user_silence"))
+    await rt2.on_external(ExternalEvent(kind="silence", name="user_silence"))
+    assert rt2.state.checkpoint_id == "j.done"
+    assert rt2.state.steering_note is None
+
+
+async def test_exit_say_composes_with_same_turn_director_note() -> None:
+    pb = Playbook.from_yaml(EXIT_SAY_YAML)
+    rt = PlaybookRuntime(
+        pb,
+        director_llm=CannedLLM(
+            {
+                "slots": {"city": "Powai"},
+                "advance": "j.b",
+                "note": "Caller raised a cost concern; acknowledge it.",
+            }
+        ),
+        http=FakeHttp([]),
+    )
+    await rt.start()
+    await rt.on_user_text("Powai, but it sounds pricey")
+    # both the note and the exit_say steer write the one-shot
+    # state.steering_note; the edge-case note must survive, composed in
+    note = rt.state.steering_note
+    assert note is not None
+    assert "Powai" in note  # the transition line
+    assert "cost concern" in note  # the Director's edge-case note
+
+
+EXPR_EXIT_SAY_YAML = textwrap.dedent("""
+    journeys:
+      j:
+        checkpoints:
+          - id: a
+            goal: "collect city"
+            exit_say: "After capturing, pitch connectivity for {{slots.city}}."
+            slots:
+              city: {type: str}
+            advance_when:
+              - {when: "slots.city is not None", judge: expr, to: j.b}
+          - id: b
+            goal: "book a visit"
+            advance_when:
+              - {when: "user is done", judge: llm, to: j.done}
+          - id: done
+            terminal: true
+            outcome: done
+""")
+
+
+async def test_exit_say_fires_on_expr_companion_advance() -> None:
+    # The motivating bug: a slot capture makes the expr rule advance
+    # instantly (in the quiesce hop), structurally skipping any
+    # post-capture speech unless exit_say carries it across.
+    pb = Playbook.from_yaml(EXPR_EXIT_SAY_YAML)
+    rt = PlaybookRuntime(
+        pb,
+        director_llm=CannedLLM(
+            {"slots": {"city": "Powai"}, "advance": None, "note": None}
+        ),
+        http=FakeHttp([]),
+    )
+    await rt.start()
+    await rt.on_user_text("I'm in Powai")
+    assert rt.state.checkpoint_id == "j.b"
+    adv = [e for e in rt.log.events if e.type == "advance"]
+    assert adv[-1].rule == "expr:j.b"
+    assert rt.state.steering_note is not None
+    assert "Powai" in rt.state.steering_note
+
+
+async def test_exit_say_skipped_on_supervisor_redirect() -> None:
+    pb = Playbook.from_yaml(EXIT_SAY_YAML)
+    rt = PlaybookRuntime(
+        pb,
+        director_llm=CannedLLM({"slots": {}, "advance": None, "note": None}),
+        http=FakeHttp([]),
+    )
+    await rt.start()
+    await rt.redirect("j.b", "get back on track")
+    assert rt.state.checkpoint_id == "j.b"
+    assert rt.state.steering_note is None

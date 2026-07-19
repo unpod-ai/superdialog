@@ -119,7 +119,10 @@ with a final step whose `say` tells the agent to deliver it.
 single journey named `main`, chained **linearly in list order**: step N's
 `done_when` advances to step N+1; the last step is `terminal: true,
 outcome: closed`. Reordering the list re-wires the chain - there are no
-hand-written `to:` targets to maintain. Per step:
+hand-written `to:` targets to maintain. When a step must leave the chain
+(a fallback that should close the call, a pitch that branches on the
+answer), `then:`, `terminal:`, and `branches:` route it explicitly.
+Per step:
 
 - `id` - the checkpoint id; addressable as `main.<id>` in logs, metrics,
   and replay.
@@ -142,6 +145,50 @@ hand-written `to:` targets to maintain. Per step:
 - `done_when` - compiles to a single `judge: llm` advance rule the
   Director judges each turn. Write an observable condition ("Caller has
   confirmed a day and time"), not an intention.
+- `then` (optional) - step id to advance to when `done_when` holds,
+  instead of the next list element. This is how fallback steps close the
+  call rather than falling into whatever happens to follow them:
+
+  ```yaml
+  - id: advisor_callback
+    say: "Capture a callback time, then close politely."
+    collect: [callback_time]
+    done_when: "Callback time captured."
+    then: deliver_closing          # not the next step in the list
+  ```
+
+  Unknown targets and self-targets are rejected at load.
+- `terminal` (optional, default false) + `outcome` (optional, default
+  `closed`) - marks the step as a call ending: compiles to a terminal
+  checkpoint with no advance rules, recording `outcome` on `SessionEnd`.
+  Previously only the *last* list element could end the call, which made
+  fallback endings (callback scheduled, DNC respected) structurally
+  unclosable and metrically indistinguishable. `outcome` on a
+  non-terminal step is rejected - it would be silently ignored at
+  runtime.
+- `branches` (optional) - multi-way routing, judged by the Director in
+  author order and ahead of the `done_when` default. Each entry
+  `{when, to, requires?}` compiles to one `judge: llm` advance rule:
+
+  ```yaml
+  - id: pitch_site_visit
+    say: "Offer the site visit; handle the objection on hesitation."
+    done_when: "Customer clearly accepts or is open to the visit."
+    branches:
+      - when: "Customer firmly declines after the objection was handled."
+        to: advisor_callback
+  ```
+
+  A branch may not target the step's default next step (use `done_when`
+  for that path - the branch would shadow its slot gate), may not target
+  itself, and terminal steps cannot have branches.
+- `then_say` (optional) - a line to deliver *while advancing out of* this
+  step, rendered (Jinja over slots) and injected as a one-shot steer.
+  Use it for post-capture speech: guidance written after the capture in
+  `say` is unreachable, because the deterministic expr rule advances the
+  instant the collected slots fill. Never spoken on interrupt or policy
+  advances (detours and failures skip the happy-path pitch), and
+  rejected on terminal steps (they never advance out).
 - `turn_budget` (optional, default 4) - user turns on this step before the
   runtime steers "wrap this step up". Steer-only for simple playbooks (no
   `on_failure` is compiled), so it nudges, never force-advances.
@@ -181,11 +228,20 @@ a 56-session assessment, linear playbooks with no early exit never
 completed a single call (a satisfied or busy caller loops until the turn
 cap), while the same playbook with goodbye/busy interrupts completed 8/8.
 
+### Unknown keys fail loudly
+
+Keys the format does not recognize - a typo'd `done_wehn`, an invented
+top-level `language_lock:` section - **raise at load** with the dotted
+path of every offender, instead of being silently dropped by pydantic
+(configuration theater: the author believes it is configured; the runtime
+never sees it). `simple_to_playbook(doc, strict=False)` /
+`load_simple(path, strict=False)` downgrade the error to a warning for
+live loaders that must not kill a call over a stale authored file.
+
 ### What the simple format cannot express
 
 | Engine feature | Why it matters |
 | --- | --- |
-| Multiple terminals / outcomes | One `closed` outcome can't distinguish booked vs callback vs DNC in metrics. |
 | `gate: hard`, pipelines, tools | Transactional steps (holds, payments) with barriered speech (Part 2 §6). |
 | `judge: expr` rules | Machine-evaluated transitions - zero LLM cost, zero latency. |
 | Typed/required slots, `never_say`, `say_verbatim`, silence policy, multi-journey, dispatch | Precision controls. |
@@ -363,8 +419,10 @@ for calling, request) when transferring to a human.
 | each `playbook` step | a `Checkpoint` in journey `main` |
 | `step.purpose` / `step.say` | `goal` / `guidance` |
 | `step.collect` | `str` slots + the step rule's `requires` |
-| `step.done_when` | a `judge: llm` rule, `to` the next step |
-| last step | `terminal: true`, `outcome: closed` |
+| `step.done_when` | a `judge: llm` rule, `to` the next step (or `step.then`) |
+| `step.branches` | `judge: llm` rules ahead of the `done_when` rule, in author order |
+| `step.then_say` | `Checkpoint.exit_say` - a one-shot steer on the advance out |
+| last step / `step.terminal` | `terminal: true`, `outcome:` from the step (default `closed`) |
 | `interrupts[{when, to}]` | `InterruptSpec` (`judge: llm`, `resume: false`) |
 | `opening` | first step's guidance, only if it has no `say` |
 
@@ -772,14 +830,15 @@ default 4-persona suite keeps dev runs reasonable.
 
 Shipped: `superdialog optimize` (reflective prose optimizer - paired-round
 acceptance, prose-only targeted edits, simple-format round-trip, generated
-persona suites); simple-format `interrupts`; the unified loader;
-configurable `policies.hold_timeout`. **Structure mutation** in optimize
+persona suites); simple-format `interrupts`; simple-format routing
+(`then:`, `terminal:`/`outcome:`, `branches:`, `then_say:`) with strict
+unknown-key validation; the unified loader; configurable
+`policies.hold_timeout`. **Structure mutation** in optimize
 (checkpoint split/merge/reorder, slot-schema tightening) remains future, as
 do GEPA-style frontier parent sampling, production-log feedback ingestion,
 CI metric-threshold gates, and response caching across rounds.
 
 Clearly future, not in this release: voice-event plumbing in the host
 adapters (silence/barge-in events emitted into `runtime.on_external`
-automatically); simple-format sugar for multiple terminal outcomes; and
-sessionless webhook workers that load a persisted log, apply a handler,
-and exit. Today's surface is what Parts 1–2 document.
+automatically); and sessionless webhook workers that load a persisted log,
+apply a handler, and exit. Today's surface is what Parts 1–2 document.

@@ -129,6 +129,10 @@ class Checkpoint(BaseModel):
     guidance: str = ""  # may contain Jinja over {slots, views, results}
     say_verbatim: str | None = None  # same Jinja namespace; bypasses the Talker LLM
     never_say: list[str] = Field(default_factory=list)
+    # Spoken on the turn that LEAVES this checkpoint via a director rule:
+    # rendered and injected as a one-shot steer so capture-then-pitch steps
+    # work (the expr companion advance otherwise skips any post-capture talk).
+    exit_say: str = ""
     advance_when: list[AdvanceRule] = Field(default_factory=list)
     gate: Literal["soft", "hard"] = "hard"
     auto: bool = False  # speak verbatim once, then advance without user input
