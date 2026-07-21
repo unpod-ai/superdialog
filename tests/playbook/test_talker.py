@@ -264,3 +264,78 @@ async def test_strict_without_verbatim_does_not_call_llm() -> None:
     chunks = [c async for c in Talker(pb, llm).speak(state)]
     assert llm.calls == 0
     assert RECOVERY_LINE in "".join(c.text for c in chunks)
+
+
+async def test_callable_filler_called_with_state() -> None:
+    # A filler provider receives the live state (language-aware fillers) and
+    # its text is spoken at barrier expiry.
+    pb, state = _state("booking.confirm")
+    event = anyio.Event()
+
+    async def wait_director() -> ConversationState:
+        await event.wait()
+        return state
+
+    seen: list[ConversationState] = []
+
+    def provider(s: ConversationState) -> str:
+        seen.append(s)
+        return "एक second, main check करती हूँ…"
+
+    talker = Talker(
+        pb, StreamLLM([]), barrier_timeout=0.02, hold_timeout=10.0, filler=provider
+    )
+    received: list[str] = []
+
+    async def consume() -> None:
+        async for c in talker.speak(state, director_done=wait_director):
+            received.append(c.text)
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(consume)
+        await anyio.sleep(0.2)  # past barrier_timeout, director still pending
+        assert any("एक second, main check करती हूँ…" in t for t in received)
+        assert seen == [state]
+        event.set()
+
+
+async def test_callable_hold_line() -> None:
+    pb, state = _state("booking.confirm")
+
+    async def never() -> ConversationState:
+        await anyio.sleep(60)
+        return state
+
+    talker = Talker(
+        pb,
+        StreamLLM([]),
+        barrier_timeout=0.02,
+        hold_timeout=0.05,
+        hold_line=lambda s: "थोड़ा समय लग रहा है, एक moment…",
+    )
+    received = [c.text async for c in talker.speak(state, director_done=never)]
+    assert any("थोड़ा समय लग रहा है, एक moment…" in t for t in received)
+
+
+async def test_broken_line_provider_degrades_to_defaults() -> None:
+    # A raising provider must never kill the turn — defaults speak instead.
+    pb, state = _state("booking.confirm")
+
+    def broken(_s: ConversationState) -> str:
+        raise RuntimeError("provider bug")
+
+    async def never() -> ConversationState:
+        await anyio.sleep(60)
+        return state
+
+    talker = Talker(
+        pb,
+        StreamLLM([]),
+        barrier_timeout=0.02,
+        hold_timeout=0.05,
+        filler=broken,
+        hold_line=broken,
+    )
+    received = [c.text async for c in talker.speak(state, director_done=never)]
+    assert any(FILLER in t for t in received)
+    assert any(HOLD_LINE in t for t in received)

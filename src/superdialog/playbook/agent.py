@@ -28,7 +28,7 @@ from .models import Playbook
 from .runtime import PlaybookRuntime
 from .state import ConversationState
 from .supervisor import Supervisor
-from .talker import SpeechChunk, StreamsLLM, Talker
+from .talker import SpeechChunk, SpokenLine, StreamsLLM, Talker
 from .toolexec import HttpFn, PythonToolFn
 
 logger = logging.getLogger(__name__)
@@ -113,6 +113,8 @@ class PlaybookAgent:
         settle_before_speak: bool = False,
         supervisor_llm: CompletesLLM | None = None,
         intercept_llm: CompletesLLM | None = None,
+        filler: SpokenLine | None = None,
+        hold_line: SpokenLine | None = None,
     ) -> None:
         # Offline-eval knob: when True the Talker waits for the Director to
         # settle before speaking on EVERY turn (not just the greeting), so a
@@ -138,6 +140,14 @@ class PlaybookAgent:
             director_llm if playbook.guidelines.supervisor else None
         )
         self._supervisor = Supervisor(sup_llm, playbook) if sup_llm else None
+        # Barrier lines: None keeps the Talker's built-in defaults. A host may
+        # pass static text or a provider called with the live state at speak
+        # time (language-aware fillers).
+        _line_kwargs: dict[str, SpokenLine] = {}
+        if filler is not None:
+            _line_kwargs["filler"] = filler
+        if hold_line is not None:
+            _line_kwargs["hold_line"] = hold_line
         self._talker = Talker(
             playbook,
             self._talker_timer,
@@ -149,6 +159,7 @@ class PlaybookAgent:
                 if hold_timeout is not None
                 else playbook.policies.hold_timeout
             ),
+            **_line_kwargs,
         )
         self._traversal_dir: Path | None = (
             Path(traversal_dir) if traversal_dir else None

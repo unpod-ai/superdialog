@@ -291,6 +291,28 @@ def test_agent_explicit_hold_timeout_wins_over_policies() -> None:
     assert explicit._talker._hold_timeout == 1.5
 
 
+def test_agent_forwards_filler_and_hold_line_to_talker() -> None:
+    from superdialog.playbook.talker import FILLER, HOLD_LINE
+
+    def provider(_s) -> str:
+        return "एक second…"
+
+    explicit = PlaybookAgent(
+        playbook=Playbook.from_yaml(MINIMAL_YAML),
+        talker_llm=StreamLLM([]),
+        director_llm=CannedLLM({"slots": {}, "advance": None, "note": None}),
+        http=FakeHttp([]),
+        filler=provider,
+        hold_line=provider,
+    )
+    assert explicit._talker._filler is provider
+    assert explicit._talker._hold_line is provider
+    # Omitted → Talker built-in defaults stay.
+    default = _agent()
+    assert default._talker._filler == FILLER
+    assert default._talker._hold_line == HOLD_LINE
+
+
 def test_apply_memory_seeds_summary_event() -> None:
     from superdialog.playbook.events import SummaryEvent
 

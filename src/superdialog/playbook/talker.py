@@ -19,6 +19,10 @@ FILLER = "One moment, let me confirm that…"
 HOLD_LINE = "I'm taking a little longer than usual — bear with me for a moment."
 RECOVERY_LINE = "Sorry, could you say that again?"
 
+# A spoken line is either static text or a provider called with the live
+# ConversationState at speak time (e.g. language-aware fillers).
+SpokenLine = str | Callable[[ConversationState], str]
+
 
 def _excise(buf: str, folded: list[str]) -> str:
     """Remove every casefolded occurrence of each phrase from ``buf``."""
@@ -86,8 +90,8 @@ class Talker:
         token_budget: int = 4000,
         barrier_timeout: float = 0.4,
         hold_timeout: float = 4.0,
-        filler: str = FILLER,
-        hold_line: str = HOLD_LINE,
+        filler: SpokenLine = FILLER,
+        hold_line: SpokenLine = HOLD_LINE,
         recovery_line: str = RECOVERY_LINE,
     ) -> None:
         self._pb = playbook
@@ -104,6 +108,18 @@ class Talker:
         if cp.gate == "hard":
             return True
         return any(s.gate == "hard" for s in cp.slots.values())
+
+    @staticmethod
+    def _resolve_line(line: SpokenLine, state: ConversationState, fallback: str) -> str:
+        """Static lines pass through; a provider is called with the live state
+        (language-aware fillers). A broken provider degrades to the default —
+        a filler must never kill the turn."""
+        if not callable(line):
+            return line
+        try:
+            return str(line(state))
+        except Exception:  # noqa: BLE001
+            return fallback
 
     async def _await_director(
         self, director_done: Callable[[], Awaitable[ConversationState]]
@@ -145,13 +161,16 @@ class Talker:
                 fresh = await director_done()
             if fresh is None:
                 yield SpeechChunk(
-                    text=self._filler + " ", spoke_from_version=state.version
+                    text=self._resolve_line(self._filler, state, FILLER) + " ",
+                    spoke_from_version=state.version,
                 )
                 with anyio.move_on_after(self._hold_timeout):
                     fresh = await director_done()
             if fresh is None:  # Director is down: degrade politely, never hang
                 yield SpeechChunk(
-                    text=self._hold_line, final=True, spoke_from_version=state.version
+                    text=self._resolve_line(self._hold_line, state, HOLD_LINE),
+                    final=True,
+                    spoke_from_version=state.version,
                 )
                 return
             state = fresh
