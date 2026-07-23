@@ -115,6 +115,7 @@ class PlaybookAgent:
         intercept_llm: CompletesLLM | None = None,
         filler: SpokenLine | None = None,
         hold_line: SpokenLine | None = None,
+        allow_private_hosts: bool = False,
     ) -> None:
         # Offline-eval knob: when True the Talker waits for the Director to
         # settle before speaking on EVERY turn (not just the greeting), so a
@@ -130,6 +131,7 @@ class PlaybookAgent:
             http=http,
             python_tools=python_tools,
             intercept_llm=intercept_llm,
+            allow_private_hosts=allow_private_hosts,
         )
         # Loop 2 (off the speech path): reviews the trajectory after a turn
         # completes, only when a trigger fires. An explicit ``supervisor_llm``
@@ -217,6 +219,33 @@ class PlaybookAgent:
             return
         self.runtime.log.append(UtteranceEvent(role="system", text=text))
 
+    def mark_interrupted(self, heard_text: str | None = None) -> None:
+        """Rewrite the last assistant utterance to what the caller actually heard.
+
+        A barge-in cancels the Talker's SPEECH, but the shielded finally still
+        logs the FULL generated reply as if spoken (agent.py:403-409). That
+        leaves the Director reasoning next turn against words the caller never
+        heard — the root of "you already told me X" re-asks. The host calls this
+        (from the SDK Session on a mid-stream ``UserInterruptEvent``) to truncate
+        that record to the heard prefix and tag it ``[interrupted by caller]``.
+
+        ``heard_text=None`` → keep the logged text, just tag it interrupted
+        (best-effort when the worker sent no prefix). No-op when there is no
+        assistant utterance to rewrite. Inert until a caller invokes it.
+        """
+        events = self.runtime.log.events
+        for i in range(len(events) - 1, -1, -1):
+            event = events[i]
+            if isinstance(event, UtteranceEvent) and event.role == "assistant":
+                base = heard_text if heard_text else event.text
+                # UtteranceEvent is frozen; replace in place (same version, so
+                # log.version is unchanged) and force a refold explicitly.
+                events[i] = event.model_copy(
+                    update={"text": f"{base} [interrupted by caller]"}
+                )
+                self.runtime._state_cache = None
+                return
+
     def apply_memory(self, summary: str) -> None:
         """Seed prior-call context for a returning caller; takes effect next turn.
 
@@ -295,10 +324,9 @@ class PlaybookAgent:
             self.runtime.log.append(
                 UtteranceEvent(role="user", text=text, language=language)
             )
-            print(
-                f"[PlaybookAgent] post-terminal turn ignored (ended); "
-                f"cp={self.runtime.state.checkpoint_id}",
-                flush=True,
+            logger.info(
+                "[PlaybookAgent] post-terminal turn ignored (ended); cp=%s",
+                self.runtime.state.checkpoint_id,
             )
             for line in pass_through:  # normally empty; flush any pending speech
                 yield StreamChunk(text=line)
@@ -322,11 +350,12 @@ class PlaybookAgent:
                 except Exception as exc:  # noqa: BLE001 — loud, never silent
                     # A dead Director must not strand the Talker on its
                     # barrier every turn (it would re-speak the entry
-                    # checkpoint forever with zero console evidence).
-                    print(
-                        f"[DIRECTOR] TURN FAILED {type(exc).__name__}: {exc} "
-                        f"cp={self.runtime.state.checkpoint_id}",
-                        flush=True,
+                    # checkpoint forever with zero log evidence).
+                    logger.error(
+                        "[DIRECTOR] TURN FAILED %s cp=%s",
+                        type(exc).__name__,
+                        self.runtime.state.checkpoint_id,
+                        exc_info=True,
                     )
                 finally:
                     quiescent.set()
@@ -432,19 +461,20 @@ class PlaybookAgent:
                             # intervention is visible in eval/run logs (it
                             # otherwise lands only as silent events).
                             if decision.action != "none":
-                                print(
-                                    f"[SUPERVISOR] action={decision.action} "
-                                    f"reason={decision.reason or '-'} "
-                                    f"cp={self.runtime.state.checkpoint_id}",
-                                    flush=True,
+                                logger.info(
+                                    "[SUPERVISOR] action=%s reason=%s cp=%s",
+                                    decision.action,
+                                    decision.reason or "-",
+                                    self.runtime.state.checkpoint_id,
                                 )
                             pass_through.extend(
                                 await self._supervisor.apply(self.runtime, decision)
                             )
                     except Exception as exc:  # noqa: BLE001 — loud, never fatal
-                        print(
-                            f"[SUPERVISOR] FAILED {type(exc).__name__}: {exc}",
-                            flush=True,
+                        logger.error(
+                            "[SUPERVISOR] FAILED %s",
+                            type(exc).__name__,
+                            exc_info=True,
                         )
                 if (
                     self._traversal_dir

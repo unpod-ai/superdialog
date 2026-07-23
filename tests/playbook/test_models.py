@@ -14,6 +14,8 @@ from superdialog.playbook.models import (
 
 MINIMAL_YAML = textwrap.dedent("""
     persona: "You are a booking assistant."
+    env:
+      API_BASE_URL: "https://api.test"
     journeys:
       booking:
         checkpoints:

@@ -13,10 +13,16 @@ to LiteLLM when it is absent.
 
 from __future__ import annotations
 
+import inspect
+import logging
 import time
 from typing import Any, AsyncIterator
 
+import anyio
+
 from .provider import CompletionResult, StreamChunk, apply_json_mode
+
+_log = logging.getLogger(__name__)
 
 
 def _split_uri(uri: str) -> tuple[str | None, str]:
@@ -153,6 +159,24 @@ class AnyLlmProvider:
                 provider, self._model = AnyLLM.split_model_provider(self.model)
             self._client = AnyLLM.create(provider, api_key=None, api_base=None)
         return self._client
+
+    async def warmup(self) -> None:
+        """Build the cached client (pays the any-llm + provider-SDK import cost
+        up front) and best-effort probe its ``models.list()`` to warm the pool.
+
+        Fire-and-forget: no-op if the wrapped SDK exposes no lister, and any
+        error is swallowed at DEBUG so a warmup never delays or fails a call.
+        """
+        try:
+            with anyio.fail_after(5.0):
+                client = self._ensure_client()
+                lister = getattr(getattr(client, "models", None), "list", None)
+                if lister is not None:
+                    res = lister()
+                    if inspect.isawaitable(res):
+                        await res
+        except Exception as exc:  # noqa: BLE001 — warmup must never raise
+            _log.debug("anyllm warmup skipped: %s", type(exc).__name__)
 
     async def complete(
         self,

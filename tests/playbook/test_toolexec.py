@@ -1,3 +1,8 @@
+import logging
+
+import pytest
+
+from superdialog.playbook import toolexec
 from superdialog.playbook.events import (
     EventLog,
     SlotWriteEvent,
@@ -105,12 +110,15 @@ async def test_template_error_yields_failed_result() -> None:
     # SSTI payload: the sandbox blocks the attribute walk; the payload is
     # NOT executed (a plain Environment would render a function repr with
     # a memory address like "at 0x...").
-    ssti = HOLD.model_copy(update={"url": "{{ cycler.__init__ }}/x"})
+    # Keep a valid absolute base so this stays an SSTI assertion, not an SSRF one.
+    ssti = HOLD.model_copy(
+        update={"url": "{{ env.API_BASE_URL }}/{{ cycler.__init__ }}"}
+    )
     http2 = FakeHttp([(200, {})])
     events2 = await ToolExecutor(http=http2).execute(
         ssti, _state(slot_id="s1", players=2)
     )
-    assert http2.calls[0]["url"] == "/x"  # unsafe attr rendered empty
+    assert http2.calls[0]["url"] == "https://api.test/"  # unsafe attr rendered empty
     assert "0x" not in http2.calls[0]["url"]
     assert [type(e).__name__ for e in events2] == [
         "ToolCallEvent",
@@ -393,3 +401,266 @@ async def test_idempotency_key_independent_of_auth_header() -> None:
         http.calls[0]["headers"]["Idempotency-Key"]
         == http.calls[1]["headers"]["Idempotency-Key"]
     )
+
+
+# Secret-named tokens in the rendered request/response must never reach logs or
+# stdout — regression guard for the fixed print() leak (rendered URL+body and
+# refresh-minted tokens were printed unredacted three lines after the event log
+# deliberately redacted them).
+LEAKY = ToolSpec(
+    id="refresh_tool",
+    method="POST",
+    url="{{ env.API_BASE_URL }}/refresh?api_key={{ slots.req_secret }}",
+    body={"password": "{{ slots.req_secret }}", "user": "{{ slots.user }}"},
+    store_response_as="refresh_result",
+)
+
+
+async def test_no_secret_reaches_logs_or_stdout(caplog, capsys) -> None:
+    caplog.set_level(logging.DEBUG)
+    resp_token = "tokLIVESECRET"
+    http = FakeHttp([(200, {"data": {"access_token": resp_token}})])
+    await ToolExecutor(http=http).execute(
+        LEAKY, _state(req_secret="hunter2SECRET", user="alice")
+    )
+    # The real request DID carry the secret (behaviour unchanged)...
+    assert http.calls[0]["url"].endswith("/refresh?api_key=hunter2SECRET")
+    assert http.calls[0]["body"]["password"] == "hunter2SECRET"
+    # ...but neither the request secret nor the response token may appear in logs.
+    assert "hunter2SECRET" not in caplog.text
+    assert resp_token not in caplog.text
+    # Redaction actually happened, and the non-secret parts are still logged.
+    assert "***" in caplog.text
+    assert "api.test/refresh" in caplog.text
+    assert "user=alice" not in caplog.text or "***" in caplog.text
+    # Nothing goes to stdout any more.
+    captured = capsys.readouterr()
+    assert captured.out == ""
+
+
+async def test_tool_exception_type_logged_not_url(caplog, capsys) -> None:
+    # httpx exceptions embed the full request URL incl. query secrets; only the
+    # exception type is logged at WARNING, never the message at INFO/WARNING.
+    class Boom:
+        async def __call__(self, **_: object) -> tuple[int, dict]:
+            raise RuntimeError(
+                "connect to https://api.test/refresh?api_key=hunter2SECRET"
+            )
+
+    caplog.set_level(logging.INFO)
+    events = await ToolExecutor(http=Boom()).execute(
+        LEAKY, _state(req_secret="hunter2SECRET", user="alice")
+    )
+    assert events[-1].ok is False
+    warning_text = "\n".join(
+        r.message for r in caplog.records if r.levelno >= logging.WARNING
+    )
+    assert "hunter2SECRET" not in warning_text
+    assert "RuntimeError" in warning_text
+    assert capsys.readouterr().out == ""
+
+
+class CaptureHttp:
+    """Records the timeout and headers of each call; returns a fixed response."""
+
+    def __init__(self, response: tuple[int, dict] = (200, {"data": {}})) -> None:
+        self.response = response
+        self.timeouts: list[float] = []
+        self.headers: list[dict] = []
+
+    async def __call__(self, *, method, url, headers, body, timeout):
+        self.timeouts.append(timeout)
+        self.headers.append(dict(headers))
+        return self.response
+
+
+def _get(url: str) -> ToolSpec:
+    return ToolSpec(id="fetch", method="GET", url=url, store_response_as="r")
+
+
+# --- task 2: timeout clamp -------------------------------------------------
+
+
+async def test_timeout_clamped_to_bounds() -> None:
+    cap = CaptureHttp()
+    ex = ToolExecutor(http=cap)
+    for declared, expected in [(9999.0, 300.0), (0.0, 0.1), (-5.0, 0.1), (30.0, 30.0)]:
+        spec = HOLD.model_copy(update={"timeout": declared})
+        await ex.execute(spec, _state(slot_id="s", players=1))
+        assert cap.timeouts[-1] == expected
+
+
+def test_out_of_range_timeout_still_constructs() -> None:
+    # No Field bound on ToolSpec.timeout: a persisted playbook with an
+    # out-of-range value must LOAD (clamp happens at execute, not validation).
+    spec = ToolSpec(id="x", method="GET", url="https://api.test/x", timeout=3600.0)
+    assert spec.timeout == 3600.0
+
+
+# --- task 3: transport retry ----------------------------------------------
+
+
+async def test_transport_retry_then_success(monkeypatch) -> None:
+    monkeypatch.setattr(toolexec, "_backoff", lambda a: 0.0)
+
+    class Flaky:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.keys: list[str | None] = []
+
+        async def __call__(self, *, method, url, headers, body, timeout):
+            self.calls += 1
+            self.keys.append(headers.get("Idempotency-Key"))
+            if self.calls < 3:
+                raise ConnectionError("reset")
+            return (200, {"data": {"hold_id": "h"}})
+
+    flaky = Flaky()
+    events = await ToolExecutor(http=flaky).execute(
+        HOLD, _state(slot_id="s", players=1)
+    )
+    assert flaky.calls == 3
+    # Exactly one ToolCallEvent despite three transport attempts (retries stay
+    # inside one execute — no per-attempt event, no RetrySpec multiplication).
+    assert [type(e).__name__ for e in events].count("ToolCallEvent") == 1
+    assert events[1].ok is True
+    # Byte-identical request each attempt ⇒ same idempotency key.
+    assert len(set(flaky.keys)) == 1 and flaky.keys[0] is not None
+
+
+async def test_transport_retries_exhausted_yields_failed(monkeypatch) -> None:
+    monkeypatch.setattr(toolexec, "_backoff", lambda a: 0.0)
+
+    class AlwaysFail:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def __call__(self, **_):
+            self.calls += 1
+            raise ConnectionError("down")
+
+    h = AlwaysFail()
+    events = await ToolExecutor(http=h).execute(HOLD, _state(slot_id="s", players=1))
+    assert h.calls == 3  # 1 + _TRANSPORT_RETRIES
+    assert events[-1].ok is False
+    assert "ConnectionError" in (events[-1].error or "")
+
+
+async def test_timeout_is_terminal_not_retried(monkeypatch) -> None:
+    monkeypatch.setattr(toolexec, "_backoff", lambda a: 0.0)
+
+    class ReadTimeout(Exception):  # name contains "Timeout" (httpx-style)
+        pass
+
+    for exc_type in (TimeoutError, ReadTimeout):
+
+        class TimeoutHttp:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def __call__(self, **_):
+                self.calls += 1
+                raise exc_type("timed out")
+
+        h = TimeoutHttp()
+        events = await ToolExecutor(http=h).execute(
+            HOLD, _state(slot_id="s", players=1)
+        )
+        assert h.calls == 1, f"{exc_type.__name__} was retried"
+        assert events[-1].ok is False
+
+
+async def test_non_2xx_status_single_shot() -> None:
+    cap = CaptureHttp(response=(503, {"error": "upstream"}))
+    events = await ToolExecutor(http=cap).execute(HOLD, _state(slot_id="s", players=1))
+    assert len(cap.timeouts) == 1  # a returned status is never retried
+    assert events[1].ok is False and events[1].status == 503
+
+
+# --- task 4: response cap + shared client ---------------------------------
+
+
+async def test_response_cap_rejects_via_content_length(monkeypatch) -> None:
+    import httpx
+
+    def handler(_request):
+        return httpx.Response(200, content=b"x" * (2 * 1024 * 1024))
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(toolexec, "_client", client)
+    with pytest.raises(ValueError, match="too large"):
+        await toolexec.httpx_http(
+            method="GET", url="https://api.test/big", headers={}, body=None, timeout=5.0
+        )
+    await client.aclose()
+
+
+async def test_response_cap_rejects_chunked_midstream(monkeypatch) -> None:
+    import httpx
+
+    async def agen():
+        for _ in range(3):
+            yield b"y" * (512 * 1024)  # 1.5MB total, streamed, no content-length
+
+    def handler(_request):
+        return httpx.Response(200, content=agen())
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(toolexec, "_client", client)
+    with pytest.raises(ValueError, match="too large"):
+        await toolexec.httpx_http(
+            method="GET", url="https://api.test/s", headers={}, body=None, timeout=5.0
+        )
+    await client.aclose()
+
+
+async def test_response_under_cap_returns_json(monkeypatch) -> None:
+    import httpx
+
+    def handler(_request):
+        return httpx.Response(200, json={"ok": True})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(toolexec, "_client", client)
+    status, data = await toolexec.httpx_http(
+        method="GET", url="https://api.test/x", headers={}, body=None, timeout=5.0
+    )
+    assert status == 200 and data == {"ok": True}
+    await client.aclose()
+
+
+# --- task 5: SSRF guard on the rendered URL -------------------------------
+
+
+async def test_ssrf_blocks_metadata_via_slot_interpolation() -> None:
+    ex = ToolExecutor(http=FakeHttp([(200, {})]))
+    events = await ex.execute(
+        _get("http://{{ slots.host }}/latest/meta-data"),
+        _state(host="169.254.169.254"),
+    )
+    assert events[-1].ok is False
+    assert "blocked tool URL" in (events[-1].error or "")
+    # The blocked request never reached HTTP (FakeHttp response untouched).
+
+
+async def test_ssrf_blocks_obfuscated_ip_spellings() -> None:
+    for host in ["2130706433", "0177.0.0.1", "127.1"]:  # decimal / octal / short
+        ex = ToolExecutor(http=FakeHttp([(200, {})]))
+        events = await ex.execute(_get("http://{{ slots.host }}/x"), _state(host=host))
+        assert events[-1].ok is False, f"{host} not blocked"
+    # IPv4-mapped IPv6 (bracketed literal so urlsplit finds the host).
+    ex = ToolExecutor(http=FakeHttp([(200, {})]))
+    events = await ex.execute(_get("http://[::ffff:169.254.169.254]/x"), _state())
+    assert events[-1].ok is False
+
+
+async def test_ssrf_allows_public_host_under_strict_default() -> None:
+    ex = ToolExecutor(http=FakeHttp([(200, {"data": {}})]))
+    events = await ex.execute(_get("https://api.test/x"), _state())
+    assert events[-1].ok is True  # a DNS name is not a literal IP → passes
+
+
+async def test_ssrf_opt_out_permits_localhost() -> None:
+    ex = ToolExecutor(http=FakeHttp([(200, {"data": {}})]), allow_private_hosts=True)
+    events = await ex.execute(_get("http://localhost:8000/x"), _state())
+    assert events[-1].ok is True

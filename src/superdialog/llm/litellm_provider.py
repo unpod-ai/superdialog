@@ -28,6 +28,13 @@ class LitellmProvider:
         self.model = model
         self.default_opts: dict[str, Any] = default_opts
 
+    async def warmup(self) -> None:
+        """No-op: litellm keeps a process-global in-memory client cache, so the
+        first real request warms every subsequent one; there is no per-instance
+        pool to pre-open. Boot-time warm (a real request) covers the import cost.
+        """
+        return None
+
     async def complete(
         self,
         messages: list[dict[str, Any]],

@@ -11,6 +11,7 @@ of which land as ordinary events the runtime applies at the turn boundary.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Literal
 
 from pydantic import BaseModel
@@ -29,6 +30,8 @@ from .events import (
 from .models import Playbook
 from .runtime import COMPENSATE_MARKER, PlaybookRuntime
 from .state import ConversationState
+
+_log = logging.getLogger(__name__)
 
 _NOTE_CLAMP = 300  # supervisor notes render into the Talker's system prompt
 
@@ -134,10 +137,11 @@ class Supervisor:
         # Loud so trigger activity is visible in eval/run logs even when the
         # verdict later chooses "none": distinguishes "no trigger fired" from
         # "fired but held" (cooldown) from "fired and acted".
-        print(
-            f"[SUPERVISOR] triggers={','.join(triggers)} cp={state.checkpoint_id} "
-            f"{'held(cooldown)' if cooling else 'reviewing'}",
-            flush=True,
+        _log.info(
+            "[SUPERVISOR] triggers=%s cp=%s %s",
+            ",".join(triggers),
+            state.checkpoint_id,
+            "held(cooldown)" if cooling else "reviewing",
         )
         if cooling:
             return None

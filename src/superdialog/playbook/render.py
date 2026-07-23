@@ -8,6 +8,7 @@ Guidance/say_verbatim are Jinja templates over {slots, views, results}.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
@@ -20,6 +21,8 @@ from ._guidelines import DATE_DISCIPLINE, compose_guidelines, datetime_anchor_li
 from .expr import ExprError, evaluate
 from .models import Playbook
 from .state import ConversationState
+
+_log = logging.getLogger(__name__)
 
 # Sandboxed: templates come from playbook artifacts (optimizer-generated),
 # so attribute-walking SSTI payloads must be blocked, not executed.
@@ -203,12 +206,11 @@ def _system_block(pb: Playbook, state: ConversationState) -> tuple[str, str]:
     # voice-guideline block + date anchor are actually fed into the Talker prompt,
     # and flags double-injection when a persona already carries a guideline block
     # (e.g. the playground's own _with_default_guidelines append).
-    # Always-on console trace so guideline feeding is visible in every run.
-    # print (not logging) so it shows even when the host (uvicorn/playground)
-    # hasn't configured an INFO-level root logger. `fed` enumerates every
-    # guideline chunk active this turn — the default voice spine sections plus
-    # the conditionals (memory/handover/date-discipline/strict) — so it's clear
-    # which planned guidelines are feeding and which are gated off.
+    # Per-turn guideline/slot trace at DEBUG. `fed` enumerates every guideline
+    # chunk active this turn — the default voice spine sections plus the
+    # conditionals (memory/handover/date-discipline/strict) — so it's clear
+    # which planned guidelines are feeding and which are gated off. (Was a
+    # stdout print; hosts configure logging, so DEBUG is the right channel.)
     fed = list(blocks.static and blocks.sections or [])
     if blocks.memory_guard:
         fed.append("memory_guard")
@@ -217,21 +219,25 @@ def _system_block(pb: Playbook, state: ConversationState) -> tuple[str, str]:
     fed.append("date_discipline")  # always fed to the Talker (cache prefix)
     if cp and (cp.say_verbatim is not None or getattr(cp, "strict", False)):
         fed.append("strict_verbatim")
-    print(
-        f"[guidelines] checkpoint={state.checkpoint_id} "
-        f"channel={pb.guidelines.channel} anchor_from_log={state.now is not None} "
-        f"persona_already_has_guidelines={'DEFAULT VOICE GUIDELINES' in pb.persona} "
-        f"fed={fed}",
-        flush=True,
+    _log.debug(
+        "[guidelines] checkpoint=%s channel=%s anchor_from_log=%s "
+        "persona_already_has_guidelines=%s fed=%s",
+        state.checkpoint_id,
+        pb.guidelines.channel,
+        state.now is not None,
+        "DEFAULT VOICE GUIDELINES" in pb.persona,
+        fed,
     )
     # Per-turn brain-side trace (slot KEYS only — never values, so PII like
-    # name/dob never reaches stdout). `version` is the event-log counter, NOT
+    # name/dob never reaches the log). `version` is the event-log counter, NOT
     # the bridge turn_id; true cross-process correlation is a later follow-up.
-    print(
-        f"[turn-trace] side=brain version={state.version} "
-        f"checkpoint={state.checkpoint_id} lang={state.language or '-'} "
-        f"fed={fed} slots={sorted(state.slots.keys())}",
-        flush=True,
+    _log.debug(
+        "[turn-trace] side=brain version=%s checkpoint=%s lang=%s fed=%s slots=%s",
+        state.version,
+        state.checkpoint_id,
+        state.language or "-",
+        fed,
+        sorted(state.slots.keys()),
     )
     # persona + static guideline block + date anchor are session-constant, so
     # together they form the stable cacheable prefix. Persona stays FIRST so the
