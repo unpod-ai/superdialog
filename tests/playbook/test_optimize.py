@@ -3,10 +3,11 @@
 import json
 import textwrap
 
+import pytest
 import yaml as _yaml
 
 from superdialog.playbook.agent import PlaybookAgent
-from superdialog.playbook.editable import FullDoc, SimpleDoc
+from superdialog.playbook.editable import Edit, FullDoc, SimpleDoc
 from superdialog.playbook.eval_bridge import EvalReport, PersonaSpec, SessionMetrics
 from superdialog.playbook.models import Playbook
 from superdialog.playbook.optimize import (
@@ -14,6 +15,10 @@ from superdialog.playbook.optimize import (
     OptimizeReport,
     ParetoFrontier,
     RoundTrace,
+    _clears_acceptance_bar,
+    _noise_margin,
+    _objective_samples,
+    _reconcile_with_frontier,
     optimize,
     propose_edits,
     score_report,
@@ -106,6 +111,63 @@ def test_incomplete_sessions_earn_no_smoothness_credit() -> None:
     assert failing.mean_turns_per_checkpoint == 0.0  # nothing completed
 
 
+def test_objective_samples_scores_each_session_independently() -> None:
+    report = EvalReport(
+        sessions=[
+            _session(),  # good: objective 0.9
+            _session(completed=False, outcome=None, slot_accuracy=0.0),  # bad: 0.1
+        ]
+    )
+    samples = _objective_samples(report)
+    assert samples == pytest.approx([0.9, 0.1])
+
+
+def test_noise_margin_is_zero_with_fewer_than_two_sessions_either_side() -> None:
+    single = EvalReport(sessions=[_session()])
+    multi = EvalReport(
+        sessions=[_session(), _session(completed=False, outcome=None, slot_accuracy=0.0)]
+    )
+    assert _noise_margin(single, multi) == 0.0
+    assert _noise_margin(multi, single) == 0.0
+
+
+def test_noise_margin_reflects_estimated_sampling_noise() -> None:
+    stable = EvalReport(sessions=[_session(), _session()])  # identical -> zero variance
+    noisy = EvalReport(
+        sessions=[_session(), _session(completed=False, outcome=None, slot_accuracy=0.0)]
+    )
+    assert _noise_margin(stable, noisy) == pytest.approx(0.4, abs=1e-6)
+    assert _noise_margin(stable, stable) == 0.0  # no variance either side -> no margin
+
+
+def test_clears_acceptance_bar_rejects_a_marginal_win_within_noise() -> None:
+    inc_b = _breakdown(0.7, 0.7, 2.0)
+    cand_b = _breakdown(0.72, 0.7, 2.0)  # tiny point-estimate win: +0.02
+    stable = EvalReport(sessions=[_session(), _session()])  # zero variance
+    noisy = EvalReport(
+        sessions=[_session(), _session(completed=False, outcome=None, slot_accuracy=0.0)]
+    )  # margin(stable, noisy) == 0.4, per test_noise_margin_reflects_estimated_sampling_noise
+    assert _clears_acceptance_bar(inc_b, cand_b, stable, noisy) is False
+
+
+def test_clears_acceptance_bar_accepts_a_win_that_clears_the_noise_margin() -> None:
+    inc_b = _breakdown(0.5, 0.5, 2.0)
+    cand_b = _breakdown(0.95, 0.5, 2.0)  # big point-estimate win: +0.45 > margin 0.4
+    stable = EvalReport(sessions=[_session(), _session()])
+    noisy = EvalReport(
+        sessions=[_session(), _session(completed=False, outcome=None, slot_accuracy=0.0)]
+    )
+    assert _clears_acceptance_bar(inc_b, cand_b, stable, noisy) is True
+
+
+def test_clears_acceptance_bar_falls_back_to_point_estimate_with_one_session() -> None:
+    inc_b = _breakdown(0.5, 0.5, 2.0)
+    cand_b = _breakdown(0.51, 0.5, 2.0)  # tiny win, but single-session reports -> margin=0
+    single_a = EvalReport(sessions=[_session()])
+    single_b = EvalReport(sessions=[_session()])
+    assert _clears_acceptance_bar(inc_b, cand_b, single_a, single_b) is True
+
+
 class CannedEditsLLM:
     """Candidate LLM: pops scripted outputs, repeating the last one forever."""
 
@@ -170,6 +232,18 @@ async def test_invalid_json_retries_then_falls_back() -> None:
     llm = CannedEditsLLM(["not json at all", '{"also": "not a list"}'])
     assert await propose_edits(doc, _report(), llm, max_attempts=2) is None
     assert len(llm.calls) == 2
+
+
+async def test_retry_feeds_back_the_validation_error() -> None:
+    doc = FullDoc.from_text(MINIMAL_YAML)
+    llm = CannedEditsLLM(["not json at all", _edit_json()])
+    proposal = await propose_edits(doc, _report(), llm, max_attempts=2)
+    assert proposal is not None
+    assert len(llm.calls) == 2
+    second_call = llm.calls[1]
+    assert second_call[-2] == {"role": "assistant", "content": "not json at all"}
+    assert second_call[-1]["role"] == "user"
+    assert "rejected" in second_call[-1]["content"].lower()
 
 
 async def test_frozen_address_is_rejected() -> None:
@@ -241,6 +315,84 @@ def test_frontier_ignores_rounds_without_a_candidate() -> None:
         )
     )
     assert f.members == []
+
+
+async def test_reconcile_skips_when_frontier_has_nothing_better() -> None:
+    doc = FullDoc.from_text(MINIMAL_YAML)
+    final_b = _breakdown(0.9, 0.9, 2.0)
+    frontier = ParetoFrontier()  # empty
+    calls = {"n": 0}
+
+    async def eval_fn(d: object) -> EvalReport:
+        calls["n"] += 1
+        return EvalReport(sessions=[_session()])
+
+    result_doc, result_b, trace_entry = await _reconcile_with_frontier(
+        doc, final_b, frontier, eval_fn
+    )
+    assert result_doc is doc
+    assert result_b is final_b
+    assert trace_entry is None
+    assert calls["n"] == 0  # nothing worth spending an eval on
+
+
+async def test_reconcile_promotes_a_frontier_candidate_that_clears_fresh_revalidation() -> None:
+    doc = FullDoc.from_text(MINIMAL_YAML)
+    candidate_doc = doc.apply([Edit(address=_GUIDANCE, new_text="Collect warmly.")])
+    final_b = _breakdown(0.5, 0.5, 2.0)
+    frontier = ParetoFrontier()
+    frontier.consider(
+        RoundTrace(
+            round_no=1,
+            accepted=False,
+            incumbent_breakdown=_breakdown(0.5, 0.5, 2.0),
+            candidate_breakdown=_breakdown(0.9, 0.9, 2.0),  # scored higher, but rejected then
+            edits=[Edit(address=_GUIDANCE, new_text="Collect warmly.")],
+            candidate_yaml=candidate_doc.emit(),
+        )
+    )
+
+    async def eval_fn(d) -> EvalReport:
+        if "warmly" in d.emit():
+            return EvalReport(sessions=[_session()])  # good: objective 0.9
+        return EvalReport(
+            sessions=[_session(completed=False, outcome=None, slot_accuracy=0.0)]
+        )  # bad: objective 0.1
+
+    result_doc, result_b, trace_entry = await _reconcile_with_frontier(
+        doc, final_b, frontier, eval_fn
+    )
+    assert "warmly" in result_doc.emit()
+    assert result_b.objective == pytest.approx(0.9)
+    assert trace_entry is not None and trace_entry.accepted is True
+
+
+async def test_reconcile_leaves_incumbent_when_revalidation_fails() -> None:
+    doc = FullDoc.from_text(MINIMAL_YAML)
+    candidate_doc = doc.apply([Edit(address=_GUIDANCE, new_text="Collect warmly.")])
+    final_b = _breakdown(0.5, 0.5, 2.0)
+    frontier = ParetoFrontier()
+    frontier.consider(
+        RoundTrace(
+            round_no=1,
+            accepted=False,
+            incumbent_breakdown=_breakdown(0.5, 0.5, 2.0),
+            candidate_breakdown=_breakdown(0.9, 0.9, 2.0),
+            edits=[Edit(address=_GUIDANCE, new_text="Collect warmly.")],
+            candidate_yaml=candidate_doc.emit(),
+        )
+    )
+
+    async def eval_fn(d) -> EvalReport:
+        # circumstances changed: fresh re-eval shows no real difference now
+        return EvalReport(sessions=[_session()])
+
+    result_doc, result_b, trace_entry = await _reconcile_with_frontier(
+        doc, final_b, frontier, eval_fn
+    )
+    assert result_doc is doc  # unchanged
+    assert result_b is final_b
+    assert trace_entry is not None and trace_entry.accepted is False
 
 
 _IDLE = {"slots": {}, "advance": None, "note": None}
@@ -339,6 +491,130 @@ async def test_patience_stops_early() -> None:
         patience=2,
     )
     assert len(report.trace) == 2  # stopped after `patience` stale rounds
+
+
+async def test_parse_failures_dont_count_toward_patience() -> None:
+    doc = FullDoc.from_text(MINIMAL_YAML)
+    report = await optimize(
+        doc,
+        personas=_PERSONAS,
+        candidate_llm=CannedEditsLLM(["not json"]),
+        user_llm=ScriptedUser(["x"]),
+        agent_factory=_improving_agent_factory,
+        rounds=3,
+        n=1,
+        patience=1,
+    )
+    # every round is "no valid candidate" (cheap, no eval spent) — patience=1
+    # must not cut the run short since no substantive rejection ever happened
+    assert len(report.trace) == 3
+    assert all(t.detail == "no valid candidate" for t in report.trace)
+
+
+async def test_multi_session_eval_still_accepts_a_clear_win() -> None:
+    doc = FullDoc.from_text(MINIMAL_YAML)
+    llm = CannedEditsLLM([_edit_json(new_text="Collect warmly.")])
+    report = await optimize(
+        doc,
+        personas=_PERSONAS,
+        candidate_llm=llm,
+        user_llm=ScriptedUser(["Pune on 2026-06-12 please", "ok"]),
+        agent_factory=_improving_agent_factory,
+        rounds=1,
+        n=2,
+    )
+    assert any(t.accepted for t in report.trace)
+
+
+async def test_best_of_k_picks_the_highest_scoring_accepted_candidate() -> None:
+    doc = FullDoc.from_text(MINIMAL_YAML)
+    noop = _edit_json(new_text="Collect naturally.")  # no improvement
+    better = _edit_json(new_text="Collect warmly.")  # improves per _improving_agent_factory
+    llm = CannedEditsLLM([noop, better])
+    report = await optimize(
+        doc,
+        personas=_PERSONAS,
+        candidate_llm=llm,
+        user_llm=ScriptedUser(["Pune on 2026-06-12 please", "ok"]),
+        agent_factory=_improving_agent_factory,
+        rounds=1,
+        n=1,
+        candidates_per_round=2,
+    )
+    assert "Collect warmly." in report.final_yaml
+    accepted = [t for t in report.trace if t.accepted]
+    assert accepted and accepted[0].edits[0].new_text == "Collect warmly."
+
+
+async def test_incumbent_is_evaluated_once_per_round_regardless_of_k() -> None:
+    doc = FullDoc.from_text(MINIMAL_YAML)
+    calls = {"n": 0}
+
+    def factory(playbook: Playbook) -> PlaybookAgent:
+        calls["n"] += 1
+        return _improving_agent_factory(playbook)
+
+    edits = [_edit_json(new_text=f"Collect naturally, variant {i}.") for i in range(3)]
+    llm = CannedEditsLLM(edits)
+    await optimize(
+        doc,
+        personas=_PERSONAS,
+        candidate_llm=llm,
+        user_llm=ScriptedUser(["x"]),
+        agent_factory=factory,
+        rounds=1,
+        n=1,
+        candidates_per_round=3,
+        patience=99,
+    )
+    # 1 baseline eval (pre-loop) + 1 fresh incumbent re-eval + 3 candidate evals = 5
+    assert calls["n"] == 5
+
+
+async def test_duplicate_candidates_are_deduped_before_eval() -> None:
+    doc = FullDoc.from_text(MINIMAL_YAML)
+    calls = {"n": 0}
+
+    def factory(playbook: Playbook) -> PlaybookAgent:
+        calls["n"] += 1
+        return _improving_agent_factory(playbook)
+
+    noop = _edit_json(new_text="Collect naturally.")
+    llm = CannedEditsLLM([noop])  # identical output every attempt
+    await optimize(
+        doc,
+        personas=_PERSONAS,
+        candidate_llm=llm,
+        user_llm=ScriptedUser(["x"]),
+        agent_factory=factory,
+        rounds=1,
+        n=1,
+        candidates_per_round=3,
+        patience=99,
+    )
+    # 1 baseline + 1 incumbent re-eval + ONE deduped candidate = 3, not 5
+    assert calls["n"] == 3
+
+
+async def test_rejected_edits_are_remembered_in_next_rounds_prompt() -> None:
+    doc = FullDoc.from_text(MINIMAL_YAML)
+    noop = _edit_json(new_text="Collect naturally.")  # never accepted - same prose
+    other = _edit_json(new_text="Collect kindly.")
+    llm = CannedEditsLLM([noop, other])
+    await optimize(
+        doc,
+        personas=_PERSONAS,
+        candidate_llm=llm,
+        user_llm=ScriptedUser(["x", "x"]),
+        agent_factory=_improving_agent_factory,
+        rounds=2,
+        n=1,
+        patience=99,
+    )
+    assert len(llm.calls) == 2
+    second_prompt = " ".join(m["content"] for m in llm.calls[1])
+    assert "ALREADY TRIED AND REJECTED" in second_prompt
+    assert "Collect naturally." in second_prompt
 
 
 _SIMPLE_TWO_STEP = textwrap.dedent("""

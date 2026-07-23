@@ -142,12 +142,15 @@ class PlaybookAgent:
         self._supervisor = Supervisor(sup_llm, playbook) if sup_llm else None
         # Barrier lines: None keeps the Talker's built-in defaults. A host may
         # pass static text or a provider called with the live state at speak
-        # time (language-aware fillers).
+        # time (language-aware fillers); explicit args win over the playbook's
+        # own authored `policies.filler` / `policies.hold_line`.
         _line_kwargs: dict[str, SpokenLine] = {}
-        if filler is not None:
-            _line_kwargs["filler"] = filler
-        if hold_line is not None:
-            _line_kwargs["hold_line"] = hold_line
+        _filler = filler if filler is not None else playbook.policies.filler
+        if _filler is not None:
+            _line_kwargs["filler"] = _filler
+        _hold_line = hold_line if hold_line is not None else playbook.policies.hold_line
+        if _hold_line is not None:
+            _line_kwargs["hold_line"] = _hold_line
         self._talker = Talker(
             playbook,
             self._talker_timer,

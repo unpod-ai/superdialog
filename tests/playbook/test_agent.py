@@ -313,6 +313,31 @@ def test_agent_forwards_filler_and_hold_line_to_talker() -> None:
     assert default._talker._hold_line == HOLD_LINE
 
 
+def test_agent_uses_playbook_policies_filler_when_no_explicit_arg() -> None:
+    pb = Playbook.from_yaml(MINIMAL_YAML)
+    pb.policies.filler = "एक सेकंड…"
+    pb.policies.hold_line = "थोड़ा समय लग रहा है…"
+    agent = PlaybookAgent(
+        playbook=pb,
+        talker_llm=StreamLLM([]),
+        director_llm=CannedLLM({"slots": {}, "advance": None, "note": None}),
+        http=FakeHttp([]),
+    )
+    assert agent._talker._filler == "एक सेकंड…"
+    assert agent._talker._hold_line == "थोड़ा समय लग रहा है…"
+
+    # Explicit constructor arg still wins over the playbook's authored line.
+    explicit = PlaybookAgent(
+        playbook=pb,
+        talker_llm=StreamLLM([]),
+        director_llm=CannedLLM({"slots": {}, "advance": None, "note": None}),
+        http=FakeHttp([]),
+        filler="explicit filler",
+    )
+    assert explicit._talker._filler == "explicit filler"
+    assert explicit._talker._hold_line == "थोड़ा समय लग रहा है…"
+
+
 def test_apply_memory_seeds_summary_event() -> None:
     from superdialog.playbook.events import SummaryEvent
 

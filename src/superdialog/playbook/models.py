@@ -303,6 +303,12 @@ class Policies(BaseModel):
     # Max post-filler wait for the Director before the hold line is spoken;
     # short enough that a caller doesn't feel disengaged.
     hold_timeout: float = Field(default=4.0, gt=0)
+    # Author-facing barrier lines (spoken at hard-gated checkpoints while the
+    # Director settles). None keeps the Talker's built-in English defaults —
+    # a persona whose call runs in another language authors these here
+    # instead of a host wiring per-playbook Python overrides.
+    filler: str | None = None
+    hold_line: str | None = None
 
 
 class PronunciationSpec(BaseModel):
