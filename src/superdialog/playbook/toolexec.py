@@ -4,20 +4,30 @@ Tool templates render over {slots, env, results}. Unlike the Talker renderer,
 env IS visible here: tools run Director-side and their output is never shown
 to the Talker. Templates still come from playbook artifacts, so rendering is
 sandboxed and template errors degrade to a failed ToolResultEvent.
+
+Retry amplification ceiling: a pathological step can chain the author-level
+pipeline RetrySpec (<=11 rounds) x middleware replay (<=3 executions/step) x
+transport retries (<=3 attempts) = up to ~99 HTTP attempts. Acceptable without
+an extra cap because transport retries fire only on connection-level exceptions
+(a dead host fails fast) and timeouts are never retried.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import random
 import re
 from typing import Any, Awaitable, Callable, Protocol
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+import anyio
 from jinja2 import TemplateError, Undefined
 from jinja2.sandbox import SandboxedEnvironment
 
 from ._canon import canonical_json
+from ._ssrf import validate_url
 from .events import (
     EnvWriteEvent,
     Event,
@@ -31,9 +41,44 @@ from .state import ConversationState
 
 HttpFn = Callable[..., Awaitable[tuple[int, Any]]]
 
+_log = logging.getLogger(__name__)
+
+# Per-tool timeout is clamped at execute time (not on the model) so a persisted
+# playbook with an out-of-range `timeout:` still loads and merely runs clamped.
+_MIN_TIMEOUT_S = 0.1
+_MAX_TIMEOUT_S = 300.0
+
+# Transport retry: raised connection-level exceptions only (see execute()); the
+# author-level pipeline RetrySpec sits above this, so we never retry a non-2xx
+# status here. Two retries, exponential backoff + small jitter.
+_TRANSPORT_RETRIES = 2
+_RETRY_BASE_S = 0.5
+
+# Tool responses fold into ConversationState and serialize into every traversal
+# export, so an unbounded body is a memory/log blowout. Capped in the production
+# HTTP callable (httpx_http), enforced during the streamed read.
+_MAX_RESPONSE_BYTES = 1 * 1024 * 1024  # 1 MiB
+
 # Sandboxed: tool templates are playbook artifacts (optimizer-generated), so
 # attribute-walking SSTI payloads must be blocked, not executed.
 _jinja = SandboxedEnvironment(undefined=Undefined, autoescape=False)
+
+
+def _backoff(attempt: int) -> float:
+    """Exponential backoff (capped 5s) + up to 60ms jitter, per attempt (0-based)."""
+    base = min(_RETRY_BASE_S * (2**attempt), 5.0)
+    return base + random.uniform(0, 0.06)
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    """True for a request timeout (terminal — retrying only multiplies the wait).
+
+    Name-tolerant so it catches ``httpx.TimeoutException`` (which does NOT
+    subclass the builtin ``TimeoutError``) without importing httpx here — the
+    HTTP callable is injected, so the concrete exception type is host-defined.
+    """
+    return isinstance(exc, TimeoutError) or "Timeout" in type(exc).__name__
+
 
 _CASTS: dict[str, Callable[[Any], Any]] = {
     "int": int,
@@ -135,10 +180,17 @@ class ToolExecutor:
     """Run a ToolSpec against state and return the events to append."""
 
     def __init__(
-        self, http: HttpFn, python_tools: dict[str, PythonToolFn] | None = None
+        self,
+        http: HttpFn,
+        python_tools: dict[str, PythonToolFn] | None = None,
+        *,
+        allow_private_hosts: bool = False,
     ) -> None:
         self._http = http
         self._python_tools = python_tools or {}
+        # Strict by default: block private/loopback/metadata targets in rendered
+        # tool URLs. Local-dev hosts hitting localhost mocks opt out.
+        self._allow_private_hosts = allow_private_hosts
 
     async def execute(
         self,
@@ -223,6 +275,20 @@ class ToolExecutor:
                     error=f"template error: {exc}",
                 ),
             ]
+        # SSRF guard on the RENDERED url — the host may have arrived via
+        # {{ env.X }} / {{ slots.Y }}, so validating spec.url would be bypassable.
+        try:
+            validate_url(url, allow_private_hosts=self._allow_private_hosts)
+        except ValueError as exc:
+            return [
+                ToolCallEvent(tool=spec.id, args={"url": _redact_url(url)}),
+                ToolResultEvent(
+                    tool=spec.id,
+                    store_as=spec.store_response_as,
+                    ok=False,
+                    error=str(exc),
+                ),
+            ]
         # A compiler '_template' body is one whole Jinja-in-JSON document:
         # the rendered text IS the request body, so parse it into the real
         # structure (posting {"_template": "..."} literally would hand the
@@ -248,10 +314,12 @@ class ToolExecutor:
         # still go to http. EnvWriteEvent values stay raw: env is never
         # rendered to the Talker, and export-time redaction is a later-task
         # concern.
+        redacted_url = _redact_url(url)
+        redacted_body = _redact(body or {})
         events.append(
             ToolCallEvent(
                 tool=spec.id,
-                args={"url": _redact_url(url), "body": _redact(body or {})},
+                args={"url": redacted_url, "body": redacted_body},
             )
         )
         # Idempotency: a retried or middleware-replayed side-effecting call is
@@ -261,37 +329,72 @@ class ToolExecutor:
             h.lower() == "idempotency-key" for h in headers
         ):
             headers["Idempotency-Key"] = _idempotency_key(spec, url, body)
-        # Terminal trace of the REAL rendered request (event log url is redacted).
-        # Dev visibility for tool/API calls during pg-stack runs.
-        print(
-            f"[tool] → {spec.id} {spec.method} {url}"
-            + (f" body={body}" if body else ""),
-            flush=True,
+        # Request trace uses the REDACTED url/body — the raw ones may carry
+        # secrets in query params or body fields (and this line is captured by
+        # the prod log pipeline, not just a dev terminal).
+        _log.info(
+            "[tool] → %s %s %s%s",
+            spec.id,
+            spec.method,
+            redacted_url,
+            f" body={redacted_body}" if body else "",
         )
-        try:
-            status, data = await self._http(
-                method=spec.method,
-                url=url,
-                headers=headers,
-                body=body,
-                timeout=spec.timeout,
-            )
-        except Exception as exc:
-            print(f"[tool] ✗ {spec.id} ERROR {type(exc).__name__}: {exc}", flush=True)
+        timeout = max(_MIN_TIMEOUT_S, min(spec.timeout, _MAX_TIMEOUT_S))
+        # Transport retry: only RAISED transport exceptions (conn reset, DNS blip,
+        # TLS) are retried. Timeouts and the >1MB ValueError from the HTTP callable
+        # are terminal. A non-2xx status is RETURNED, not raised, so it stays
+        # single-shot — the author owns it via pipeline `on:` branches. headers
+        # (incl. the Idempotency-Key) were computed once above, so every retry
+        # sends the byte-identical request and reuses the same key.
+        status, data = 0, None
+        last_exc: Exception | None = None
+        for attempt in range(_TRANSPORT_RETRIES + 1):
+            try:
+                status, data = await self._http(
+                    method=spec.method,
+                    url=url,
+                    headers=headers,
+                    body=body,
+                    timeout=timeout,
+                )
+                last_exc = None
+                break
+            except Exception as exc:
+                last_exc = exc
+                terminal = _is_timeout(exc) or isinstance(exc, ValueError)
+                if terminal or attempt == _TRANSPORT_RETRIES:
+                    break
+                _log.warning(
+                    "[tool] retry %s attempt %d: %s",
+                    spec.id,
+                    attempt + 1,
+                    type(exc).__name__,
+                )
+                await anyio.sleep(_backoff(attempt))
+        if last_exc is not None:
+            # Exception text can embed the full request URL incl. query secrets;
+            # log only the type at WARNING, full detail at DEBUG.
+            _log.warning("[tool] ✗ %s %s", spec.id, type(last_exc).__name__)
+            _log.debug("[tool] ✗ %s detail", spec.id, exc_info=last_exc)
             events.append(
                 ToolResultEvent(
                     tool=spec.id,
                     store_as=spec.store_response_as,
                     ok=False,
-                    error=f"{type(exc).__name__}: {exc}",
+                    error=f"{type(last_exc).__name__}: {last_exc}",
                 )
             )
             return events
         ok = 200 <= status < 300
-        print(
-            f"[tool] ← {spec.id} {status} {'ok' if ok else 'FAIL'} "
-            f"→{spec.store_response_as or '-'} {str(data)[:300]}",
-            flush=True,
+        # Response body can hold freshly-minted access tokens (auth-refresh
+        # tools) and customer PII; redact before logging.
+        _log.info(
+            "[tool] ← %s %s %s →%s %s",
+            spec.id,
+            status,
+            "ok" if ok else "FAIL",
+            spec.store_response_as or "-",
+            str(_redact(data))[:300],
         )
         result = ToolResultEvent(
             tool=spec.id,
@@ -311,10 +414,12 @@ class ToolExecutor:
                     # Path missed the response shape (e.g. `data.x` against a
                     # flat body). env stays unset and downstream tools render
                     # an empty header/arg — silently. Surface it.
-                    print(
-                        f"[tool] ⚠ {spec.id} env_updates '{env_key}': "
-                        f"path '{path}' not found in response — env unset",
-                        flush=True,
+                    _log.warning(
+                        "[tool] ⚠ %s env_updates '%s': path '%s' not found "
+                        "in response — env unset",
+                        spec.id,
+                        env_key,
+                        path,
                     )
             # slot_updates: write a resolved value straight into a slot (e.g. a
             # name->id lookup the Director can't resolve itself). Applied to the
@@ -334,12 +439,29 @@ class ToolExecutor:
                         )
                     )
                 else:
-                    print(
-                        f"[tool] ⚠ {spec.id} slot_updates '{slot_key}': "
-                        f"path '{path}' not found in response — slot unset",
-                        flush=True,
+                    _log.warning(
+                        "[tool] ⚠ %s slot_updates '%s': path '%s' not found "
+                        "in response — slot unset",
+                        spec.id,
+                        slot_key,
+                        path,
                     )
         return events
+
+
+#: One shared AsyncClient, built lazily, never closed — so an HTTPS tool call
+#: does not pay a fresh TCP+TLS handshake every time. Tests inject a
+#: MockTransport by setting this module global before calling httpx_http.
+_client: "Any | None" = None
+
+
+def _get_client() -> Any:
+    global _client
+    import httpx
+
+    if _client is None:
+        _client = httpx.AsyncClient()
+    return _client
 
 
 async def httpx_http(
@@ -350,12 +472,27 @@ async def httpx_http(
     body: Any,
     timeout: float,
 ) -> tuple[int, Any]:
-    """Production HTTP callable backed by httpx."""
-    import httpx
+    """Production HTTP callable backed by a shared httpx client.
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.request(method, url, headers=headers, json=body)
-        try:
-            return resp.status_code, resp.json()
-        except ValueError:
-            return resp.status_code, {"text": resp.text}
+    Caps the response at 1 MiB: a content-length precheck plus a byte count
+    during the streamed read (so a chunked hostile body can't OOM before the
+    check runs). A breach raises ``ValueError`` — the executor turns that into a
+    failed ToolResultEvent and does NOT retry it (an oversized body stays
+    oversized). JSON is returned parsed; non-JSON as ``{"text": ...}``.
+    """
+    client = _get_client()
+    async with client.stream(
+        method, url, headers=headers, json=body, timeout=timeout
+    ) as resp:
+        declared = resp.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > _MAX_RESPONSE_BYTES:
+            raise ValueError(f"response too large: {declared} bytes (>1MiB cap)")
+        buf = bytearray()
+        async for chunk in resp.aiter_bytes():
+            buf.extend(chunk)
+            if len(buf) > _MAX_RESPONSE_BYTES:
+                raise ValueError("response too large (>1MiB cap)")
+    try:
+        return resp.status_code, json.loads(bytes(buf))
+    except ValueError:
+        return resp.status_code, {"text": bytes(buf).decode(errors="replace")}

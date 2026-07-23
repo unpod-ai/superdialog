@@ -1,6 +1,7 @@
 """LLM provider layer for superdialog."""
 
 from .anyllm_provider import AnyLlmProvider
+from .fallback import FallbackConfig, FallbackProvider
 from .litellm_provider import LitellmProvider
 from .openai_provider import OpenAIProvider
 from .prompt_cache import CACHE_PREFIX_KEY, PromptCacheConfig, mark_cache_prefix
@@ -14,6 +15,8 @@ __all__ = [
     "AnyLlmProvider",
     "CompletionResult",
     "CustomProviderConfig",
+    "FallbackConfig",
+    "FallbackProvider",
     "LLMProvider",
     "LLMResilienceError",
     "LitellmProvider",

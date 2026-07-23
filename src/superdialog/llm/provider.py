@@ -18,7 +18,9 @@ class StreamChunk:
     text: str | None
     tool_call_delta: dict[str, Any] | None
     done: bool
-    usage: dict[str, int] | None = None  # prompt_tokens + completion_tokens when available
+    usage: dict[str, int] | None = (
+        None  # prompt_tokens + completion_tokens when available
+    )
 
 
 class LLMProvider(Protocol):
@@ -35,6 +37,13 @@ class LLMProvider(Protocol):
         tools: list[dict[str, Any]] | None = None,
         **opts: Any,
     ) -> AsyncIterator[StreamChunk]: ...
+
+    # Optional, duck-typed: ``async def warmup(self) -> None``. Hosts may call it
+    # during idle time (e.g. the carrier ring window) to open the connection
+    # pool the first turn reuses, shaving DNS+TCP+TLS off the opening TTFT. It is
+    # NOT a required member — callers must ``getattr(provider, "warmup", None)``
+    # — so minimal custom providers stay valid. It must be fire-and-forget:
+    # swallow its own errors and never block or fail a call.
 
 
 def apply_json_mode(opts: dict[str, Any]) -> dict[str, Any]:

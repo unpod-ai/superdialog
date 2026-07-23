@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
@@ -32,6 +33,8 @@ from .pipeline import PipelineRunner
 from .render import render_template
 from .state import ConversationState, _superseded_versions
 from .toolexec import HttpFn, PythonToolFn, ToolExecutor
+
+_log = logging.getLogger(__name__)
 
 _WRAP_UP_NOTE = "wrap this step up; offer the essentials and move on"
 _TURN_BUDGET_GRACE = 2  # extra turns past budget before on_failure routing
@@ -77,11 +80,16 @@ class PlaybookRuntime:
         python_tools: dict[str, PythonToolFn] | None = None,
         max_hops: int = 8,
         intercept_llm: CompletesLLM | None = None,
+        allow_private_hosts: bool = False,
     ) -> None:
         self.log = EventLog()
         self._pb = playbook
         self._director = Director(playbook, director_llm)
-        self._executor = ToolExecutor(http=http, python_tools=python_tools)
+        self._executor = ToolExecutor(
+            http=http,
+            python_tools=python_tools,
+            allow_private_hosts=allow_private_hosts,
+        )
         self._pipelines = PipelineRunner(playbook, self._executor)
         self._max_hops = max_hops
         # Optional fast classifier for irreversible-tool interception (the
@@ -155,10 +163,10 @@ class PlaybookRuntime:
         if decision.degraded:
             # Loud by design: a silently-degraded Director re-speaks the current
             # checkpoint every turn (greeting loop) with zero console evidence.
-            print(
-                f"[DIRECTOR] DEGRADED detail={decision.detail} "
-                f"cp={self.state.checkpoint_id}",
-                flush=True,
+            _log.warning(
+                "[DIRECTOR] DEGRADED detail=%s cp=%s",
+                decision.detail,
+                self.state.checkpoint_id,
             )
             self.log.append(DegradedEvent(component="director", detail=decision.detail))
             # LLM-free policies still apply in degraded mode.
@@ -173,10 +181,10 @@ class PlaybookRuntime:
             or getattr(advance, "target", None)
             or advance.rule
         )
-        print(
-            f"[DIRECTOR] verdict advance={_adv or 'STAY'} "
-            f"cp={self.state.checkpoint_id}",
-            flush=True,
+        _log.info(
+            "[DIRECTOR] verdict advance=%s cp=%s",
+            _adv or "STAY",
+            self.state.checkpoint_id,
         )
         is_interrupt = advance is not None and advance.rule.startswith("interrupt:")
         state = self.state

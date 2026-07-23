@@ -182,6 +182,29 @@ class ResilientProvider:
             raise AttributeError(name)
         return getattr(inner, name)
 
+    async def warmup(self) -> None:
+        """Warm the primary AND the hedge leg concurrently.
+
+        Explicit (not via ``__getattr__``, which would reach only ``inner`` and
+        skip the hedge — the hedge fires at +delay on the first turn, so a cold
+        hedge would just relocate the cold connect). Each leg is guarded so one
+        leg's failure never blocks the other; warmup never raises.
+        """
+
+        async def _warm(provider: LLMProvider) -> None:
+            fn = getattr(provider, "warmup", None)
+            if fn is None:
+                return
+            try:
+                await fn()
+            except Exception:  # noqa: BLE001 — warmup must never raise
+                pass
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(_warm, self.inner)
+            if self._hedge is not None:
+                tg.start_soon(_warm, self._hedge)
+
     def _backoff_delay(self, attempt: int) -> float:
         return min(self.cfg.backoff_base_s * (2**attempt), self.cfg.backoff_max_s)
 

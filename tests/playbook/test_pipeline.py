@@ -223,3 +223,39 @@ async def test_retry_then_success() -> None:
     result = await runner.run("p", _state())
     assert result.ok and result.advance_to == "j.done"
     assert len(http.calls) == 2  # one failure + one success, no extras
+
+
+async def test_transport_retry_does_not_multiply_with_retryspec(monkeypatch) -> None:
+    # A transient RAISED exception is absorbed by the executor's transport retry
+    # inside ONE execute() — so the pipeline RetrySpec (which only fires on a
+    # returned failure branch) never rounds, and the two layers don't compound.
+    from superdialog.playbook import toolexec
+
+    monkeypatch.setattr(toolexec, "_backoff", lambda a: 0.0)
+
+    class RaiseThenOk:
+        def __init__(self, fails: int) -> None:
+            self.fails = fails
+            self.calls = 0
+
+        async def __call__(self, **_):
+            self.calls += 1
+            if self.calls <= self.fails:
+                raise ConnectionError("blip")
+            return (200, {"data": {}})
+
+    pb = _pb(
+        [
+            PipelineStep(
+                tool="confirm",
+                on={
+                    "ok": "j.done",
+                    "failed": RetrySpec(retry=2, on_exhaust="j.fallback"),
+                },
+            )
+        ]
+    )
+    http = RaiseThenOk(fails=2)
+    result = await PipelineRunner(pb, ToolExecutor(http=http)).run("p", _state())
+    assert http.calls == 3  # 1 + 2 transport retries, all in one execute
+    assert result.advance_to == "j.done"  # RetrySpec never fired → no fallback

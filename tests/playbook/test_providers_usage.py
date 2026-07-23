@@ -44,7 +44,11 @@ class _TalkerProvider:
             text=None,
             tool_call_delta=None,
             done=True,
-            usage={"prompt_tokens": 13, "completion_tokens": 4, "cache_write_tokens": 7000},
+            usage={
+                "prompt_tokens": 13,
+                "completion_tokens": 4,
+                "cache_write_tokens": 7000,
+            },
         )
 
 
@@ -87,7 +91,9 @@ def test_talker_fires_usage_event_from_trailing_chunk():
 
 def test_no_callback_is_inert():
     d = ProviderDirector(_DirectorProvider())  # no callback
-    assert anyio.run(lambda: d.complete([{"role": "user", "content": "hi"}])) == "verdict"
+    assert (
+        anyio.run(lambda: d.complete([{"role": "user", "content": "hi"}])) == "verdict"
+    )
 
 
 def test_dialog_machine_register_wires_playbook_adapters():
@@ -112,3 +118,109 @@ def test_dialog_machine_register_wires_playbook_adapters():
     assert machine._llm_callback is _cb
     assert machine._pb_director.on_llm_complete is _cb
     assert machine._pb_talker.on_llm_complete is _cb
+
+
+class _NoUsageDirector:
+    """Backend that returns text but no usage object (Cerebras-class)."""
+
+    model = "cerebras/llama-3.3-70b"
+
+    async def complete(self, messages, tools=None, **kw):
+        return CompletionResult(text="verdict text here", tool_calls=[], metadata={})
+
+
+class _NoUsageTalker:
+    model = "cerebras/llama-3.3-70b"
+
+    async def stream(self, messages, tools=None, **kw):
+        yield StreamChunk(text="Hello ", tool_call_delta=None, done=False)
+        yield StreamChunk(text="there", tool_call_delta=None, done=False)
+        yield StreamChunk(text=None, tool_call_delta=None, done=True)  # no usage
+
+
+class _EmptyTextDirector:
+    """Usage present, model produced nothing — genuinely zero, not missing."""
+
+    model = "m"
+
+    async def complete(self, messages, tools=None, **kw):
+        return CompletionResult(
+            text="",
+            tool_calls=[],
+            metadata={"prompt_tokens": 10, "completion_tokens": 0},
+        )
+
+
+def test_director_estimates_usage_when_backend_reports_none():
+    events: list[LLMUsageEvent] = []
+
+    async def _cb(ev):
+        events.append(ev)
+
+    d = ProviderDirector(_NoUsageDirector(), on_llm_complete=_cb)
+    msgs = [{"role": "user", "content": "book a slot please"}]  # 18 chars
+    anyio.run(lambda: d.complete(msgs))
+    ev = events[0]
+    assert ev.estimated is True
+    assert ev.tokens_in == max(1, 18 // 4)
+    assert ev.tokens_out == max(1, len("verdict text here") // 4)
+    assert ev.cached == 0 and ev.cache_write == 0  # never estimate cache
+
+
+def test_talker_estimates_usage_when_backend_reports_none():
+    events: list[LLMUsageEvent] = []
+
+    async def _cb(ev):
+        events.append(ev)
+
+    t = ProviderTalker(_NoUsageTalker(), on_llm_complete=_cb)
+
+    async def _run():
+        async for _ in t.stream([{"role": "user", "content": "hi"}]):
+            pass
+
+    anyio.run(_run)
+    ev = events[0]
+    assert ev.estimated is True
+    assert ev.tokens_out == max(1, len("Hello there") // 4)
+
+
+def test_measured_usage_is_not_flagged_estimated():
+    events: list[LLMUsageEvent] = []
+
+    async def _cb(ev):
+        events.append(ev)
+
+    d = ProviderDirector(_DirectorProvider(), on_llm_complete=_cb)
+    anyio.run(lambda: d.complete([{"role": "user", "content": "hi"}]))
+    assert events[0].estimated is False
+
+
+def test_genuinely_zero_usage_is_not_estimated():
+    # Usage object present (empty completion) → trust it, don't estimate.
+    events: list[LLMUsageEvent] = []
+
+    async def _cb(ev):
+        events.append(ev)
+
+    d = ProviderDirector(_EmptyTextDirector(), on_llm_complete=_cb)
+    anyio.run(lambda: d.complete([{"role": "user", "content": "hi"}]))
+    assert events[0].estimated is False
+    assert events[0].tokens_in == 10
+
+
+def test_usage_fallback_logs_once_at_info_then_debug(caplog):
+    import logging
+
+    caplog.set_level(logging.DEBUG, logger="superdialog.playbook.providers")
+
+    async def _cb(ev):
+        pass
+
+    d = ProviderDirector(_NoUsageDirector(), on_llm_complete=_cb)
+    anyio.run(lambda: d.complete([{"role": "user", "content": "hi"}]))
+    anyio.run(lambda: d.complete([{"role": "user", "content": "hi"}]))
+    fallback = [r for r in caplog.records if "llm_usage_fallback" in r.getMessage()]
+    assert len(fallback) == 2
+    assert fallback[0].levelno == logging.INFO
+    assert fallback[1].levelno == logging.DEBUG

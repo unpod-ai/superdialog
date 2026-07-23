@@ -6,7 +6,7 @@ import anyio
 
 from superdialog.agent import Agent, TurnResult
 from superdialog.playbook import EventLog, PlaybookAgent
-from superdialog.playbook.events import UtteranceEvent
+from superdialog.playbook.events import EnvWriteEvent, UtteranceEvent
 from superdialog.playbook.models import Playbook
 from superdialog.playbook.talker import StreamsLLM
 from tests.playbook.test_director import CannedLLM
@@ -48,16 +48,37 @@ def _agent(
     http_responses: list[tuple[int, dict]] | None = None,
     talker_llm: StreamsLLM | None = None,
 ) -> PlaybookAgent:
-    return PlaybookAgent(
+    agent = PlaybookAgent(
         playbook=Playbook.from_yaml(MINIMAL_YAML),
         talker_llm=talker_llm or StreamLLM(["Which", " city?"]),
         director_llm=CannedLLM(verdict or _IDLE_VERDICT),
         http=FakeHttp(http_responses or []),
     )
+    # MINIMAL_YAML's hold tool URL is "{{ env.API_BASE_URL }}/slots/hold"; seed a
+    # real base so it renders a valid absolute URL (a schemeless "/slots/hold"
+    # is rejected by the tool executor's SSRF guard and would never leave httpx).
+    agent.runtime.log.append(
+        EnvWriteEvent(key="API_BASE_URL", value="https://api.test")
+    )
+    return agent
 
 
 def test_satisfies_agent_protocol() -> None:
     assert isinstance(_agent(), Agent)
+
+
+def test_allow_private_hosts_threads_agent_to_executor() -> None:
+    # Strict by default, and the opt-in flows PlaybookAgent → PlaybookRuntime →
+    # ToolExecutor so a single constructor arg governs the SSRF guard.
+    assert _agent().runtime._executor._allow_private_hosts is False
+    permissive = PlaybookAgent(
+        playbook=Playbook.from_yaml(MINIMAL_YAML),
+        talker_llm=StreamLLM(["hi"]),
+        director_llm=CannedLLM(_IDLE_VERDICT),
+        http=FakeHttp([]),
+        allow_private_hosts=True,
+    )
+    assert permissive.runtime._executor._allow_private_hosts is True
 
 
 async def test_turn_returns_text_and_metadata() -> None:
@@ -299,3 +320,44 @@ def test_apply_memory_seeds_summary_event() -> None:
     summaries = [e for e in agent.runtime.log.events if isinstance(e, SummaryEvent)]
     assert summaries and "returning member" in summaries[-1].text
     assert agent.runtime.state.summary == summaries[-1].text
+
+
+# --- barge-in: mark_interrupted truncates the last assistant utterance --------
+
+
+async def _assistant_events(agent):
+    return [
+        e
+        for e in agent.runtime.log.events
+        if isinstance(e, UtteranceEvent) and e.role == "assistant"
+    ]
+
+
+async def test_mark_interrupted_truncates_and_refolds():
+    agent = _agent()  # talker streams "Which city?", IDLE verdict → utterance logged
+    await agent.turn("hi")
+    assert await _assistant_events(agent)  # precondition
+
+    agent.mark_interrupted("Which")
+
+    last = (await _assistant_events(agent))[-1]
+    assert last.text == "Which [interrupted by caller]"
+    # The fold refreshed (frozen event replaced at same version → explicit
+    # _state_cache reset), so the Director's next-turn transcript sees the cut.
+    tx = [m for m in agent.runtime.state.transcript if m.role == "assistant"]
+    assert tx[-1].text == "Which [interrupted by caller]"
+
+
+async def test_mark_interrupted_without_heard_text_tags_existing():
+    agent = _agent()
+    await agent.turn("hi")
+    agent.mark_interrupted()  # no prefix → keep text, just tag it
+    last = (await _assistant_events(agent))[-1]
+    assert last.text.startswith("Which city?")
+    assert last.text.endswith("[interrupted by caller]")
+
+
+async def test_mark_interrupted_noop_without_assistant_utterance():
+    agent = _agent()
+    agent.mark_interrupted("x")  # no turn yet → nothing to rewrite, must not raise
+    assert not await _assistant_events(agent)

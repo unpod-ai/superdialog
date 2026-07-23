@@ -363,12 +363,18 @@ def test_cache_prefix_identical_across_languages() -> None:
     assert en[CACHE_PREFIX_KEY] == hi[CACHE_PREFIX_KEY]
 
 
-def test_render_emits_brain_turn_trace_keys_only(capsys) -> None:
+def test_render_emits_brain_turn_trace_keys_only(caplog) -> None:
+    import logging
+
     pb, state = _setup()
+    caplog.set_level(logging.DEBUG, logger="superdialog.playbook.render")
     render_view(pb, state, token_budget=10_000)
-    out = capsys.readouterr().out
     trace_line = next(
-        (line for line in out.splitlines() if "[turn-trace] side=brain" in line),
+        (
+            r.getMessage()
+            for r in caplog.records
+            if "[turn-trace] side=brain" in r.getMessage()
+        ),
         None,
     )
     assert trace_line is not None

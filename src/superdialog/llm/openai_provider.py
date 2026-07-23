@@ -11,12 +11,17 @@ drop-in :class:`~superdialog.llm.provider.LLMProvider`.
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from typing import Any, AsyncIterator
 
+import anyio
+
 from .anyllm_provider import _extract_usage
 from .provider import CompletionResult, StreamChunk, apply_json_mode
+
+_log = logging.getLogger(__name__)
 
 # LiveKit inference gateway JWT lifetime. ``create_access_token`` mints a 600s
 # token upstream; we request a longer one and rebuild the client before it
@@ -122,6 +127,21 @@ class OpenAIProvider:
         if self._client is None:
             self._client = make_openai_client()
         return self._client
+
+    async def warmup(self) -> None:
+        """Open the real connection pool during idle time (e.g. the ring window).
+
+        Uses the SAME cached AsyncOpenAI client the first turn reuses, so DNS +
+        TCP + TLS are paid now, not on the opening turn (~150-400ms off first
+        TTFT). Fire-and-forget: any error — including a gateway 404 on
+        ``/models`` (TLS is already established by then) — is swallowed at DEBUG
+        so a warmup never delays or fails a call.
+        """
+        try:
+            with anyio.fail_after(5.0):
+                await self._ensure_client().models.list()
+        except Exception as exc:  # noqa: BLE001 — warmup must never raise
+            _log.debug("openai warmup skipped: %s", type(exc).__name__)
 
     def _build_kwargs(
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None
