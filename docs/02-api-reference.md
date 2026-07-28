@@ -92,16 +92,20 @@ Talker/Director LLMs or a custom HTTP executor.
 
 ```python
 DialogMachine(
-    source: Flow | FlowSet | Playbook | str | dict,  # was: flow=
+    source: Flow | FlowSet | Playbook | str | dict,
     llm: str | None = None,             # model URI (Talker, and Director unless split)
     tools: list[Tool] | None = None,    # any Tool; both engines
     memory: ContextStore | None = None, # graph-only; default in-memory
     config: dict | None = None,         # graph-only: max_tokens, temperature, etc.
-    traversal_dir: str | Path | None = None,  # graph-only: auto-save traversal JSON
+    traversal_dir: str | Path | None = None,  # graph engine: auto-save traversal JSON
     adapter: str = "toolcall",          # graph-only adapter selection
     *,
+    flow: Flow | FlowSet | None = None, # back-compat keyword alias for source
     engine: str = "auto",               # "auto" | "playbook" | "flow"
     director_llm: str | None = None,    # Playbook: strong-Director override
+    barrier_timeout: float = 0.4,       # Playbook: hard-gate Director wait
+    hold_timeout: float | None = None,  # Playbook: None -> policies.hold_timeout
+    settle_before_speak: bool = False,  # Playbook: offline-eval knob (see PlaybookAgent)
 )
 ```
 
@@ -118,6 +122,14 @@ methods (`switch_flow`, `seed`, `load_flow_state`) raise `NotImplementedError`
 in Playbook mode, and `flow_state` returns `None`.
 
 Set `traversal_dir` (graph engine) to a directory path and the machine will write a timestamped JSON file recording every node visited, every turn, and slot values collected - automatically when `is_complete` becomes `True`. Useful for debugging flows, building eval datasets, and auditing production conversations.
+
+Traversal recording is **not** graph-only: the Playbook engine has its own
+recorder. Pass `PlaybookAgent(traversal_dir=...)` (plus optional
+`traversal_source` / `traversal_model` labels) and the agent saves a
+checkpoint-level traversal on session end, built by
+`playbook/traversal.py::build_playbook_traversal` and saved by
+`playbook/traversal.py::save_playbook_traversal` (both exported from
+`superdialog.playbook`).
 
 ### `async turn(text, context=None, stream=False) -> Turn | AsyncIterator[StreamChunk]`
 
@@ -224,14 +236,42 @@ async with worker.acquire("user-42") as h:
     h.assist("Customer sounds upset; be empathetic.")
 ```
 
-- **`SessionWorker(agent_factory, store, lock_backend, max_sessions=1000)`** -
-  process-level multiplexer. Calls `agent_factory()` once per new session.
-- **`worker.acquire(session_id)`** - async context manager. Loads or creates
-  the session, locks it for the duration of the block, persists state on exit.
+- **`SessionWorker(*, agent_factory=None, agent_factory_ctx=None, store=None,
+  lock_backend=None, max_sessions=1000)`** - process-level multiplexer. All
+  arguments are keyword-only. Provide **exactly one** of `agent_factory`
+  (zero-arg, one identical brain per session) or `agent_factory_ctx`
+  (`Callable[[SessionInit], Agent]` - a *different* brain per session;
+  `ValueError` if both or neither are given). Defaults:
+  `InMemorySessionStore`, `AsyncioLockBackend`.
+- **`worker.acquire(session_id, *, init=None)`** - async context manager.
+  Loads or creates the session, locks it for the duration of the block,
+  persists state on exit. `init` is a `SessionInit` consumed only when the
+  session is first created (bind-at-creation); a cached session is returned
+  untouched.
+- **`SessionInit(session_id, metadata={})`** - per-session construction
+  context handed to `agent_factory_ctx`. `metadata` carries arbitrary keys
+  (e.g. `playbook_id`) so one worker process can serve many different
+  playbooks - this is the seam supervoice's playbook pool builds on
+  (`session/session.py::SessionInit`).
+- **`worker.close_session(session_id, *, persist=True)`** - explicit
+  eviction. `persist=False` deletes the store record so a terminal session
+  cannot be resumed.
 - **`SessionHandle`** - yielded inside the with-block. `.turn(text, *, stream)`,
-  `.assist(text)`, `.state`.
+  `.assist(text)`, `.session`, `.agent`.
 - **`Session`** - the durable data (`id`, `chat_ctx`, `flow_state`,
   `metadata`). Not normally constructed directly.
+
+```python
+# Context-aware factory: one pool process, many playbooks.
+worker = SessionWorker(
+    agent_factory_ctx=lambda init: build_agent(init.metadata["playbook_id"]),
+    store=InMemorySessionStore(),
+)
+async with worker.acquire(
+    "call-7", init=SessionInit(session_id="call-7", metadata={"playbook_id": "hotel"})
+) as h:
+    await h.turn("hi")
+```
 
 ### `ChatContext` and `FlowState`
 
@@ -250,14 +290,20 @@ non-DM brains have `flow_state=None`.
 
 Pluggable backends:
 
-| Protocol | Ships in v0.2 | Planned |
-|---|---|---|
-| `SessionStore` | `InMemorySessionStore`, `NullSessionStore` | `RedisSessionStore`, `FileSessionStore`, `SQLiteSessionStore` |
-| `LockBackend` | `AsyncioLockBackend` | `RedisLockBackend` |
+| Protocol | Ships in superdialog |
+|---|---|
+| `SessionStore` | `InMemorySessionStore`, `NullSessionStore` |
+| `LockBackend` | `AsyncioLockBackend` |
 
 `InMemorySessionStore` persists for the process lifetime; `NullSessionStore`
 drops every write - use it for voice (one DM per call) where persistence
 is unwanted.
+
+superdialog ships the **protocol**; production backends live downstream. A
+working Redis-backed store ships in supervoice
+(`playbook_pool/session_store.py::RedisSessionStore`) - implement
+`SessionStore` (`session/store.py::SessionStore`) the same way for your own
+backend.
 
 ### Other agents (`LLMAgent`, `LangChainAgent`)
 
@@ -318,7 +364,9 @@ tool = HttpTool(
 `auth` accepts a dict in v0.2:
 - `{"type": "bearer", "token": "..."}` - Bearer token in `Authorization`.
 
-Additional auth shapes (`basic`, `api_key`, callable) are planned for v0.3.
+> **Status: roadmap — not built.** Additional auth shapes (`basic`,
+> `api_key`, callable). Today only `bearer` is honored
+> (`tools/http_tool.py::HttpTool`).
 
 ### `MCPTool(id, name, description, server, input_schema=None)`
 
@@ -340,11 +388,16 @@ tool = MCPTool(id="search", name="search", description="...", server="https://mc
 
 Process-global. Once registered, the URI `custom/<name>/<model>` works in `set_llm()`, `DialogMachine(llm=...)`, and `create_dialog_flow(llm=...)`.
 
+`api_key` accepts a plain string **or a zero-arg callable returning a
+string** (`llm/registry.py::ApiKey = str | Callable[[], str]`). A callable
+is invoked on every LLM call, so short-lived credentials stay fresh - the
+LiveKit inference gateway uses this to mint a fresh JWT per call.
+
 ```python
 register_llm_provider(
     name="kerali-internal",
     base_url="https://llm.kerali.io/v1",
-    api_key=os.environ["KERALI_KEY"],
+    api_key=os.environ["KERALI_KEY"],          # or: lambda: mint_fresh_token()
     api_style="openai",
 )
 dialog_machine = DialogMachine(flow=flow, llm="custom/kerali-internal/llama-3-70b-tuned")
@@ -354,26 +407,20 @@ dialog_machine = DialogMachine(flow=flow, llm="custom/kerali-internal/llama-3-70
 
 ## Eval
 
-> **Status: planned for v0.3.** The `Eval` class is not shipped in v0.2.
-> The interface below is the target surface; see the roadmap in
-> [docs/decisions.md](decisions.md) for progress.
-> The Playbook engine ships its own persona-driven eval today - see
-> [Eval bridge](#eval-bridge-personaspec--run_session--run_eval).
+The eval surface is the shipped `superdialog.eval` package (runner,
+endpoints, metrics registry, report writer, and an OpenAI-compatible eval
+server), driven by the `superdialog eval` CLI group. There is no `Eval`
+class - the entry points are the CLI and the persona bridge below.
 
-```python
-# v0.3 (planned)
-eval = Eval(
-    flow=flow,
-    corpus="tests/kyc-corpus.jsonl",
-    llms=["openai/gpt-5.1", "anthropic/claude-haiku-4-5"],
-    metrics=["accuracy", "latency_p95"],
-)
-report = eval.run()
-print(report.summary())
-report.save("reports/2026-05-19.md")
-```
+- **Concepts and workflow:** [05-eval-guide.md](05-eval-guide.md)
+- **Running evals (CLI walkthrough):** [07-running-evals.md](07-running-evals.md)
+- **In-code persona evals:** see
+  [Eval bridge](#eval-bridge-personaspec--run_session--run_eval) - the
+  Playbook engine's `PersonaSpec` / `run_session` / `run_eval` surface.
 
-Corpus will be JSONL with `{utterance, expected_response | expected_intent | expected_tool_call}` records; custom metrics will be passable as callables.
+CLI surface (see [CLI](#cli) for the full table): `superdialog eval
+{flow, gen-dataset, run, bench, serve, suite}` plus the top-level
+`superdialog benchmark`.
 
 ---
 
@@ -405,7 +452,17 @@ See `docs/03-embedding-guides.md` for working snippets per host.
 | `superdialog playbook compile <flow.json>` | Compile legacy flow JSON to Playbook YAML | shipped |
 | `superdialog playbook chat --playbook <pb.yaml>` | REPL against an existing playbook YAML | shipped |
 | `superdialog playbook run <flow.json>` | Compile a flow and immediately start a Playbook REPL | shipped |
-| `superdialog eval --flow <flow.json> [--traversal <session.json>]` | Audit a recorded session or run a synthetic eval (legacy flow harness) | shipped |
+| `superdialog eval flow --flow <flow.json> [--traversal <session.json>]` | Audit a recorded session or run a synthetic eval (legacy flow harness) | shipped |
+| `superdialog eval gen-dataset --playbook <pb.yaml>` | Build `<playbook>.evalcases.yaml` from personas (auto-generated unless `--personas`) | shipped |
+| `superdialog eval run --playbook <pb> --dataset <cases> --out <dir>` | A/B evaluate a dataset (`--modes vanilla,playbook`), write a report | shipped |
+| `superdialog eval bench --playbook <pb> --models <uris>` | One shot: gen dataset if missing + A/B every model (one report dir each) | shipped |
+| `superdialog eval serve --playbook <pb> [--port 8000]` | Serve the playbook as an OpenAI-compatible endpoint | shipped |
+| `superdialog eval suite --config <registry.yaml>` | Run eval suites as behavioral gates (`--tier smoke\|full`) | shipped |
+| `superdialog benchmark [--data <name\|.jsonl>] [--flow <pb>]` | RAGAS + deterministic benchmark over a dataset, raw LLM vs SuperDialog | shipped |
+
+`eval` is a **required subcommand group** - bare `superdialog eval --flow ...`
+(the pre-0.2.18 spelling) no longer parses; use `superdialog eval flow`.
+Full eval workflow: [07-running-evals.md](07-running-evals.md).
 
 ---
 
@@ -506,11 +563,18 @@ Public exports (`from superdialog.playbook import ...`): `Playbook`,
 `PlaybookAgent`, `EventLog`, `ConversationState`, `CompletesLLM`,
 `StreamsLLM`, `HttpFn`, `PythonToolFn`, `httpx_http`, `compile_flow`,
 `coverage_report`, `replay`, `ReplayReport`, `PersonaSpec`, `SessionMetrics`,
-`EvalReport`, `run_session`, `run_eval`, `generate_simple_playbook`,
-`load_simple`, `simple_to_playbook`, `is_simple_playbook`, `optimize`,
-`OptimizeReport`, `RoundTrace`, `ObjectiveBreakdown`, `generate_personas`,
-`load_personas`, `ProviderTalker`, `ProviderDirector`, `provider_adapters`,
-`make_editable`, `Edit`, `SimpleDoc`, `FullDoc`, `MutationError`.
+`EvalReport`, `run_session`, `run_eval`, `run_multi_model`,
+`MultiModelReport`, `ModelScore`, `score_report`, `SessionAuditor`,
+`AuditReport`, `CorpusGenerator`, `CorpusSpec`, `EdgeScenario`, `EvalCache`,
+`ScriptedUser`, `SpeaksUser`, `TimingLLM`, `cached_speaker`,
+`derive_default_persona`, `persona_cache_path`, `save_personas`,
+`generate_simple_playbook`, `load_simple`, `simple_to_playbook`,
+`is_simple_playbook`, `optimize`, `OptimizeReport`, `RoundTrace`,
+`ObjectiveBreakdown`, `generate_personas`, `load_personas`,
+`ProviderTalker`, `ProviderDirector`, `provider_adapters`, `make_editable`,
+`Edit`, `SimpleDoc`, `FullDoc`, `MutationError`,
+`build_playbook_traversal`, `save_playbook_traversal`, `load_traversal`,
+`traversal_to_persona`, `traversal_to_scripted_user`.
 
 ### `Playbook`
 
@@ -535,17 +599,23 @@ Top-level fields:
 | Field | Type / default | Meaning |
 |---|---|---|
 | `persona` | `str = ""` | System persona rendered into every Talker view |
+| `multi_entity` | `bool = False` | Opt-in: scope slot storage/lookups per checkpoint `entity` |
+| `guidelines` | `GuidelineConfig` | Channel/tone/language/timezone knobs, `memory_enabled`, `supervisor` opt-in (deprecated: `director_model` / `talker_model` - use `llm:`) |
+| `llm` | `LLMConfig \| None` | The model this playbook declares (`provider` + `model`, optional `director` split); `None` keeps host-supplied models. See `Playbook.resolve_llm_providers` |
+| `pronunciations` | `list[PronunciationSpec] = []` | Authored pronunciation rules for the voice runtime (respelling-first; IPA advisory) |
 | `journeys` | `dict[str, Journey]` (≥ 1) | Named checkpoint lists; refs are `"journey.checkpoint"` |
 | `dispatch` | `list[DispatchEntry] = []` | Intent → checkpoint routes (compile-time organization in v1) |
 | `tools` | `list[ToolSpec] = []` | HTTP / python tools |
 | `pipelines` | `list[PipelineSpec] = []` | Ordered tool steps with typed result branches |
 | `handlers` | `list[HandlerSpec] = []` | Webhook / timer → pipeline bindings |
 | `interrupts` | `list[InterruptSpec] = []` | Global "drop everything" routes |
-| `policies` | `Policies` | `silence: SilencePolicy \| None`; `hold_timeout: float = 4.0` - Talker post-filler wait (see `PlaybookAgent`) |
+| `policies` | `Policies` | `silence: SilencePolicy \| None`; `hold_timeout: float = 4.0` - Talker post-filler wait; `filler` / `hold_line: str \| None` - authored barrier lines (see `PlaybookAgent`) |
 | `middleware` | `MiddlewareSpec \| None` | Auth-refresh-and-replay for pipeline steps |
 | `env` | `dict[str, str] = {}` | Seed env lane (never rendered to the Talker) |
 | `views` | `dict[str, str] = {}` | Computed views: name → expr, rendered as reference data |
+| `knowledge_base` | `str = ""` | Global KB text (Jinja-renderable); injected into a step's Talker prompt when `Checkpoint.uses_kb` allows (explicit value wins; `None` = heuristic: guidance mentions `knowledge_base`) |
 | `initial` | `str \| None` | Start ref; defaults to `initial_checkpoint_id` |
+| `source_path` | `str = ""` | Set by `Playbook.load()`; empty when built from text |
 
 Lookups:
 
@@ -588,18 +658,48 @@ agent = PlaybookAgent(
     http=httpx_http,            # HttpFn
     python_tools=None,          # dict[str, PythonToolFn] | None
     token_budget=4000,          # Talker view budget (estimated tokens)
-    barrier_timeout=0.4,        # hard gate: wait this long for the Director
+    barrier_timeout=4.0,        # hard gate: wait this long for the Director
     hold_timeout=None,          # then filler + this much more before degrading;
                                 # None -> the playbook's policies.hold_timeout (4.0)
+    traversal_dir=None,         # str | Path | None: auto-save traversal on session end
+    traversal_source="",        # display name in the traversal (default: source file)
+    traversal_model="",         # model label (default: director_llm.model_id)
+    settle_before_speak=False,  # offline-eval: Talker waits for the Director EVERY
+                                # turn, not just hard gates (off in live voice)
+    supervisor_llm=None,        # CompletesLLM | None: Loop-2 reviewer; explicit arg
+                                # wins, else guidelines.supervisor reuses the Director
+    intercept_llm=None,         # CompletesLLM | None: fast classifier guarding
+                                # irreversible tools (fails closed); None = expr guard
+    filler=None,                # SpokenLine | None: barrier filler line override
+    hold_line=None,             # SpokenLine | None: hold line override
+    allow_private_hosts=False,  # permit HTTP tools to hit private/loopback hosts
 )
 ```
 
-- **`async turn(text, *, stream=False)`** - Agent protocol. Non-streaming
-  returns `TurnResult(text, metadata)`; `metadata` carries `checkpoint`,
-  `version`, `ended` (and `outcome` once ended). With `stream=True` the
-  returned iterator yields **live provider tokens** (`StreamChunk(text=...)`)
-  while the Director settles concurrently, then any pass-through
-  `say_verbatim` lines, then the `done=True` chunk.
+`SpokenLine = str | Callable[[ConversationState], str]`
+(`playbook/talker.py::SpokenLine`) - pass a callable for language-aware
+lines rendered against the live state. Explicit `filler` / `hold_line`
+arguments win over the playbook's authored `policies.filler` /
+`policies.hold_line`; `None` everywhere keeps the Talker's built-in
+defaults.
+
+- **`async turn(text, *, stream=False, language=None)`** - Agent protocol.
+  Non-streaming returns `TurnResult(text, metadata)`; `metadata` carries
+  `checkpoint`, `version`, `ended` (and `outcome` once ended). With
+  `stream=True` the returned iterator yields **live provider tokens**
+  (`StreamChunk(text=...)`) while the Director settles concurrently, then
+  any pass-through `say_verbatim` lines, then the `done=True` chunk.
+  `language` is the bridge-detected language of this turn, stamped on the
+  user utterance so the reply adheres to the caller (a `PlaybookAgent`
+  extension - the base `Agent` protocol's `turn` has no `language`).
+- **`stream_turn(text, language=None)`** - returns the async iterator
+  directly, no `await` needed: `async for chunk in agent.stream_turn(t)`.
+- **`mark_interrupted(heard_text=None)`** - host barge-in repair: truncates
+  the last logged assistant utterance to what the caller actually heard and
+  tags it `[interrupted by caller]`; `None` keeps the text, just tags it.
+- **`apply_memory(summary)`** - seed prior-call context for a returning
+  caller (rendered under "Earlier in this conversation" when
+  `guidelines.memory_enabled` is set); takes effect next turn.
 - **Barge-in safety** - aborting the stream (host `aclose()` or
   cancellation) interrupts *speech*, not the state machine: the Director
   runs to completion in a shielded scope, partial Talker speech is logged
@@ -633,6 +733,8 @@ PlaybookRuntime(
     http: HttpFn,
     python_tools: dict[str, PythonToolFn] | None = None,
     max_hops: int = 8,
+    intercept_llm: CompletesLLM | None = None,   # irreversible-tool classifier
+    allow_private_hosts: bool = False,           # HTTP tools may hit private hosts
 )
 ```
 
@@ -640,11 +742,36 @@ PlaybookRuntime(
 |---|---|
 | `log` | The `EventLog`; `rt.log.append(...)` is a supported public pattern |
 | `state` | Cached `ConversationState` fold, refreshed when the log grows; treat as read-only |
-| `async start() -> list[str]` | Seed `env`, enter the initial checkpoint, quiesce; returns pass-through speech |
-| `async on_user_text(text) -> list[str]` | Append the utterance, one Director verdict, policies, quiesce |
+| `async start() -> list[str]` | Seed the date anchor + `env`, enter the initial checkpoint, quiesce; returns pass-through speech |
+| `async on_user_text(text, *, record=True, language=None) -> list[str]` | Append the utterance, one Director verdict, policies, quiesce. `record=False` when the caller already appended (the streaming agent does); `language` stamps the utterance |
 | `async on_external(event) -> ExternalResult` | Record an `ExternalEvent`; silence policy or webhook/timer handler |
 | `async check_repairs()` | Emit a repair steering note when the Talker re-asked an answered slot |
+| `async rewind(to_version, reason, *, by="runtime", confirmed=False, repair_note=None) -> RewindOutcome` | Rewind conversation *state* to `to_version` (below) |
+| `async redirect(to, reason) -> list[str]` | Supervisor-grade redirect: advance to `to`, quiesce; returns pass-through speech |
+| `async pop_detour() -> list[str]` | Abandon the current detour: return to the step under it on the resume stack, if any |
 | `load_log(log)` | Replace the event log wholesale (invalidates the state cache) |
+
+**Rewind and tool tiers.** Speech is irreversible, so `rewind` deletes
+nothing: a `RevertEvent` marks the range `(to_version, now]` superseded and
+the fold skips those state effects while every utterance stays in the
+transcript. Side effects in the range are guarded by each tool's
+`effective_tier` (`ToolSpec.effective_tier`): *reversible* tools are undone
+structurally; *compensable* tools require `confirmed=True` and run their
+`compensate` tool **before** the revert (so its templates still see the
+to-be-reverted results); *irreversible* tools (or compensable ones with no
+`compensate`) refuse the rewind. The result is a `RewindOutcome` pydantic
+model: `status: "done" | "needs_confirmation" | "refused"`, `detail`, and
+`pending` (the blocking tool ids). `repair_note` becomes a repair steer so
+the Talker acknowledges the correction naturally.
+
+**Interception (`intercept_llm` seam).** Before an explicitly-tiered tool
+materializes, the runtime runs a guard ladder with cost proportional to
+risk (`runtime.py::PlaybookRuntime._intercept`): reversible/unannotated -
+no check; compensable - a pure expr guard (required slots meet the same
+per-slot gate the Director uses, no repair in flight); irreversible - every
+required slot must be *confirmed*, plus, when an `intercept_llm` is
+configured, one fast classifier call that **fails closed**. Unannotated
+playbooks never activate the guard.
 
 **Quiescence guarantee:** when `start()` or `on_user_text()` returns, the
 runtime is quiescent - every pipeline, expr rule, auto-advance, and policy
@@ -681,30 +808,37 @@ silent (no pass-through speech is fabricated for an absent listener).
 |---|---|---|
 | `id` | `str` (required) | Unique within its journey; referenced as `"journey.id"` |
 | `goal` | `str = ""` | What "done" means; shown to Talker and Director |
+| `entity` | `str = "caller"` | Which person this step's slots describe (storage-key prefix under `multi_entity`); must match `[a-z_][a-z0-9_]*` |
 | `slots` | `dict[str, SlotSpec] = {}` | Typed slots to extract while here |
 | `guidance` | `str = ""` | Talker prose; Jinja over `{slots, views, results}` |
 | `say_verbatim` | `str \| None` | Exact line (same Jinja namespace); bypasses the Talker LLM |
 | `never_say` | `list[str] = []` | Rendered into the Talker view as hard prohibitions |
+| `exit_say` | `str = ""` | Spoken on the turn that *leaves* this checkpoint via a Director rule: rendered and injected as a one-shot steer (capture-then-pitch steps). Simple format spells it `then_say` |
 | `advance_when` | `list[AdvanceRule] = []` | Outcome gates (below) |
 | `gate` | `"soft" \| "hard" = "hard"` | Default hard: Talker barriers on the Director, `requires` need *confirmed* slots. Set `soft` for free collection (provisional slots suffice, never blocks) |
 | `auto` | `bool = False` | Speak verbatim once, then advance via the first rule without user input |
+| `strict` | `bool = False` | Speak `say_verbatim` word-for-word; never paraphrase via the LLM |
+| `handover` | `bool = False` | Inject the handover-summary instruction at this step |
 | `pipeline` | `str \| None` | Pipeline run once per entry; routes on `pipeline.ok` / `pipeline.failed` |
 | `on_enter` | `list[str] = []` | Tool ids executed on entry; failures are data, not exceptions |
 | `on_failure` | `str \| None` | Route on pipeline failure or turn-budget exhaustion |
 | `terminal` | `bool = False` | Entering ends the session (`SessionEndEvent`) |
 | `outcome` | `str \| None` | Outcome label recorded when the terminal checkpoint ends the session |
 | `turn_budget` | `int \| None` | User turns before a wrap-up steering note; 2 grace turns later, route to `on_failure` |
+| `uses_kb` | `bool \| None` | Inject `Playbook.knowledge_base` into this step's Talker prompt. `None` = heuristic (guidance mentions `knowledge_base`); set explicitly to keep the KB off hot steps. Simple format spells it `kb` |
 
 #### `SlotSpec`
 
 | Field | Type / default | Meaning |
 |---|---|---|
-| `type` | `"str"` (also `int float bool date enum array object`) | Verdict values are cast; bad casts / enum misses are dropped, never stored |
+| `type` | `"str"` (also `int float bool date time enum array object`) | Verdict values are cast; bad casts / enum misses are dropped, never stored |
 | `required` | `False` | Surfaces in the Talker's "Still needed" list and the Director prompt |
 | `values` | `list[str] \| None` | Enum members; non-members are rejected |
+| `resolve_from` | `ResolveFrom \| None` | Candidate source for id-like slots the user never speaks verbatim: the Director gets the live list from `tool_results` and resolves the spoken value to the matching id. `ResolveFrom(result, list_field="items", name_field="name", id_field="id")` |
 | `authoritative` | `False` | Only tools, pipelines, and expr `set:` may write it; Talker writes and Director verdict extraction are ignored |
 | `invalidates` | `[]` | Slots/results cleared when this value *changes* (non-transitive - list the closure) |
 | `description` | `""` | Shown to the Director's extractor |
+| `gate` | `"soft" \| "hard" \| None` | Per-slot confirmation gate (risk class). `None` inherits the checkpoint's `gate`; `"hard"` marks an intrinsically risky slot that must be Director-confirmed; `"soft"` lets it advance on a provisional fill even inside a hard checkpoint. `date` slots default to hard |
 
 #### `AdvanceRule`
 
@@ -741,11 +875,20 @@ Judge semantics:
 | `method` / `url` / `headers` / `body` | `"GET"` / `""` / `{}` / `{}` | Request parts; string values are sandboxed Jinja over `{slots, env, results}` |
 | `store_response_as` | `str \| None` | Result key for `results.<key>`; `"pipeline"` is reserved (ValueError) |
 | `env_updates` | `dict[str, str] = {}` | env key → dot-path into response `data`; applied on 2xx |
+| `slot_updates` | `dict[str, str] = {}` | slot key → dot-path into response `data`; a confirmed write (tools may confirm what a verdict cannot) |
 | `run_once` | `False` | Skip when the tool already ran this session |
 | `when` | `str \| None` | Expr over state; skip when falsy (or invalid) |
 | `timeout` | `30.0` | Seconds, passed to the `HttpFn` |
 | `ttl_seconds` / `on_expire` | `None` | Reserved - TTL scheduling is deferred |
 | `args` | `dict[str, SlotSpec] = {}` | Typed call args, coerced before execution |
+| `tier` | `"reversible" \| "compensable" \| "irreversible" \| None` | Reversibility tier governing rewind and interception. `None` (default) infers conservatively at rewind time and never activates the interception guard |
+| `compensate` | `str \| None` | Tool id that undoes an ok result on rewind (required for a compensable tool to be rewindable) |
+
+`ToolSpec.effective_tier` (property) is the tier rewind safety actually
+uses: the explicit `tier` if set, else a conservative guess - safe HTTP
+methods → `"reversible"`, anything else (writes, python tools) →
+`"compensable"`. See [PlaybookRuntime](#playbookruntime) for rewind and
+interception semantics.
 
 Tool failures (HTTP error status, exceptions, template errors) are recorded
 as a failed `ToolResultEvent` - data, never a crash. The logged
@@ -790,9 +933,9 @@ replays the step once. `"replay"` is the only `then` value.
 - `HandlerSpec(id, on, pipeline)` - `on` is `"webhook.<name>"` or
   `"timer.<name>"`; fired via `runtime.on_external(...)`.
 - `InterruptSpec(id, when, judge="llm", to, resume=False)` - global routes;
-  `judge: llm` interrupts ride the Director verdict. `resume=True`
-  restoration is deferred (validation accepts it; the runtime does not
-  restore yet).
+  `judge` is `"llm" | "event"`; `judge: llm` interrupts ride the Director
+  verdict. `resume=True` restoration is deferred (validation accepts it;
+  the runtime does not restore yet).
 - `SilencePolicy(max_prompts=2, prompts=[], then="")` - the *n*-th silence
   since checkpoint entry speaks `prompts[n-1]` (returned as
   `ExternalResult.prompt`); past `max_prompts` the session routes to `then`.
