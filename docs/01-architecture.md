@@ -66,7 +66,16 @@ superdialog/
   │                       #   `langchain` extra required)
   ├─ session/             # Session, SessionHandle, SessionWorker, stores
   ├─ chat_context.py      # ChatContext, ChatMessage (LiveKit-aligned)
-  ├─ llm/                 # Model URI resolver and provider adapters
+  ├─ llm/                 # Model URI resolver, backends, resilience,
+  │                       #   prompt caching (§5.3-5.5)
+  ├─ observability/       # Observer protocol, TracingProvider, Langfuse
+  │                       #   sink (§5.1)
+  ├─ eval/                # Eval runner, metrics registry, dataset gen,
+  │                       #   OpenAI-compatible server (`eval serve`)
+  ├─ benchmark/           # `superdialog benchmark` - deterministic +
+  │                       #   RAGAS playbook scoring
+  ├─ traversal/           # Session traversal recordings (build/save
+  │                       #   full dialog histories to JSON)
   ├─ tools/               # Python / HTTP / MCP tool wrappers
   ├─ cli/                 # `superdialog generate / chat / optimize / playbook / flow / eval`
   └─ adapters/            # LiveKit, PipeCat, FastAPI, WebSocket
@@ -82,6 +91,31 @@ and drives either engine - the Playbook engine by default, the legacy graph
 runtime with `engine="flow"`. The lower-level `PlaybookAgent` takes two small
 LLM protocols (`StreamsLLM` for the Talker, `CompletesLLM` for the Director),
 so any provider - or a scripted fake in tests - plugs in directly.
+
+> **Naming disambiguation** - three collisions to keep straight when reading
+> code or older prose:
+>
+> 1. **`DialogMachine` names two things.** Today it is the unified *facade*
+>    (`dialog_machine.py::DialogMachine`) that drives either engine and
+>    defaults to Playbook. In older prose it named the legacy graph engine
+>    itself. When this doc says "the legacy DialogMachine engine" it means
+>    Engine A's internals (`superdialog.machine`); everywhere else,
+>    `DialogMachine` means the facade.
+> 2. **The engine axis has three spellings.** CLI: `superdialog chat
+>    --mode {playbook,flow}`. Constructor API: `DialogMachine(...,
+>    engine="auto"|"playbook"|"flow")`. Internally the resolved value is
+>    `Literal["graph", "playbook"]`
+>    (`dialog_machine.py::_select_engine`) - so `--mode flow`,
+>    `engine="flow"`, and internal `"graph"` all mean Engine A.
+> 3. **"Supervisor" names two things.** The Talker's rendered prompt says
+>    "Direction from supervisor" (`playbook/render.py`) - that "supervisor"
+>    is the **Director**'s steering note. The separate
+>    `playbook/supervisor.py::Supervisor` is an opt-in Loop-2 trajectory
+>    reviewer (enabled via `guidelines.supervisor` or
+>    `PlaybookAgent(supervisor_llm=)`) that fires on
+>    `detect_triggers` derailment patterns and can inject, redirect,
+>    rewind, or hand over (`SupervisorDecision`). Different component,
+>    unfortunate shared name.
 
 ## 2. Engine A - DialogMachine (legacy, graph-railed)
 
@@ -378,7 +412,184 @@ Positioning: the unified loader makes Engine B the zero-rewrite default
 destination for flow JSON - `superdialog chat` compiles and runs it
 automatically; Engine A remains available via `--mode flow`.
 
-## 5. Security model
+## 5. Observability and LLM routing
+
+Two cross-cutting layers sit under both engines: an observability seam that
+traces sessions, LLM generations, and tool calls to a pluggable sink, and the
+LLM resolution stack that turns a model URI into a resilient, optionally
+prompt-cached provider. Both downstream platforms (supervoice's playbook
+pool, unpod-sdk's adapter) wire into these seams, so their contracts are
+load-bearing.
+
+```
+ DialogMachine.set_observer(observer, trace_id)
+        │                                  DialogMachine.register_llm_callback(fn)
+        ▼                                  (per-LLM-call usage → billing ledger)
+ TracingProvider ── wraps ──┐
+        │                   ▼
+ Observer sink       resolve_llm(uri)
+ (Langfuse / Null)          │
+                     ResilientProvider          .inner = raw backend
+                     timeout · retry · hedge
+                            │
+                     mark_cache_prefix          (prompt caching, opt-in)
+                            │
+                     backend: any-llm / LiteLLM / OpenAI SDK / LiveKit gateway
+```
+
+### 5.1 The Observer seam (`observability/observer.py`)
+
+`Observer` is a `runtime_checkable` Protocol - a backend-agnostic sink for
+session and LLM observability:
+
+| Method | Fires on | Returns |
+|---|---|---|
+| `on_session_start(session_id, metadata)` | session open | `trace_id` |
+| `on_generation_start(trace_id, name, input_messages)` | LLM call begins | `observation_id` |
+| `on_generation_end(observation_id, output, tool_calls, metadata)` | LLM call ends | - |
+| `on_tool_call(trace_id, name, args, result)` | tool execution | - |
+| `on_flow_node(trace_id, node_id, slots, *, prev_node=)` | node/checkpoint transition | - |
+| `on_voice_turn(trace_id, metrics)` | voice-turn metrics from a host | - |
+| `on_session_end(trace_id, output)` | session close | - |
+
+Naming quirk: `on_flow_node` is named for graph nodes but receives
+*checkpoint ids* on the playbook path - one callback serves both engines.
+
+Three implementations ship:
+
+- **`NullObserver`** - the no-op default; zero external dependencies. Also
+  carries `on_error` and `flush` (best-effort extras the Langfuse sink
+  implements beyond the Protocol).
+- **`LangfuseObserver`** - wraps an *injected* Langfuse client; every method
+  is best-effort and never raises (failures log at debug and the call
+  continues). Exported alias: `SuperdialogObserver`.
+- **`TracingProvider`** - not a sink but a provider wrapper: it wraps any
+  `LLMProvider` and records `complete`/`stream` calls as generations against
+  a `trace_id`. Optional `role=` ("talker"/"director") prefixes generation
+  names so multiple LLM roles in one turn stay distinguishable; `model_uri=`
+  tags the end metadata.
+
+**`build_observer(public_key=, secret_key=, host=, *, enable_tracing=)`**
+constructs the right sink. Enable priority: the `enable_tracing` kwarg, then
+`SUPERDIALOG_TRACING` (`1/true/on` enable, `0/false/off` disable), then
+auto-detect from keys. Keys resolve from the kwargs or
+`LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`; host from
+`LANGFUSE_BASE_URL`. Anything missing or failing → `NullObserver`; tracing
+can never take a session down.
+
+Slot payloads are PII-masked before leaving the process:
+`observability/observer.py::redact_slots` masks values whose key (or any
+`_`/`-` token of it) is in the redaction set - a built-in PII list plus
+`SUPERDIALOG_REDACT_FIELDS` (CSV).
+
+**Wiring:** hosts call
+`DialogMachine.set_observer(observer, trace_id)` - both engines. Graph:
+the active provider is wrapped in `TracingProvider` immediately. Playbook:
+the cached backend is nullified so the next
+`dialog_machine.py::DialogMachine._ensure_backend` rebuilds it with traced
+Talker and Director providers (roles tagged separately).
+
+### 5.2 The billing hook - `register_llm_callback`
+
+`DialogMachine.register_llm_callback(fn)` registers a per-LLM-call usage
+callback for both engines - this is the hook unpod-sdk wires so superdialog
+token usage (including cache read/write tokens) reaches the platform usage
+ledger. Playbook: the callback is attached as `on_llm_complete` on the
+Director and Talker provider adapters - immediately if built, else at
+`_ensure_backend`, so registration order does not matter on this engine.
+Graph: it lands on the toolcall/llm adapter's `_on_llm_complete` when the
+adapter is already built; a callback registered before that relies on the
+SDK re-attaching before streaming.
+
+### 5.3 LLM resolution (`llm/resolver.py`)
+
+`resolve_llm(uri)` is the single entry: it resolves the URI to a backend
+provider via `resolve_backend(uri)` and wraps it in `ResilientProvider`
+(§5.4), so every engine path - flow adapters, playbook Director/Talker, edge
+evaluation - inherits timeout/retry/hedge without per-call-site code. The
+raw backend stays reachable as `.inner`. `resolve_backend` alone (no
+wrapping) exists for hedge legs.
+
+Backend selection is layered on top of the model URI:
+
+1. An explicit backend scheme prefix wins.
+2. Else `SUPERDIALOG_LLM_BACKEND` (`anyllm` | `litellm` | `openai`).
+3. Else the default (`anyllm`), which silently falls back to LiteLLM when
+   the optional `any-llm-sdk` package is not installed.
+
+| URI form | Resolves to |
+|---|---|
+| `openai/gpt-4.1-mini` | default backend (any-llm, LiteLLM fallback) |
+| `anyllm/<provider>/<model>` | `AnyLlmProvider` (forced) |
+| `litellm/<provider>/<model>` | `LitellmProvider` (forced) |
+| `oai/<model>` | `OpenAIProvider` - naked OpenAI SDK (forced) |
+| `livekit/<model>` | `OpenAIProvider` against the LiveKit inference gateway (minted JWT; ignores the ambient backend selector) |
+| `custom/<name>/<model>` | LiteLLM against a registered base_url + key (`llm/registry.py::get_custom`) |
+| `custom/lk-inference/<model>` | as above, but self-registers the LiveKit gateway from env (`llm/livekit_gateway.py::register_livekit_inference`) when unregistered |
+| `vllm/<model>@<host>` | LiteLLM `hosted_vllm/<model>` with `api_base=<host>` |
+| `ollama/<model>@<host>` | LiteLLM `ollama/<model>` with `api_base=<host>` |
+
+`custom/` and `@host` forms always route through LiteLLM regardless of the
+selected backend - they depend on LiteLLM features. SDK-pool backends
+(any-llm / OpenAI) are cached per `(SUPERDIALOG_LLM_BACKEND, uri)` so
+sessions share one warm client pool; LiteLLM-backed results are built fresh
+(LiteLLM keeps its own global cache, and `custom/` credentials live in a
+mutable registry).
+
+When `SUPERDIALOG_LLM_FALLBACK_MODELS` is set (comma-separated URIs),
+`resolve_llm` returns a `FallbackProvider` chain (`llm/fallback.py`): leg 0
+is the normal resilient wrap, fallback legs are cheap wraps (no retry, no
+hedge). Unset ⇒ identical to the plain resilient wrap.
+
+### 5.4 Resilience (`llm/resilience.py`)
+
+`ResilientProvider` wraps any `LLMProvider` with a per-request timeout,
+bounded retry-with-backoff, and an optional cross-provider hedge (race the
+primary against a delayed alternate; first success wins). The happy path is
+transparent - one attempt returning before the timeout behaves exactly like
+the bare backend. Retries fire only on timeouts and transient failures
+(`_is_retryable`: transient HTTP statuses, type-name/message markers);
+auth and bad-request errors fail fast. Streams retry only while nothing has
+been emitted yet - after the first token a stall is surfaced, never a silent
+restart of a partially-spoken turn. Exhaustion raises
+`LLMResilienceError`. The wrapped backend is always available as `.inner`,
+and unknown attributes (e.g. `.model`) delegate to it.
+
+`ResilienceConfig.from_env()` reads the knobs (defaults are a safety net;
+voice deployments tune the timeout down and/or enable hedging):
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `SUPERDIALOG_LLM_TIMEOUT_S` | `60.0` | per-request timeout (`0`/`none`/`off` disables) |
+| `SUPERDIALOG_LLM_MAX_RETRIES` | `2` | extra attempts after the first |
+| `SUPERDIALOG_LLM_BACKOFF_BASE_S` | `0.5` | exponential backoff base |
+| `SUPERDIALOG_LLM_BACKOFF_MAX_S` | `8.0` | backoff cap |
+| `SUPERDIALOG_LLM_HEDGE` | off | enable the hedge leg |
+| `SUPERDIALOG_LLM_HEDGE_MODEL` | - | hedge model URI (resolved via `resolve_backend`) |
+| `SUPERDIALOG_LLM_HEDGE_DELAY_S` | `2.0` | delay before the hedge fires |
+
+### 5.5 Prompt caching (`llm/prompt_cache.py`)
+
+Opt-in provider-side prompt caching. Prompt assemblers annotate the leading
+system message with a private `_cache_prefix` key holding the stable
+persona/preamble substring; `mark_cache_prefix` runs *once* at the
+`ResilientProvider` seam - the last step before the backend call, so markers
+apply before any retry/hedge - and either:
+
+- strips the private key and returns byte-identical legacy messages
+  (caching off, an automatic-cache provider such as OpenAI/Deepseek/xAI, or
+  any error), or
+- splits the system content at the stable boundary and tags the stable
+  block (and the last tool) with `cache_control` for explicit-cache
+  providers (Anthropic, Bedrock, Vertex, Gemini).
+
+`PromptCacheConfig.from_env()`: `SUPERDIALOG_PROMPT_CACHING`
+(`1/true/yes/on` enables; disabled by default) and
+`SUPERDIALOG_PROMPT_CACHE_TTL` (unset → provider default). Automatic-cache
+providers benefit even without markers - the assembler guarantees a stable
+prefix, which is all their server-side cache needs.
+
+## 6. Security model
 
 The playbook artifact is data - possibly optimizer-generated, possibly
 third-party - and the transcript is untrusted user speech. Defenses, by
@@ -411,7 +622,7 @@ layer:
   the Talker: the renderer shadows `env` in view expressions, so
   `ACCESS_TOKEN`-class values cannot leak into speech or the packed prompt.
 
-## 6. Roadmap (future, not shipped)
+## 7. Roadmap (future, not shipped)
 
 Clearly labeled non-features today: host
 adapter plumbing that feeds LiveKit silence/barge-in signals in as
@@ -420,7 +631,7 @@ existing adapters); sessionless webhook workers for `handlers`;
 `resume: true` interrupt restoration; tool TTL scheduling. None of these are
 promised for a specific version.
 
-## 7. What lives outside this library
+## 8. What lives outside this library
 
 Audio processing, STT/TTS, telephony/SIP/RTP, media servers and Rooms,
 numbers, voice profiles, billing. All of those are Voice Infra's problem.
