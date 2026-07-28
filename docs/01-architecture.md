@@ -231,10 +231,12 @@ grace window.
 
 Every mutation is an event; state is a fold; the log is the audit artifact.
 
-`playbook/events.py` defines twelve frozen, versioned pydantic events:
+`playbook/events.py` defines fourteen frozen, versioned pydantic events:
 `utterance`, `slot_write`, `advance`, `steering_note`, `tool_call`,
-`tool_result`, `env_write`, `scratchpad`, `summary`, `external`
-(silence/webhook/timer), `degraded`, `session_end`. `EventLog` is
+`tool_result`, `env_write`, `session_start` (the per-call date/time anchor),
+`scratchpad`, `summary`, `external` (silence/webhook/timer), `degraded`,
+`session_end`, `revert` (rewind: supersede a version range of earlier state
+effects). `EventLog` is
 append-only with contiguous versions stamped from 1; it serializes to JSONL
 (`to_jsonl` / `from_jsonl`) and is the single persistence payload.
 
@@ -244,7 +246,10 @@ steering note, summary, checkpoint position, silence/turn counters, ended +
 outcome. Fold semantics encode the lane rules: slot values carry
 `provisional | confirmed` status and never downgrade; `authoritative` slots
 ignore Talker writes; `invalidates` is applied non-transitively and skipped
-when a write re-asserts the same value.
+when a write re-asserts the same value. A `revert` makes the fold skip the
+state effects of events in its superseded version range while utterances stay
+in the transcript (the caller heard them) and `session_start` is never
+superseded — the log stays append-only, so the audit trail is complete.
 
 Because the log is the artifact, replay is free: `replay(log, playbook,
 director_llm)` (`playbook/replay.py`) re-runs the Director over each recorded
