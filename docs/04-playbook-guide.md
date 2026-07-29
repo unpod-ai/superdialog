@@ -135,10 +135,13 @@ Per step:
   Whether they **gate advancement** depends on the step's shape: a focused
   capture step (**≤2 slots**) requires all of them filled before the
   Director may advance (plus a free deterministic expr rule fires the
-  moment they are all filled); a **branchy step collecting >2 per-path
-  alternatives requires none** - demanding all of a 14-slot category
-  qualifier's slots deadlocks the step, since no caller fills every
-  branch. Override the heuristic with `require:`.
+  moment they are all filled - compiled **only at the default
+  `entity: caller`**, because the expr `slots.*` namespace is
+  caller-scoped, so a step with any other `entity:` advances on the LLM
+  judge alone: `playbook/simple.py::simple_to_playbook`); a **branchy step
+  collecting >2 per-path alternatives requires none** - demanding all of a
+  14-slot category qualifier's slots deadlocks the step, since no caller
+  fills every branch. Override the heuristic with `require:`.
 - `require` (optional) - explicit subset of `collect` that gates the
   advance, when the auto heuristic guesses wrong (e.g. one mandatory key
   on an otherwise-branchy step: `require: [inquiry_category]`).
@@ -186,12 +189,27 @@ Per step:
   step, rendered (Jinja over slots) and injected as a one-shot steer.
   Use it for post-capture speech: guidance written after the capture in
   `say` is unreachable, because the deterministic expr rule advances the
-  instant the collected slots fill. Never spoken on interrupt or policy
-  advances (detours and failures skip the happy-path pitch), and
-  rejected on terminal steps (they never advance out).
+  instant the collected slots fill. Spoken **only on a Director rule
+  advance**: `playbook/runtime.py::PlaybookRuntime._emit_exit_say`
+  allowlists rule ids prefixed `llm:` / `expr:`, so interrupts, policy
+  advances (including the turn-budget backstop below), `resume` returns,
+  supervisor redirects, and `auto` exits all skip it - detours and
+  failures never get the happy-path pitch. Rejected on terminal steps
+  (they never advance out).
 - `turn_budget` (optional, default 4) - user turns on this step before the
-  runtime steers "wrap this step up". Steer-only for simple playbooks (no
-  `on_failure` is compiled), so it nudges, never force-advances.
+  runtime steers "wrap this step up". The steer is not the end of it: two
+  grace turns later (`runtime.py::_TURN_BUDGET_GRACE`)
+  `playbook/runtime.py::PlaybookRuntime._apply_turn_budget`
+  **force-advances**, so a call can never wedge on an advance gate the
+  Director cannot satisfy. Simple playbooks compile no `on_failure`, so
+  the forced target is the **journey-order successor**
+  (`Playbook.next_checkpoint_id`), logged as a `DegradedEvent`
+  (`turn_budget_forced:<checkpoint>`) plus an advance with rule
+  `policy:turn_budget_forced`. Two consequences to author around: a step
+  routed with `then:` can be pushed to its *list neighbour*, which is not
+  where its happy path goes; and only the journey's last step is exempt,
+  having no successor. Graduate to the full format and declare
+  `on_failure` when the list neighbour is the wrong place to land.
 - `kb` (optional) - whether this step's Talker prompt carries the (large)
   `facts.knowledge_base`. Unset = legacy heuristic (the step's `say`
   mentions `knowledge_base`). Set `kb: false` on steps that merely
@@ -307,7 +325,7 @@ journeys:
         goal: "Have city and date"
         slots:                # typed, flow-scoped declarations
           city:
-            type: str         # str|int|float|bool|date|enum|array|object
+            type: str         # str|int|float|bool|date|time|enum|array|object
             required: true
             invalidates: [hold]   # a city change clears the stale hold result
             description: "City the caller wants to play in"
@@ -818,7 +836,19 @@ events automatically yet - see §10 limitations.)
 
 **Turn budgets.** `turn_budget: N` on a checkpoint injects a wrap-up
 steering note once the user has spent more than N turns there; two grace
-turns later the session routes to the checkpoint's `on_failure`.
+turns later (`runtime.py::_TURN_BUDGET_GRACE`) the session routes to the
+checkpoint's `on_failure`. That route is a **hard backstop, not an
+opt-in**: when no `on_failure` is declared - the case for every
+simple-format step -
+`playbook/runtime.py::PlaybookRuntime._apply_turn_budget` force-advances
+to the journey-order successor (`Playbook.next_checkpoint_id`) instead,
+recording a `DegradedEvent` (`turn_budget_forced:<checkpoint>`) and an
+advance with rule `policy:turn_budget_forced`. The design intent is that a
+call can never livelock on a gate the Director cannot satisfy; the price
+is that the forced target is list order, not the step's own `then:`
+routing. Only the journey's last checkpoint is exempt, having no
+successor. Declare `on_failure` wherever the successor is the wrong place
+to land.
 
 ### Reversibility: tool tiers, rewind, compensation
 
@@ -968,11 +998,15 @@ built-in English defaults. Because the resolution happens inside
 `PlaybookAgent`, authored lines also reach playbooks run through the
 `DialogMachine` facade, which has no filler arguments of its own.
 
-Each accepts a `SpokenLine` - a plain string, or a
+The two **`PlaybookAgent` arguments** accept a `SpokenLine`
+(`playbook/talker.py::SpokenLine`) - a plain string, or a
 `Callable[[ConversationState], str]` called with the live state at speak
 time (a language-aware filler). A provider that raises degrades to the
-built-in default; a filler must never kill the turn. `recovery_line` stays
-a `Talker` constructor parameter only.
+built-in default; a filler must never kill the turn. The **authored YAML
+fields are plain strings only**: `playbook/models.py::Policies` declares
+`filler: str | None` and `hold_line: str | None`, so anything but a string
+under `policies:` fails validation at load. `recovery_line` stays a
+`Talker` constructor parameter only.
 
 The rendered view is packed under `token_budget` (default 4000 estimated
 tokens): persona, guidance, notes, slots, and views are protected; only

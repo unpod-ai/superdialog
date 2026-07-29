@@ -280,7 +280,9 @@ def _build_persona(sp: SimplePlaybook) -> str:
 
 
 # Past this many user turns on one step, the runtime steers "wrap this step
-# up" (no on_failure is compiled, so it never force-advances — steer only).
+# up". No on_failure is compiled here, so _TURN_BUDGET_GRACE turns later
+# PlaybookRuntime._apply_turn_budget force-advances to the journey-order
+# successor (Playbook.next_checkpoint_id) rather than steering forever.
 _DEFAULT_TURN_BUDGET = 4
 
 
