@@ -5,10 +5,10 @@
 
 A code-verified trace of the Playbook engine: the layered design, the
 two-brain turn loop, every touchpoint a user turn passes through (with
-file:line citations into `src/superdialog/`), the prompt-assembly steering
-surface, and how each playbook construct changes conversational behavior.
-[01-architecture.md](01-architecture.md) explains the engine's concepts;
-this doc walks the actual execution path.
+`file.py::symbol` citations into `src/superdialog/`), the prompt-assembly
+steering surface, and how each playbook construct changes conversational
+behavior. [01-architecture.md](01-architecture.md) explains the engine's
+concepts; this doc walks the actual execution path.
 
 ---
 
@@ -22,14 +22,14 @@ this doc walks the actual execution path.
           └────────────┴─────┬──────┴────────────┴────────────┘
                              ▼
               ╔══════════════════════════════════╗
-              ║   Agent Protocol  (agent.py:38)  ║   the ONE embedding seam:
+              ║  Agent Protocol  agent.py::Agent ║   the ONE embedding seam:
               ║   turn() assist() chat_ctx()     ║   structural typing, no ABC —
               ║   load_chat_ctx()                ║   any brain that fits, plugs in
               ╚═══════════════╤══════════════════╝
                               ▼
               ┌──────────────────────────────────┐
-              │ DialogMachine (facade, strategy) │  dialog_machine.py:80
-              │   _select_engine(:46) picks:     │
+              │ DialogMachine (facade, strategy) │  dialog_machine.py::DialogMachine
+              │   _select_engine() picks:        │  dialog_machine.py::_select_engine
               └───────┬──────────────────┬───────┘
                       ▼                  ▼
         ┌──────────────────────┐   ┌─────────────────────────┐
@@ -47,8 +47,8 @@ this doc walks the actual execution path.
         │   ┌──────────────┐   │
         │   │  EVENT LOG   │   │  append-only, versioned —
         │   │ (single      │   │  the ONLY source of truth
-        │   │  source of   │   │  state = fold(log)  state.py:96
-        │   │  truth)      │   │
+        │   │  source of   │   │  state = fold(log)
+        │   │  truth)      │   │  (state.py::ConversationState.fold)
         │   └──────────────┘   │
         └──────────────────────┘
                  ▲
@@ -70,40 +70,43 @@ this doc walks the actual execution path.
 
 The core trick: **the Talker speaks speculatively while the Director thinks**.
 Latency of one streaming call, judgment of a structured second opinion.
+(Diagram citations use bare `Class.method` names; §3 gives the full
+`file.py::symbol` paths.)
 
 ```
  USER TEXT
     │
     ▼                                                            time ──►
- ┌──[1] append UtteranceEvent to log (agent.py:284)  ◄─ log FIRST, so both brains see it
- │
+ ┌──[1] append UtteranceEvent to log                 ◄─ log FIRST, so both brains see it
+ │     (PlaybookAgent._stream_turn)
  ├────────────────────── fork ───────────────────────────────┐
  ▼  TALKER lane (speech path — streams NOW)                   ▼  DIRECTOR lane (shielded task,
- │                                                            │  survives barge-in) agent.py:292
- │  gated checkpoint?  (hard gate / hard slot)                │
+ │                                                            │  survives barge-in:
+ │  gated checkpoint?  (hard gate / hard slot)                │  PlaybookAgent._stream_turn)
  │   ├─ yes ─► BARRIER: wait ≤barrier_timeout ─► filler       │  1. judge:expr rules first —
  │   │         ─► wait ≤hold_timeout ─► polite hold-line      │     deterministic, ZERO LLM
- │   │         (talker.py:102)  then RE-SNAPSHOT fresh state  │     (director.py:345)
+ │   │         (Talker.speak)  then RE-SNAPSHOT fresh state   │     (Director._expr_advance)
  │   └─ no ──► speak from snapshot immediately                │  2. else ONE structured JSON
- │                                                            │     verdict call (director.py:401)
+ │                                                            │     verdict call (Director.evaluate)
  │  say_verbatim step? ─► speak template EXACTLY,             │  3. slot writes (typed, coerced,
- │                        NO LLM AT ALL (talker.py:124)       │     provisional at hard gates)
+ │                        NO LLM AT ALL (Talker.speak)        │     provisional at hard gates)
  │                                                            │  4. interrupt > advance
  │  else: render_view() builds the prompt  ──── §4 ────       │  5. advance if requires met,
- │        ONE streaming LLM call (talker.py:141)              │     else steer-note "cannot
- │        chunks yield live to host (agent.py:316)            │     move on yet"
- │                                                            │  6. quiesce loop ≤8 hops:
- │  barge-in? GeneratorExit kills SPEECH ONLY ────────────────┤     pipelines·auto·resume
- │                                                            │     (runtime.py:214)
+ │        ONE streaming LLM call (Talker.speak)               │     else steer-note "cannot
+ │        chunks yield live to host                           │     move on yet"
+ │        (PlaybookAgent._stream_turn)                        │  6. quiesce loop ≤8 hops:
+ │                                                            │     pipelines·auto·resume
+ │  barge-in? GeneratorExit kills SPEECH ONLY ────────────────┤     (PlaybookRuntime._quiesce)
+ │                                                            │
  ├────────────────────── join ────────────────────────────────┘
  ▼
- shielded finally (agent.py:328): await Director — its decision ALWAYS lands
+ shielded finally (PlaybookAgent._stream_turn): await Director — its decision ALWAYS lands
     │
     ├─ Director advanced checkpoint mid-turn + has pass-through?
-    │     └─ SUPPRESS the Talker's stale speculative reply (agent.py:347)
+    │     └─ SUPPRESS the Talker's stale speculative reply (PlaybookAgent._stream_turn)
     │        Director's verbatim lines are authoritative
     │
-    ├─ check_repairs (runtime.py:169): did we re-ask something already answered?
+    ├─ check_repairs (PlaybookRuntime.check_repairs): did we re-ask something already answered?
     │     └─ append "Correction from supervisor" note ─► feeds NEXT turn's prompt
     │
     ▼
@@ -111,124 +114,139 @@ Latency of one streaming call, judgment of a structured second opinion.
 ```
 
 Barrier timing note: the Talker default is `barrier_timeout=0.4s` /
-`hold_timeout=4s` when wired through `DialogMachine` (talker.py:47-48,
-dialog_machine.py:101); a directly-embedded `PlaybookAgent` defaults to
-`barrier_timeout=4.0` (playbook/agent.py:107).
+`hold_timeout=4s` when wired through `DialogMachine`
+(talker.py::Talker.__init__, dialog_machine.py::DialogMachine.__init__); a
+directly-embedded `PlaybookAgent` defaults to `barrier_timeout=4.0`
+(playbook/agent.py::PlaybookAgent.__init__).
 
 ---
 
 ## 3. Full path — every touchpoint
 
-Paths relative to `src/superdialog/`.
+Citation convention: bare engine files (`director.py`, `talker.py`,
+`runtime.py`, `render.py`, `state.py`, `events.py`, `expr.py`, `models.py`,
+`_guidelines.py`) live under `src/superdialog/playbook/`; `dialog_machine.py`,
+the top-level `agent.py` (the protocol), and `cli/main.py` sit directly under
+`src/superdialog/`. `playbook/agent.py` is the engine.
 
 ```
 BOOTSTRAP (once per session)
- B1 host calls turn/start ......................... agent.py:38 (protocol)
- B2 DialogMachine.start() ......................... dialog_machine.py:339
+ B1 host calls turn/start ......................... agent.py::Agent (protocol)
+ B2 DialogMachine.start() ......................... dialog_machine.py::DialogMachine.start
  B3 _ensure_backend: load playbook, resolve LLMs,
     split provider → Director+Talker adapters,
-    wire tracing + billing ........................ dialog_machine.py:225
+    wire tracing + billing ........................ dialog_machine.py::DialogMachine._ensure_backend
  B4 greet(): Talker speaks opening checkpoint,
-    greeting logged, double-greet guard armed ..... playbook/agent.py:380
+    greeting logged, double-greet guard armed ..... playbook/agent.py::PlaybookAgent.greet
 
 PER TURN
-  1 dispatch stream/non-stream .................... playbook/agent.py:154
-  2 _ensure_started (cold runtime → start()) ...... playbook/agent.py:258
-  3 user UtteranceEvent appended, version=N+1 ..... playbook/agent.py:284 · events.py:143
-  4 entry checkpoint snapshotted .................. playbook/agent.py:287
-  5 Director launched (detached, shielded) ........ playbook/agent.py:292
+  1 dispatch stream/non-stream .................... playbook/agent.py::PlaybookAgent.turn
+  2 _ensure_started (cold runtime → start()) ...... playbook/agent.py::PlaybookAgent._ensure_started
+  3 user UtteranceEvent appended, version=N+1 ..... playbook/agent.py::PlaybookAgent._stream_turn
+                                                    · events.py::EventLog.append
+  4 entry checkpoint snapshotted .................. playbook/agent.py::PlaybookAgent._stream_turn
+  5 Director launched (detached, shielded) ........ playbook/agent.py::PlaybookAgent._stream_turn
       ── DIRECTOR lane ──────────────────────────────────────────
-  6   state = fold(log), cached by log version .... state.py:119 · runtime.py:74
-  7   judge:expr rules — first match, no LLM ...... director.py:389,345
+  6   state = fold(log), cached by log version .... state.py::ConversationState.fold
+                                                    · runtime.py::PlaybookRuntime.state
+  7   judge:expr rules — first match, no LLM ...... director.py::Director._expr_advance
   8   verdict prompt: slots, rules, interrupts,
-      date anchor, anti-injection, last 12 turns .. director.py:107
-  9   ONE structured completion (json_mode) ....... director.py:401
+      date anchor, anti-injection, last 12 turns .. director.py::_verdict_prompt
+  9   ONE structured completion (json_mode) ....... director.py::Director.evaluate
  10   slot extraction: declared-only, type-coerced,
-      provisional at hard gates ................... director.py:421
- 11   interrupt beats advance (anti-regression) ... director.py:458
+      provisional at hard gates ................... director.py::Director.evaluate
+ 11   interrupt beats advance (anti-regression) ... director.py::Director.evaluate
  12   advance: requires met → SlotWrites+Advance;
-      unmet → "cannot move on yet" steer note ..... director.py:476
+      unmet → "cannot move on yet" steer note ..... director.py::Director.evaluate
  13   resume-over-drift: return to interrupted
-      step via resume_stack ....................... runtime.py:147
- 14   checkpoint being left says its verbatim ..... runtime.py:153
+      step via resume_stack ....................... runtime.py::PlaybookRuntime.on_user_text
+ 14   checkpoint being left says its verbatim ..... runtime.py::PlaybookRuntime._speak_verbatim
  15   _enter: on_enter tools; terminal → outcome
-      + SessionEndEvent ........................... runtime.py:398
+      + SessionEndEvent ........................... runtime.py::PlaybookRuntime._enter
  16   turn-budget policy: wrap-up note, then
-      force-advance to on_failure ................. runtime.py:329
- 17   quiesce ≤8 hops: pipeline→expr→auto→resume .. runtime.py:214
- 18   quiescent.set() → director_done resolves .... playbook/agent.py:271
+      force-advance to on_failure ................. runtime.py::PlaybookRuntime._apply_turn_budget
+ 17   quiesce ≤8 hops: pipeline→expr→auto→resume .. runtime.py::PlaybookRuntime._quiesce
+ 18   quiescent.set() → director_done resolves .... playbook/agent.py::PlaybookAgent._stream_turn
       ── TALKER lane (concurrent with 6–18) ────────────────────
- 19   double-greet guard / settle_before_speak .... playbook/agent.py:298
- 20   speak_state snapshot; Talker.speak() ........ playbook/agent.py:312
+ 19   double-greet guard / settle_before_speak .... playbook/agent.py::PlaybookAgent._stream_turn
+ 20   speak_state snapshot; Talker.speak() ........ playbook/agent.py::PlaybookAgent._stream_turn
  21   hard gate? barrier on director_done,
-      filler → hold-line, re-snapshot on settle ... talker.py:102
- 22   say_verbatim? exact template, NO LLM ........ talker.py:124
- 23   render_view() — the steering surface (§4) ... render.py:319 (from talker.py:137)
+      filler → hold-line, re-snapshot on settle ... talker.py::Talker.speak
+ 22   say_verbatim? exact template, NO LLM ........ talker.py::Talker.speak
+ 23   render_view() — the steering surface (§4) ... render.py::render_view
+                                                    (from talker.py::Talker.speak)
  24   ONE streaming call; chunks stamped with
-      spoke_from_version .......................... talker.py:141
- 25   chunks yield live; barge-in kills speech .... playbook/agent.py:316
+      spoke_from_version .......................... talker.py::Talker.speak
+ 25   chunks yield live; barge-in kills speech .... playbook/agent.py::PlaybookAgent._stream_turn
       ── JOIN ──────────────────────────────────────────────────
- 26 shielded finally: await Director ............... playbook/agent.py:328
- 27 stale-speech suppression ....................... playbook/agent.py:347
- 28 check_repairs → "Correction" note .............. runtime.py:169
+ 26 shielded finally: await Director ............... playbook/agent.py::PlaybookAgent._stream_turn
+ 27 stale-speech suppression ....................... playbook/agent.py::PlaybookAgent._stream_turn
+ 28 check_repairs → "Correction" note .............. runtime.py::PlaybookRuntime.check_repairs
  29 pass-through verbatim yielded; done chunk
-    carries final Turn + metadata ................. playbook/agent.py:370
- 30 observer.on_flow_node on checkpoint change ..... dialog_machine.py:423
- 31 host prints/plays; reads state.ended ........... cli/main.py:103
+    carries final Turn + metadata ................. playbook/agent.py::PlaybookAgent._stream_turn
+ 30 observer.on_flow_node on checkpoint change ..... dialog_machine.py::DialogMachine.turn
+ 31 host prints/plays; reads state.ended ........... cli/main.py::_drive_agent
 ```
 
 Two wiring notes worth knowing:
 
-- `DialogMachine`'s playbook path (dialog_machine.py:421) calls
-  `pb.turn(text, stream=...)` without the per-turn language parameter —
+- `DialogMachine`'s playbook path (dialog_machine.py::DialogMachine.turn)
+  calls `pb.turn(text, stream=...)` without the per-turn language parameter —
   bridge-detected language flows only on direct `PlaybookAgent` embedding.
 - `runtime.on_user_text` runs with `record=False` inside the Director task
-  (runtime.py:126-127) because the agent already appended the utterance at
-  step 3 — this avoids a double append.
+  (runtime.py::PlaybookRuntime.on_user_text) because the agent already
+  appended the utterance at step 3 — this avoids a double append.
 
 ---
 
 ## 4. The steering surface — how the prompt is built, every turn
 
-This is where the playbook grabs the steering wheel. `render_view`
-(render.py:188-358) assembles the Talker's entire world in fixed order:
+This is where the playbook grabs the steering wheel. `render.py::render_view`
+and its system-block builder `render.py::_system_block` assemble the Talker's
+entire world in fixed order:
 
 ```
-┌─ SYSTEM BLOCK ──────────────────────────────────────────────┐
+┌─ SYSTEM BLOCK — render.py::_system_block ───────────────────┐
 │ ╔═ CACHEABLE PREFIX (session-constant → provider cache) ═╗  │
-│ ║ 1. PERSONA — always leads                 render.py:239 ║  │
-│ ║ 2. GUIDELINE SPINE (composed per config)                ║  │
-│ ║    grounding ALWAYS · voice_core · tone ·               ║  │
-│ ║    language_accent · gender · domain ·                  ║  │
-│ ║    end_discipline ...          _guidelines.py:204       ║  │
-│ ║ 3. DATE ANCHOR + DATE_DISCIPLINE          render.py:242 ║  │
+│ ║ 1. PERSONA — always leads                              ║  │
+│ ║ 2. GUIDELINE SPINE (composed per config)               ║  │
+│ ║    grounding ALWAYS · voice_core · tone ·              ║  │
+│ ║    language_accent · gender · domain ·                 ║  │
+│ ║    end_discipline ...                                  ║  │
+│ ║         (_guidelines.py::compose_guidelines)           ║  │
+│ ║ 3. DATE ANCHOR + DATE_DISCIPLINE                       ║  │
+│ ║         (_guidelines.py::datetime_anchor_line)         ║  │
 │ ╚═════════════════════════════════════════════════════════╝  │
 │ ── VOLATILE TAIL (changes per turn) ──                       │
 │ 4. "## Direction from supervisor"   ◄─ Director steer note   │
-│         (BEFORE guidance — guidance wins conflicts) :255     │
-│ 5. "## Current step: {id} / Goal" + step guidance    :257    │
-│ 6. "Still needed: <unfilled required slots>"         :260    │
-│ 7. "Never say: …"  hard negative constraints         :265    │
+│         (BEFORE guidance — guidance wins conflicts)          │
+│ 5. "## Current step: {id} / Goal" + step guidance            │
+│ 6. "Still needed: <unfilled required slots>"                 │
+│ 7. "Never say: …"  hard negative constraints                 │
 │ 8. "## Correction from supervisor"  ◄─ repair note           │
-│         (AFTER guidance — correction OVERRIDES)      :269    │
-│ 9. "## Caller language (this turn)" (outside cache!) :272    │
-│ 10. "## Known information" (collected slots)         :274    │
-│ 11. "## Reference data" (computed views)             :276    │
-│ 12. "## Earlier in this conversation" + memory guard :281    │
+│         (AFTER guidance — correction OVERRIDES)              │
+│ 9. "## Caller language (this turn)" (outside cache!)         │
+│ 10. "## Known information" (collected slots)                 │
+│ 11. "## Reference data" (computed views)                     │
+│ 12. "## Earlier in this conversation" + memory guard         │
 │ 13. "## Knowledge base" — ONLY if this step's guidance       │
-│     references it; + "answer briefly, steer back"    :295    │
-│ 14. grounding close: "only state facts present in …" :312    │
+│     references it; + "answer briefly, steer back"            │
+│ 14. grounding close: "only state facts present in …"         │
 └──────────────────────────────────────────────────────────────┘
-┌─ TRANSCRIPT ────────────────────────────────────────────────┐
+┌─ TRANSCRIPT — render.py::render_view ───────────────────────┐
 │ newest-first knapsack; 20% of budget RESERVED for history   │
 │ so a fat KB can never starve the Talker of context          │
-│ (_TRANSCRIPT_BUDGET_FRACTION)                   render.py:330│
+│ (render.py::_TRANSCRIPT_BUDGET_FRACTION)                    │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-Observability is built in: every turn prints `[guidelines] fed=[...]` and
-`[turn-trace] side=brain version=N checkpoint=... slots=<keys only>`
-(render.py:220-235) — slot keys only, never values, so traces stay PII-safe.
+Items 4–14 are appended in exactly this order inside
+`render.py::_system_block`.
+
+Observability is built in: every turn emits `[guidelines] fed=[...]` and
+`[turn-trace] side=brain version=N checkpoint=... slots=<keys only>` as
+DEBUG-level log lines (render.py::_system_block) — slot keys only, never
+values, so traces stay PII-safe.
 
 ---
 
@@ -240,35 +258,42 @@ strength:
 ```
  CONSTRUCT            MECHANISM                                BEHAVIOR CHANGE
  ─────────────────    ─────────────────────────────────────    ──────────────────────────
- say_verbatim         bypasses LLM entirely (talker.py:124)    regulated lines spoken
-                                                               word-for-word, zero drift
+ say_verbatim         bypasses LLM entirely                    regulated lines spoken
+                      (talker.py::Talker.speak)                word-for-word, zero drift
  gate: hard           speech BARRIER on director_done          model literally cannot
-                      (talker.py:102)                          speak past unconfirmed facts
+                      (talker.py::Talker.speak)                speak past unconfirmed facts
  provisional writes   verdict can't confirm its own            prompt injection can't
-                      requires in one shot (director.py:421)   advance a hard gate
+                      requires in one shot                     advance a hard gate
+                      (director.py::Director._write_status)
  judge: expr          sandboxed AST eval, no LLM               deterministic routing the
-                      (director.py:345)                        model can't talk around
+                      (expr.py::evaluate, via                  model can't talk around
+                      director.py::Director._expr_advance)
  requires             advance blocked + "still need …"         agent circles back instead
-                      steer note (director.py:516)             of skipping steps
+                      steer note                               of skipping steps
+                      (director.py::Director._steer_text)
  interrupts+resume    detour stack, auto-return                digressions answered, then
-                      (runtime.py:147)                         back to the step it left
+                      (runtime.py::PlaybookRuntime._hop)       back to the step it left
  turn_budget          wrap-up note → force on_failure          conversations can't stall
-                      (runtime.py:329)                         forever on one step
+                      (runtime.py::PlaybookRuntime._apply_turn_budget)  forever on one step
  guidance             "Current step / Goal" section            model owns PHRASING inside
-                      (render.py:257)                          a framework-owned OUTCOME
+                      (render.py::_system_block)               a framework-owned OUTCOME
  steer/repair notes   Direction (weak) / Correction            supervisor nudges mid-
-                      (strong) positioning (render.py:255,269) conversation, self-healing
+                      (strong) positioning                     conversation, self-healing
+                      (render.py::_system_block)
  never_say            prompt line + DETERMINISTIC stream       authored phrases are
                       filter excising phrases before TTS       excised whatever the LLM
-                      (talker.py _filter_never_say)            emits — a guarantee
+                      (talker.py::_filter_never_say)           emits — a guarantee
  uses_kb / KB gate    explicit per-checkpoint flag; None =     step-scoped facts, no
                       guidance-substring heuristic             off-step KB rambling
-                      (models.py uses_kb, render.py:295)
+                      (models.py::Checkpoint.uses_kb,
+                      render.py::_system_block)
  goodbye guard        terminal interrupt with required slots   a terse caller's "bye"
-                      unfilled → ONE steer to collect, then    can't silently skip
-                      the next goodbye passes (director.py)    required capture
+                      unfilled AND capture ≥2/3 complete →     can't silently skip
+                      ONE steer to collect, then the next      nearly-complete required
+                      goodbye passes                           capture
+                      (director.py::Director.evaluate)
  repair loop          spoke_from_version diff → correction     never re-asks an answered
-                      (runtime.py:169)                         question twice
+                      (runtime.py::PlaybookRuntime.check_repairs)  question twice
 ```
 
 The one-line thesis: **checkpoints gate outcomes, not utterances** — the
@@ -280,8 +305,9 @@ sounds getting there.
 ## 6. Patterns it follows
 
 - **Event sourcing + CQRS-lite** — append-only versioned `EventLog`; state is
-  a pure fold, cached by log version (runtime.py:74-77). Replay = free
-  persistence, audit, and eval: every conversation is immediately replayable.
+  a pure fold, cached by log version
+  (runtime.py::PlaybookRuntime.state). Replay = free persistence, audit, and
+  eval: every conversation is immediately replayable.
 - **Supervisor/actor two-LLM split** — a structured slow judge (Director)
   supervises a streaming fast speaker (Talker) that never decides anything.
 - **Speculative execution with barrier** — optimistic speech, hard-gate
@@ -301,8 +327,8 @@ sounds getting there.
   AST-whitelisted expr evaluator, untrusted-transcript hardening in the
   verdict prompt.
 - **Cache-prefix split** — session-constant prompt head tagged for provider
-  caching (render.py:352); the per-turn language directive lives deliberately
-  outside it so a language switch never invalidates the cache.
+  caching (render.py::render_view); the per-turn language directive lives
+  deliberately outside it so a language switch never invalidates the cache.
 
 ---
 
