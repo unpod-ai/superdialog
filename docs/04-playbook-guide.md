@@ -101,8 +101,9 @@ the Talker sees every turn:
   doesn't already mention it.
 - `language` - a name (`English`), an ISO 639-1 code (`hi`), or a list of
   either (`["en", "hi"]`): first entry is the default, the rest fold as
-  `Also speaks: …`. The code map covers 59 common languages; unmapped
-  values pass through as written. Quote the Norwegian code (`"no"`) -
+  `Also speaks: …`. The code map (`playbook/simple.py::_LANG_NAMES`)
+  covers the common ISO 639-1 codes; unmapped values pass through as
+  written. Quote the Norwegian code (`"no"`) -
   unquoted YAML parses it as a boolean.
 - `voice_style` - folded as `Voice & manner: …`: tone, pacing, sentence
   length, language-switching rules.
@@ -447,7 +448,7 @@ playbooks that omit the block are unaffected.
 | `channel` | `voice` \| `text` | `voice` | Delivery channel. `voice` injects the baseline TTS/speaking-style block; `text` suppresses it. |
 | `tone` | `professional` \| `casual` | `professional` | Speaking tone injected as part of the voice block. |
 | `language` | str or list[str] | `en` | ISO 639-1 code(s) or language names. A non-English value adds the Language & Accent and Hinglish-examples blocks. |
-| `call_type` | `sales` \| `support` \| `booking` \| `none` | — | Adds a domain-specific pattern block (`## Pre-Sales Flows`, `## Customer Support Flows`, or `## Appointment Booking Flows`) to the voice guidelines. |
+| `call_type` | `sales` \| `support` \| `booking` | — | Adds a domain-specific pattern block (`## Pre-Sales Flows`, `## Customer Support Flows`, or `## Appointment Booking Flows`) to the voice guidelines. Omit the key to disable it - `call_type: none` parses as the string `"none"` and fails validation. |
 | `timezone` | IANA tz string | `UTC` | The timezone used for the per-call date/time anchor injected into every Talker turn. |
 | `memory_enabled` | bool | `false` | When `true`, injects a "Using Past Context" guard beside the conversation summary when one is present. |
 | `followup_enabled` | bool | `false` | When `true`, injects the Follow-ups & Callbacks block. |
@@ -476,9 +477,10 @@ for calling, request) when transferring to a human.
 
 **Deprecated: `guidelines.director_model` / `guidelines.talker_model`.**
 Both still parse, but no host ever read them back. Setting either without a
-top-level `llm:` block raises a `DeprecationWarning`
-(`playbook/models.py::Playbook._warn_deprecated_llm_fields`). Declare models
-in `llm:` instead (§ below).
+top-level `llm:` block *emits* a `DeprecationWarning`
+(`playbook/models.py::Playbook._warn_deprecated_llm_fields` calls
+`warnings.warn`) - the playbook still loads. Declare models in `llm:`
+instead (§ below).
 
 ### `llm:` — the model the playbook declares
 
@@ -1122,9 +1124,9 @@ each round ≈ 2 evals × personas × n sessions × ~2 LLM calls per turn, plus
 one reflect call - the most expensive command in the tool; `n=1` with the
 default 4-persona suite keeps dev runs reasonable.
 
-## 10. Roadmap
+## 10. Status and roadmap
 
-Shipped: `superdialog optimize` (reflective prose optimizer - paired-round
+**Shipped.** `superdialog optimize` (reflective prose optimizer - paired-round
 acceptance, prose-only targeted edits, simple-format round-trip, generated
 persona suites); simple-format `interrupts` including `resume: true`
 detours; simple-format routing (`then:`, `terminal:`/`outcome:`,
@@ -1134,12 +1136,13 @@ guide documents - `guidelines:` voice configuration, the global
 `knowledge_base`, authored `policies.filler` / `policies.hold_line`, the
 top-level `llm:` block, `multi_entity` + checkpoint `entity`,
 `pronunciations:`, `strict`, `resolve_from`, tool tiers with rewind and
-compensation, and the Loop-2 Supervisor. **Structure mutation** in optimize
-(checkpoint split/merge/reorder, slot-schema tightening) remains future, as
-do GEPA-style frontier parent sampling, production-log feedback ingestion,
-CI metric-threshold gates, and response caching across rounds.
+compensation, and the Loop-2 Supervisor. Today's surface is what Parts 1-2
+document.
 
-Clearly future, not in this release: voice-event plumbing in the host
-adapters (silence/barge-in events emitted into `runtime.on_external`
-automatically); and sessionless webhook workers that load a persisted log,
-apply a handler, and exit. Today's surface is what Parts 1–2 document.
+> **Status: roadmap — not built.** Optimize **structure mutation**
+> (checkpoint split/merge/reorder, slot-schema tightening), GEPA-style
+> frontier parent sampling, production-log feedback ingestion, CI
+> metric-threshold gates, and response caching across rounds; voice-event
+> plumbing in the host adapters (silence/barge-in events emitted into
+> `runtime.on_external` automatically); and sessionless webhook workers
+> that load a persisted log, apply a handler, and exit.

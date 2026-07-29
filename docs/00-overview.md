@@ -204,7 +204,7 @@ existing adapters.
 | Flow → playbook migration: `compile_flow`, `coverage_report` | shipped |
 | Replay + persona eval bridge: `replay`, `run_session`, `run_eval` | shipped |
 | Voice configuration in the artifact: `guidelines:` (channel, tone, language, timezone anchor, gender, call-type patterns), global `knowledge_base`, authored `pronunciations:` | shipped |
-| Authored barrier lines: `policies.filler` / `policies.hold_line`, string or state-aware callable | shipped |
+| Authored barrier lines: `policies.filler` / `policies.hold_line` (strings); the `PlaybookAgent(filler=, hold_line=)` override also accepts a state-aware callable | shipped |
 | Playbook-declared models: top-level `llm:` block + `Playbook.resolve_llm_providers` (supersedes `guidelines.director_model`/`talker_model`) | shipped |
 | Simple-format routing (`then`, `terminal`/`outcome`, `branches`, `then_say`) and `resume: true` interrupt detours | shipped |
 | Verbatim discipline (`strict`), id resolution (`resolve_from`), multi-entity slot scoping (`multi_entity` + checkpoint `entity`) | shipped |
