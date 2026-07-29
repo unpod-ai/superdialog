@@ -476,7 +476,7 @@ session and LLM observability:
 | Method | Fires on | Returns |
 |---|---|---|
 | `on_session_start(session_id, metadata)` | session open | `trace_id` |
-| `on_generation_start(trace_id, name, input_messages, *, model=None)` | LLM call begins | `observation_id` |
+| `on_generation_start(trace_id, name, input_messages)` | LLM call begins | `observation_id` |
 | `on_generation_end(observation_id, output, tool_calls, metadata)` | LLM call ends | - |
 | `on_tool_call(trace_id, name, args, result)` | tool execution | - |
 | `on_flow_node(trace_id, node_id, slots, *, prev_node=)` | node/checkpoint transition | - |
@@ -513,7 +513,7 @@ provider wrapper that *consumes* one:
 
 **`build_observer(public_key=, secret_key=, host=, *, enable_tracing=)`**
 constructs the right sink. Enable priority: the `enable_tracing` kwarg, then
-`SUPERDIALOG_TRACING` (`1/true/on` enable, `0/false/off` disable), then
+`SUPERDIALOG_TRACING` (`1/true/on/yes` enable, `0/false/off/no` disable), then
 auto-detect from keys. Keys resolve from the kwargs or
 `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`; host from
 `LANGFUSE_BASE_URL`. Anything missing or failing → `NullObserver`; tracing
