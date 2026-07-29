@@ -77,7 +77,8 @@ superdialog/
   ├─ traversal/           # Session traversal recordings (build/save
   │                       #   full dialog histories to JSON)
   ├─ tools/               # Python / HTTP / MCP tool wrappers
-  ├─ cli/                 # `superdialog generate / chat / optimize / playbook / flow / eval`
+  ├─ cli/                 # `superdialog generate / chat / optimize /
+  │                       #   playbook / flow / eval / benchmark`
   └─ adapters/            # LiveKit, PipeCat, FastAPI, WebSocket
 ```
 
