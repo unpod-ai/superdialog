@@ -114,14 +114,19 @@ keeps the legacy graph engine (back-compat); a `Playbook` object, a path
 string, or a parsed dict runs the Playbook engine. Override with
 `engine="flow"` (force the graph runtime; `ValueError` on a `Playbook`) or
 `engine="playbook"` (force the Playbook engine, compiling a flow if needed).
-A missing `llm` in Playbook mode raises a clear `ValueError`.
+Missing both `llm` and `director_llm` in Playbook mode raises a clear
+`ValueError`.
 
 In Playbook mode, `llm` is the Talker and the Director unless `director_llm`
 splits them; `tools=` bridges each `Tool` through its own `execute()`. Graph-only
 methods (`switch_flow`, `seed`, `load_flow_state`) raise `NotImplementedError`
 in Playbook mode, and `flow_state` returns `None`.
 
-Set `traversal_dir` (graph engine) to a directory path and the machine will write a timestamped JSON file recording every node visited, every turn, and slot values collected - automatically when `is_complete` becomes `True`. Useful for debugging flows, building eval datasets, and auditing production conversations.
+Set `traversal_dir` (graph engine) to a directory path and the machine will
+write a timestamped JSON file recording every node visited, every turn, and
+slot values collected - automatically when `is_complete` becomes `True`.
+Useful for debugging flows, building eval datasets, and auditing production
+conversations.
 
 Traversal recording is **not** graph-only: the Playbook engine has its own
 recorder. Pass `PlaybookAgent(traversal_dir=...)` (plus optional
@@ -156,14 +161,17 @@ async for chunk in stream:
 
 > **Streaming policy (v0.2):** the v0.2 implementation resolves the turn
 > in one shot, then surfaces the response as whitespace-delimited chunks.
-> True provider-level streaming inference is planned for v0.4. The chunk
-> shape (`StreamChunk(text, done, turn)`) is stable. The Playbook engine's
-> `PlaybookAgent` already streams provider tokens live - see
-> [Playbook engine](#playbook-engine).
+> The chunk shape (`StreamChunk(text, done, turn)`) is stable. The
+> Playbook engine's `PlaybookAgent` already streams provider tokens live -
+> see [Playbook engine](#playbook-engine).
+
+> **Status: roadmap — not built.** True provider-level streaming inference
+> for `DialogMachine.turn(stream=True)`; planned for v0.4.
 
 ### `reset()`
 
-Clear conversation memory, restart from the flow's initial node. Useful between independent conversations on the same `DialogMachine` instance.
+Clear conversation memory, restart from the flow's initial node. Useful
+between independent conversations on the same `DialogMachine` instance.
 
 ### `set_llm(uri: str)`
 
@@ -175,7 +183,8 @@ dialog_machine.set_llm("anthropic/claude-haiku-4-5")
 
 ### `switch_flow(name: str)`
 
-If the machine was constructed with a `FlowSet`, switch to a named flow. State is reset by default; pass `preserve_memory=True` to keep history.
+If the machine was constructed with a `FlowSet`, switch to a named flow.
+State is reset by default; pass `preserve_memory=True` to keep history.
 
 ```python
 dialog_machine.switch_flow("escalation")
@@ -376,9 +385,10 @@ tool = MCPTool(id="search", name="search", description="...", server="https://mc
 
 > **Status (v0.2):** the MCPTool wrapper forwards `execute(args)` to
 > `session.call_tool(self.id, args)` against the configured server.
-> Auto-discovery and namespacing of *all* tools on an MCP server (so one
-> `MCPTool` registration exposes every tool the server publishes) is
-> planned for a follow-up.
+
+> **Status: roadmap — not built.** Auto-discovery and namespacing of *all*
+> tools on an MCP server (so one `MCPTool` registration exposes every tool
+> the server publishes); planned for a follow-up.
 
 ---
 
@@ -386,7 +396,8 @@ tool = MCPTool(id="search", name="search", description="...", server="https://mc
 
 ### `register_llm_provider(name, base_url, api_key, api_style="openai")`
 
-Process-global. Once registered, the URI `custom/<name>/<model>` works in `set_llm()`, `DialogMachine(llm=...)`, and `create_dialog_flow(llm=...)`.
+Process-global. Once registered, the URI `custom/<name>/<model>` works in
+`set_llm()`, `DialogMachine(llm=...)`, and `create_dialog_flow(llm=...)`.
 
 `api_key` accepts a plain string **or a zero-arg callable returning a
 string** (`llm/registry.py::ApiKey = str | Callable[[], str]`). A callable
@@ -540,7 +551,9 @@ WebSocketRunner(
 
 One `DialogMachine` instance, four hosts, one product surface.
 
-For the **full Unpod Voice Infra journey** - portal config (voice profile, number, agent binding) alongside the SDK code - see the Unpod voice platform docs.
+For the **full Unpod Voice Infra journey** - portal config (voice profile,
+number, agent binding) alongside the SDK code - see the Unpod voice
+platform docs.
 
 ---
 
@@ -1085,8 +1098,11 @@ state = ConversationState.fold(agent.event_log, playbook)
   `version` property; `replay()` iterates; `to_jsonl()` / `from_jsonl()`.
   Events are frozen pydantic models discriminated on `type`:
   `utterance`, `slot_write`, `advance`, `steering_note`, `tool_call`,
-  `tool_result`, `env_write`, `scratchpad`, `summary`, `external`,
-  `degraded`, `session_end` (import from `superdialog.playbook.events`).
+  `tool_result`, `env_write`, `session_start` (the per-call date/time
+  anchor), `scratchpad`, `summary`, `external`, `degraded`, `session_end`,
+  `revert` (rewind: supersede a version range of earlier state effects -
+  see [PlaybookRuntime](#playbookruntime)). Import from
+  `superdialog.playbook.events`.
 - `ConversationState.fold(log, playbook=None)` - derived snapshot:
   `checkpoint_id`, `slots` (value + provisional/confirmed status +
   provenance), `transcript`, `env`, `tool_results`, `steering_note`,
