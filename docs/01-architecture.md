@@ -120,10 +120,11 @@ so any provider - or a scripted fake in tests - plugs in directly.
 
 ## 2. Engine A - DialogMachine (legacy, graph-railed)
 
-The legacy engine, opted into via `superdialog chat --mode flow`. A `ConversationFlow` is a directed graph: nodes (states,
-each with an instruction or static text), edges (transitions with
-natural-language conditions), `global_edges`, and `actions` (declarative HTTP
-calls). The public `Flow` facade loads/saves it as version-controllable JSON;
+The legacy engine, opted into via `superdialog chat --mode flow`. A
+`ConversationFlow` is a directed graph: nodes (states, each with an
+instruction or static text), edges (transitions with natural-language
+conditions), `global_edges`, and `actions` (declarative HTTP calls). The
+public `Flow` facade loads/saves it as version-controllable JSON;
 `create_dialog_flow(prompt=..., llm=...)` bootstraps one from a prompt (the
 LLM is used at construction time only, never at runtime). For new agents,
 prefer the default creation path - `superdialog generate` /
@@ -188,7 +189,11 @@ Two layers:
   `run_once`, `when:`, `env_updates`, timeout), `pipelines` (`PipelineSpec`:
   ordered steps with typed `on: {ok | failed | http_<code>}` branches and
   capped `RetrySpec`), `handlers` (`HandlerSpec`: webhook/timer-triggered
-  pipelines), `interrupts` (`InterruptSpec`), `policies` (silence, `hold_timeout`), optional
+  pipelines), `interrupts` (`InterruptSpec`; `resume: true` pushes the
+  interrupted checkpoint onto `ConversationState.resume_stack` and the
+  runtime advances back to it with rule `"resume"` once the detour is done -
+  automatically on the next turn, or on demand via
+  `PlaybookRuntime.pop_detour()`), `policies` (silence, `hold_timeout`), optional
   auth `middleware` (`on_status: 401 → refresh_with → replay`), an `env`
   lane, and computed `views` (LLM-free expressions).
 
@@ -284,10 +289,17 @@ A user turn, in order:
    **steering note** for the Talker's next context ("user already gave the
    date; nudge toward time selection").
 3. **Talker streams concurrently** from snapshot *N*:
-   `render_view(pb, state, token_budget)` packs persona → guidance →
-   steering note → slots → computed views → summary → recent transcript,
-   and one streaming call sends tokens straight to the host (TTS). At a
-   hard gate it barriers first (§3.4).
+   `render_view(pb, state, token_budget)` packs persona → steering note →
+   guidance → repair note → slots → computed views → summary → knowledge
+   base → recent transcript, and one streaming call sends tokens straight to
+   the host (TTS). The ordering is deliberate in
+   `playbook/render.py::_system_block`: a `steer` note lands *before* the
+   `## Current step` guidance so the more specific guidance can override it,
+   while a `repair` note lands *after* guidance because it must win. The
+   `## Knowledge base` block is emitted only when the checkpoint uses it
+   (`Checkpoint.uses_kb`, or the legacy `knowledge_base` substring heuristic
+   on un-annotated checkpoints). At a hard gate the Talker barriers first
+   (§3.4).
 4. **Quiescence.** After the Director's decision is applied, the runtime
    hops (bounded by `max_hops=8`) until nothing moves: the entered
    checkpoint's **pipeline** runs (`PipelineRunner.run`, with typed
@@ -317,7 +329,8 @@ A user turn, in order:
      ▼
  Talker.speak(state@N)
      │ soft gate: stream immediately
-     │ hard gate: barrier ≤0.4s ─miss─► filler ─► wait ≤4s ─miss─► hold line
+     │ hard gate: barrier (0.4s facade · 4.0s PlaybookAgent, §3.4)
+     │            ─miss─► filler ─► wait ≤4s ─miss─► hold line
      │ tokens ────────────────────────────────────────────► host / TTS
      ▼
  join (Director done) ─► log speech (spoke_from_version=N)
@@ -344,11 +357,20 @@ at the moments it matters:
 - `requires` must be **confirmed**, not provisional
   (`ConversationState.confirmed`).
 - The Talker **barriers**: `Talker.speak(state, director_done=...)` waits up
-  to `barrier_timeout` (0.4s) for the quiescent post-verdict state, emits
-  the natural filler (`FILLER`) if exceeded, waits up to `hold_timeout`
+  to `barrier_timeout` for the quiescent post-verdict state, emits the
+  natural filler (`FILLER`) if exceeded, waits up to `hold_timeout`
   (default 4.0s, per playbook via `policies.hold_timeout`), and emits
   `HOLD_LINE` if the Director never lands - politely
   degraded, never hung.
+- **`barrier_timeout` has two different defaults - check which entry point
+  you use.** `playbook/talker.py::Talker.__init__` and the
+  `dialog_machine.py::DialogMachine` facade both default it to **0.4s**, but
+  the lower-level `playbook/agent.py::PlaybookAgent.__init__` defaults it to
+  **4.0s** and passes the value straight into the `Talker` - a 10x longer
+  pre-speech wait on hard gates. Voice integrators constructing
+  `PlaybookAgent` directly should pass `barrier_timeout=0.4` explicitly (or
+  go through the facade); 0.4s is the number the latency budget in this doc
+  assumes.
 - `say_verbatim` bypasses the Talker LLM entirely (template → speech) for
   regulated lines; `never_say` lists are injected as renderer constraints.
 
@@ -373,7 +395,7 @@ construction. `FlowIndex` first classifies every node by degree and shape:
 | Class | Test | Becomes |
 |---|---|---|
 | conversational | speaks/listens | a `Checkpoint` in journey `"main"` |
-| computational | router or `auto_proceed` | folded into rules, or pipelines |
+| computational | router, or an `auto_proceed` node that is tool-bearing or has no spoken content | folded into rules, or pipelines |
 | system | indegree 0, not initial | webhook/timer `handlers` |
 
 The mapping, validated against the 61-node golf flow
@@ -392,8 +414,11 @@ The mapping, validated against the 61-node golf flow
   inbound checkpoint.
 - **Silence nodes** become `policies.silence` (prompts kept in chain order);
   the token-expiry global edge + refresh node become `middleware`; other
-  global edges become `interrupts`; `is_final` nodes become `terminal` +
-  `outcome`.
+  global edges become `interrupts` - always with `resume=False`
+  (`compiler.py::FlowIndex._build_interrupts` hardcodes it), because a graph
+  global edge carries no return target. Authored playbooks can set
+  `resume: true` and get detour restoration at runtime (§3.1); compiled
+  flows cannot.
 - **`global_actions`** map 1:1 to `tools`, with Jinja templates rewritten
   into the `{env, slots, results}` namespace; edge `input_schema`s union
   into optional slot declarations plus per-rule `requires`
@@ -451,7 +476,7 @@ session and LLM observability:
 | Method | Fires on | Returns |
 |---|---|---|
 | `on_session_start(session_id, metadata)` | session open | `trace_id` |
-| `on_generation_start(trace_id, name, input_messages)` | LLM call begins | `observation_id` |
+| `on_generation_start(trace_id, name, input_messages, *, model=None)` | LLM call begins | `observation_id` |
 | `on_generation_end(observation_id, output, tool_calls, metadata)` | LLM call ends | - |
 | `on_tool_call(trace_id, name, args, result)` | tool execution | - |
 | `on_flow_node(trace_id, node_id, slots, *, prev_node=)` | node/checkpoint transition | - |
@@ -460,6 +485,16 @@ session and LLM observability:
 
 Naming quirk: `on_flow_node` is named for graph nodes but receives
 *checkpoint ids* on the playbook path - one callback serves both engines.
+
+**Third-party sinks must accept `**kwargs`.** The Protocol declares
+`on_generation_start` with the three positional arguments above, but
+`TracingProvider.complete` / `.stream` call it as
+`on_generation_start(trace_id, name, messages, model=<model_uri>)`. The
+shipped sinks absorb that (`NullObserver` takes `**_`; `LangfuseObserver`
+takes keyword-only `model=` / `model_parameters=`); a sink written to the
+bare three-argument signature raises `TypeError` on its first generation.
+Treat every Observer method as extensible - accept and ignore unknown
+keywords.
 
 Three classes ship next to the protocol - two sinks that implement it and one
 provider wrapper that *consumes* one:
@@ -634,9 +669,9 @@ layer:
 Clearly labeled non-features today: host
 adapter plumbing that feeds LiveKit silence/barge-in signals in as
 `ExternalEvent`s (the Agent-protocol text path already works with the
-existing adapters); sessionless webhook workers for `handlers`;
-`resume: true` interrupt restoration; tool TTL scheduling. None of these are
-promised for a specific version.
+existing adapters); sessionless webhook workers for `handlers`; tool TTL
+scheduling (`ToolSpec.ttl_seconds` is reserved and unused). None of these
+are promised for a specific version.
 
 ## 8. What lives outside this library
 
