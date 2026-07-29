@@ -1,7 +1,7 @@
 
 # SuperDialog - API Reference
 
-**Status:** Draft
+**Status:** Canonical
 **Parent:** [README.md](README.md)
 **Audience:** Developers writing code against the library.
 
@@ -61,7 +61,8 @@ flow = await create_dialog_flow(            # inside async code
 # flow = asyncio.run(create_dialog_flow(prompt=..., llm=...))
 ```
 
-The `llm` parameter is used **only at construction**. The runtime model is set on `DialogMachine`.
+The `llm` parameter is used **only at construction**. The runtime model is
+set on `DialogMachine`.
 
 ### `Flow.save(path)` / `Flow.load(path)`
 
@@ -175,7 +176,8 @@ between independent conversations on the same `DialogMachine` instance.
 
 ### `set_llm(uri: str)`
 
-Hot-swap the model. Applies to next turn (in-flight streaming continues on the old model).
+Hot-swap the model. Applies to next turn (in-flight streaming continues on
+the old model).
 
 ```python
 dialog_machine.set_llm("anthropic/claude-haiku-4-5")
@@ -192,7 +194,8 @@ dialog_machine.switch_flow("escalation")
 
 ### `assist(text: str)`
 
-Push a system-level instruction that takes effect next turn. Used for mid-call context injection.
+Push a system-level instruction that takes effect next turn. Used for
+mid-call context injection.
 
 ```python
 dialog_machine.assist("Customer is upset. Be especially empathetic.")
@@ -443,7 +446,7 @@ The actual module paths shipped in v0.2:
 |---|---|
 | `superdialog.adapters.livekit.DialogMachineLLM` | LiveKit `Agent(llm=...)` plugin (livekit-plugins-langchain-style) |
 | `superdialog.adapters.pipecat.make_processor` | Factory that builds a PipeCat `FrameProcessor` |
-| `superdialog.adapters.fastapi.FastAPIRouter` | Mountable FastAPI router exposing `/turn`, `/stream`, `/reset` |
+| `superdialog.adapters.fastapi.FastAPIRouter` | Mountable FastAPI router exposing `/turn`, `/stream`, `/assist`, `/reset` |
 | `superdialog.adapters.websocket.WebSocketRunner` | Standalone WSS server (Unpod Voice Infra) |
 
 See `docs/03-embedding-guides.md` for working snippets per host.
@@ -472,14 +475,15 @@ See `docs/03-embedding-guides.md` for working snippets per host.
 | `superdialog benchmark [--data <name\|.jsonl>] [--flow <pb>]` | RAGAS + deterministic benchmark over a dataset, raw LLM vs SuperDialog | shipped |
 
 `eval` is a **required subcommand group** - bare `superdialog eval --flow ...`
-(the pre-0.2.18 spelling) no longer parses; use `superdialog eval flow`.
+(the pre-0.2.17 spelling) no longer parses; use `superdialog eval flow`.
 Full eval workflow: [07-running-evals.md](07-running-evals.md).
 
 ---
 
 ## Worked example - end to end (legacy DialogMachine)
 
-A KYC bot built once, deployed four ways. Same `DialogMachine` object passes through every host.
+A KYC bot built once, deployed four ways. Same `DialogMachine` object passes
+through every host.
 
 ```python
 import asyncio
@@ -1161,11 +1165,15 @@ report.completion_rate, report.mean_slot_accuracy
 `event_log_jsonl` for replay/audit. `EvalReport` aggregates sessions with
 `completion_rate` and `mean_slot_accuracy`.
 
-### Voice events (host-fed today)
+### External events (host-fed)
 
-`superdialog optimize` (reflective prose optimization over paired persona
-evals, with generated persona suites) and the playbook CLI
-(`superdialog playbook {compile,chat,run}`) are shipped. Voice-event plumbing (silence/barge-in `ExternalEvent`s wired
-by the LiveKit adapter) remains the one unshipped piece. Today the Agent-protocol text path
-works with the existing adapters, and hosts deliver external events through
-`runtime.on_external` themselves.
+The Agent-protocol text path works with every shipped adapter, and the host
+feeds external events itself through `runtime.on_external`
+(`playbook/runtime.py::PlaybookRuntime.on_external`) - see
+[PlaybookRuntime](#playbookruntime) for the event kinds and the
+`ExternalResult` it returns.
+
+> **Status: roadmap — not built.** Voice-event plumbing: silence and
+> barge-in `ExternalEvent`s raised automatically by the LiveKit adapter.
+> `adapters/livekit.py` feeds no external events today, so a LiveKit host
+> must call `runtime.on_external` itself.
