@@ -461,7 +461,8 @@ session and LLM observability:
 Naming quirk: `on_flow_node` is named for graph nodes but receives
 *checkpoint ids* on the playbook path - one callback serves both engines.
 
-Three implementations ship:
+Three classes ship next to the protocol - two sinks that implement it and one
+provider wrapper that *consumes* one:
 
 - **`NullObserver`** - the no-op default; zero external dependencies. Also
   carries `on_error` and `flush` (best-effort extras the Langfuse sink
