@@ -29,6 +29,7 @@ This folder is the canonical documentation set.
 | [05-eval-guide.md](05-eval-guide.md) | Playbook-vs-vanilla A/B eval - `superdialog eval run`, the two pluggable seams (transport + metric framework), transcript-only scoring, and the two mutually-exclusive RAGAS pins |
 | [06-playbook-execution-flow.md](06-playbook-execution-flow.md) | Code-verified execution trace - the two-brain turn loop, every touchpoint cited by symbol, the render steering surface, playbook semantics → behavior, patterns, and measured advantages vs a vanilla LLM |
 | [07-running-evals.md](07-running-evals.md) | Operator runbook - setup, the `eval bench` fast path and the explicit gen-dataset/run/serve phases, every flag, how to read the report, dataset format, recipes, and gotchas |
+| [08-integrations.md](08-integrations.md) | Integration contracts - a playbook behind an OpenAI-compatible endpoint (the dev `eval serve` door and the production supervoice pool), consuming an endpoint back via `register_llm_provider`, the two unrelated LiveKit integrations disambiguated, and the `SessionInit` / `agent_factory_ctx` embedding seam |
 | [decisions.md](decisions.md) | OSS-specific decisions: license, repo, governance, roadmap, and the itemised unversioned shipped wave |
 
 ---
@@ -49,7 +50,9 @@ This folder is the canonical documentation set.
 - **Embedding into a host?** [03-embedding-guides.md](03-embedding-guides.md) -
   every guide runs on the default Playbook engine; the legacy graph
   engine implements the same `Agent` protocol, so each guide applies
-  to it too.
+  to it too. For the contracts behind those guides - OpenAI-compatible
+  serving, custom LLM providers, the two LiveKit integrations, the
+  `SessionWorker` seam - see [08-integrations.md](08-integrations.md).
 - **Tuning a call that already runs?** [04-playbook-guide.md](04-playbook-guide.md)
   Part 2 - speech control and localized barrier lines (§8), tool tiers and
   rewind (§7), and the opt-in Loop-2 Supervisor for conversations that
