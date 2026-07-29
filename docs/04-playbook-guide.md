@@ -197,6 +197,36 @@ Per step:
   mentions `knowledge_base`). Set `kb: false` on steps that merely
   *reference* the KB to keep them lean - off-step KB questions route
   through a KB-answer step via a `global_kb_query`-style interrupt.
+- `gate` (optional, `hard` | `soft`; default `hard`) - the Talker's sync
+  barrier on this step. Hard makes the Talker wait for the Director's
+  verdict so it speaks from post-advance state; `soft` speaks immediately,
+  saving the Director's settle time on pure-talk steps that capture
+  nothing. Collected slots are compiled with slot-level `gate: soft`
+  regardless, so a filled slot satisfies `requires` without a separate
+  confirmation round-trip (`playbook/simple.py::_step_to_checkpoint`).
+- `entity` (optional, default `caller`) - whose details this step collects
+  when one call covers more than one person. Must match
+  `[a-z_][a-z0-9_]*`; requires top-level `multi_entity: true` to change
+  storage behavior (§3).
+
+**Voice and runtime knobs** (optional, top-level) - the simple format
+spells at top level what the full format puts in its `guidelines:` block
+(§3); `playbook/simple.py::simple_to_playbook` copies them across:
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `channel` | `voice` | `text` suppresses the baseline speaking-style block |
+| `tone` | `professional` | Tone injected with the voice block |
+| `call_type` | unset | `sales` / `support` / `booking` domain pattern block |
+| `timezone` | `UTC` | IANA tz for the per-turn date anchor |
+| `memory_enabled` | `false` | Guard beside a prior-call summary, when one is present |
+| `followup_enabled` | `false` | Follow-ups & callbacks block |
+| `multi_entity` | `false` | Scope slot storage/lookup per step `entity` |
+| `supervisor` | `false` | Enable the Loop-2 Supervisor (Part 2 §7) |
+
+`persona.language` supplies `guidelines.language`. Everything else is
+full-format only: the top-level `llm:`, `pronunciations:`, and `policies:`
+blocks, per-slot typing, `strict`, and tool tiers.
 
 **`facts`** (mapping, optional) - folds under `## Reference facts (never
 invent beyond these)`. The agent's grounding data: pricing, amenities,
@@ -219,11 +249,15 @@ as `## Fallback actions`: what to do when the happy path fails (callback,
 message, reschedule, do-not-call). Pair with an `interrupts:` entry that
 routes there, or the instructions have no path to fire on.
 
-**`interrupts`** (list of `{id?, when, to}`, optional) - global jumps,
-judged from any step: when the Director sees `when` matching, the
+**`interrupts`** (list of `{id?, when, to, resume?}`, optional) - global
+jumps, judged from any step: when the Director sees `when` matching, the
 conversation re-routes to the `to` step (`main.<id>` ref, validated at
-load). Compiles to engine interrupts with `judge: llm`, `resume: false`;
-ids default to `interrupt_<n>`. **Use at least a goodbye interrupt** - in
+load). Compiles to engine interrupts with `judge: llm`; ids default to
+`interrupt_<n>`. `resume: true` (default false) makes the jump a *detour*:
+the step it left is pushed on a resume stack and the conversation returns
+there once the detour ends without firing another interrupt
+(`playbook/runtime.py::PlaybookRuntime.on_user_text`).
+**Use at least a goodbye interrupt** - in
 a 56-session assessment, linear playbooks with no early exit never
 completed a single call (a satisfied or busy caller loops until the turn
 cap), while the same playbook with goodbye/busy interrupts completed 8/8.
@@ -360,20 +394,29 @@ Top-level fields, all on `superdialog.playbook.models.Playbook`:
 | Field | Type | Purpose |
 |---|---|---|
 | `persona` | str | System-level voice of the agent, every Talker turn |
+| `multi_entity` | bool | Scope slot storage/lookup per checkpoint `entity` (default false) |
+| `guidelines` | GuidelineConfig | Voice/channel knobs and the Supervisor opt-in (below) |
+| `llm` | LLMConfig \| None | The model this playbook declares (below); `None` keeps the host-supplied models |
+| `pronunciations` | list[PronunciationSpec] | Authored pronunciation rules, exported to the host voice runtime (below) |
 | `journeys` | dict[name, Journey] | Named checkpoint sequences (min 1) |
 | `dispatch` | list[DispatchEntry] | Intent→entry table (compile-time in v1, §4) |
 | `tools` | list[ToolSpec] | Declarative HTTP / registered python tools |
 | `pipelines` | list[PipelineSpec] | Ordered tool steps with typed branches |
 | `handlers` | list[HandlerSpec] | `webhook.<name>` / `timer.<name>` triggers |
 | `interrupts` | list[InterruptSpec] | Global jumps (`judge: llm` or `event`) |
-| `policies` | Policies | Silence handling; `hold_timeout` (default 4.0 s) |
+| `policies` | Policies | Silence handling; `hold_timeout` (default 4.0 s); authored `filler` / `hold_line` barrier lines (Part 2 §8) |
 | `middleware` | MiddlewareSpec | `on_status` → refresh tool → replay |
 | `env` | dict[str, str] | Secret/handle lane, hidden from the Talker |
 | `views` | dict[name, expr] | Computed, LLM-free reference data |
+| `knowledge_base` | str | Global KB text (Jinja-renderable) injected into the Talker prompt of KB steps (`uses_kb` / simple `kb`) |
 | `initial` | str | Starting checkpoint ref (`journey.checkpoint`) |
+| `source_path` | str | Set by `Playbook.load()`; empty when built from text |
 
 Every cross-reference (rule targets, pipeline ids, tool ids, `requires`
-keys) is validated at load time.
+keys) is validated at load time. Per-field types and defaults for
+`Checkpoint`, `SlotSpec`, and `ToolSpec` live in
+[02-api-reference.md](02-api-reference.md#the-artifact-model); this guide
+covers what changes how you *author*.
 
 ### `guidelines:` — voice and channel configuration
 
@@ -390,6 +433,8 @@ playbooks that omit the block are unaffected.
 | `timezone` | IANA tz string | `UTC` | The timezone used for the per-call date/time anchor injected into every Talker turn. |
 | `memory_enabled` | bool | `false` | When `true`, injects a "Using Past Context" guard beside the conversation summary when one is present. |
 | `followup_enabled` | bool | `false` | When `true`, injects the Follow-ups & Callbacks block. |
+| `gender` | `male` \| `female` \| `neutral` | `neutral` | Pins the agent's own gendered verb/adjective forms (करूँगी vs करूँगा) instead of letting the model guess from the persona name. Emitted only for a non-English `language`; `neutral` emits nothing. |
+| `supervisor` | bool | `false` | Opt into the Loop-2 Supervisor - a trajectory-level reviewer that runs off the speech path (Part 2 §7). |
 
 **Voice channel behavior.** For `channel: voice` (the default), a baseline
 voice/TTS guideline block — covering one-thought-per-turn speaking style,
@@ -411,6 +456,91 @@ handover summary instruction to appear in that turn's system prompt: the agent
 is instructed to hand over a 1–2 sentence neutral summary (caller name, reason
 for calling, request) when transferring to a human.
 
+**Deprecated: `guidelines.director_model` / `guidelines.talker_model`.**
+Both still parse, but no host ever read them back. Setting either without a
+top-level `llm:` block raises a `DeprecationWarning`
+(`playbook/models.py::Playbook._warn_deprecated_llm_fields`). Declare models
+in `llm:` instead (§ below).
+
+### `llm:` — the model the playbook declares
+
+Optional. `None` (the default) preserves today's behavior byte-for-byte: the
+host's session model drives both roles, unvalidated.
+
+```yaml
+llm:
+  provider: openai
+  model: gpt-4.1-mini
+  director:                     # optional split; unset ⇒ Director shares the talker model
+    provider: openai
+    model: gpt-4.1-nano
+```
+
+`Playbook.llm_uri()` and `.director_llm_uri()` read it back as
+`provider/model` URIs. `await pb.resolve_llm_providers(override=...)` does the
+whole job in one call - priority (an explicit `override` wins, warning when it
+shadows a declared `llm:`; neither present raises), a live availability check
+per model (a confirmed-invalid model raises, an unverifiable one warns), and
+resolution to provider instances.
+
+### Fields beyond the annotated example
+
+Four shipped authoring surfaces the example above does not show. Types and
+defaults: [02-api-reference.md](02-api-reference.md#the-artifact-model).
+
+**`strict: true` on a checkpoint** - never paraphrase. `say_verbatim` alone
+still lets the Talker generate follow-ups if the conversation lingers on the
+checkpoint; `strict` removes that escape hatch, so the step speaks its
+rendered `say_verbatim` and nothing else. A `strict` checkpoint with no
+`say_verbatim` authored speaks the Talker's recovery line rather than
+improvising (`playbook/talker.py::Talker.speak`). Use it for regulated
+disclosures.
+
+**`resolve_from` on a slot** - for the one value a caller never utters
+verbatim: an opaque id. The Director is handed the live candidate list from a
+prior tool result and renders `"<name>" -> <id>` pairs into its verdict
+prompt, so it maps the spoken name (tolerating STT drift) to the canonical id
+itself - no fuzzy matching and no domain alias table in the engine:
+
+```yaml
+slots:
+  course_id:
+    type: str
+    resolve_from:
+      result: courses        # a tool's store_response_as key
+      list_field: items      # path under results.courses.data
+      name_field: name       # the human-spoken field
+      id_field: id           # the canonical id to write into the slot
+```
+
+The block renders only when the named result is present and its list is
+non-empty; the Director is instructed to omit the slot when no candidate
+clearly matches, never to invent an id.
+
+**`multi_entity: true` + checkpoint `entity`** - one call that collects for
+more than one person (caller and partner, policyholder and nominee). Off (the
+default) slots are stored bare and everything behaves exactly as before. On,
+each checkpoint's slots are stored under its `entity` prefix; the Talker's
+"Known information" block groups them by entity, `{{ slots.dob }}` resolves to
+the *active* entity's value overlaying the caller's, and the Director's prompt
+is prefixed with "You are collecting details for: `<entity>`" so it never asks
+"whose date of birth?" (`playbook/render.py::_active_slots`,
+`playbook/render.py::_known_info`).
+
+**`pronunciations:`** - authored TTS pronunciation rules, respelling-first
+(`respelling` is the operative field; `ipa` is advisory):
+
+```yaml
+pronunciations:
+  - {word: "Cartesia", respelling: "kar-TEE-zha"}
+  - {word: "Sure", language: "hi", respelling: "श्योर", context: force}
+```
+
+> SuperDialog validates and carries these; it never applies them. It emits
+> text, not audio. `PronunciationSpec.to_rule()` maps each entry onto the
+> field names a host voice runtime's pronunciation manager expects
+> (`respelling` → `replacement`), which is the whole integration contract.
+
 **How simple maps onto full** - useful when graduating a file:
 
 | Simple key | Compiles to |
@@ -422,9 +552,15 @@ for calling, request) when transferring to a human.
 | `step.done_when` | a `judge: llm` rule, `to` the next step (or `step.then`) |
 | `step.branches` | `judge: llm` rules ahead of the `done_when` rule, in author order |
 | `step.then_say` | `Checkpoint.exit_say` - a one-shot steer on the advance out |
+| `step.kb` | `Checkpoint.uses_kb` |
+| `step.gate` | `Checkpoint.gate` (default `hard`); collected slots always compile with slot-level `gate: soft` |
+| `step.entity` | `Checkpoint.entity` |
 | last step / `step.terminal` | `terminal: true`, `outcome:` from the step (default `closed`) |
-| `interrupts[{when, to}]` | `InterruptSpec` (`judge: llm`, `resume: false`) |
+| `interrupts[{when, to}]` | `InterruptSpec` (`judge: llm`, `resume:` from the entry) |
 | `opening` | first step's guidance, only if it has no `say` |
+| `channel` / `tone` / `call_type` / `timezone` / `memory_enabled` / `followup_enabled` / `supervisor` + `persona.language` | the `guidelines:` block |
+| `multi_entity` | `Playbook.multi_entity` |
+| `facts.knowledge_base` | `Playbook.knowledge_base` (YAML-dumped) |
 
 ## 4. Migrating a legacy flow
 
@@ -492,8 +628,9 @@ Known v1 limitations, stated honestly:
 - **Voice events are host-fed.** Silence/webhook/timer events work through
   `runtime.on_external`, but no adapter emits them automatically yet
   (roadmap, §10).
-- **Deferred fields.** `interrupts.resume: true` restoration and tool
-  `ttl_seconds` / `on_expire` are reserved, not yet active.
+- **Deferred fields.** Tool `ttl_seconds` / `on_expire` are reserved model
+  fields with no runtime consumer. (`interrupts.resume: true` restoration
+  has since shipped - see §2.)
 - Non-`on_enter` action triggers are not carried; the coverage report notes
   each occurrence.
 
@@ -582,11 +719,22 @@ read via `results.*` in expressions and views, not as slots. When
 advance - it writes a steering note naming the missing keys so the Talker
 asks for them naturally.
 
-At a hard gate the Talker also **barriers**: it waits briefly (default
-0.4 s) for the Director's verdict before speaking; past that it emits a
-filler line, then waits up to the playbook's `policies.hold_timeout`
-(default 4 s, must be > 0) before degrading politely (§8). Soft
-checkpoints never wait - Talker and Director run fully concurrent there.
+The gate is per checkpoint **and** per slot: `SlotSpec.gate` overrides the
+checkpoint's for one key (`None` inherits it), and a `type: date` slot
+defaults to `gate: hard` on its own. A turn barriers when the checkpoint is
+hard *or* any of its slots is (`playbook/talker.py::Talker._is_gated`).
+
+At a hard gate the Talker also **barriers**: it waits `barrier_timeout` for
+the Director's verdict before speaking; past that it emits a filler line,
+then waits up to the playbook's `policies.hold_timeout` (default 4 s, must
+be > 0) before degrading politely (§8). Soft checkpoints never wait -
+Talker and Director run fully concurrent there.
+
+> `barrier_timeout` has two different defaults depending on the entry
+> point: **0.4 s** via `Talker` and the `DialogMachine` facade, **4.0 s**
+> via `PlaybookAgent` directly - a 10x longer silence before the filler.
+> Pass `barrier_timeout=0.4` explicitly when constructing a `PlaybookAgent`
+> yourself. See [01-architecture.md](01-architecture.md) §3.4.
 
 Two more checkpoint behaviors: `auto: true` speaks `say_verbatim` once and
 advances to the first rule's target without user input (announce-then-move
@@ -672,15 +820,107 @@ events automatically yet - see §10 limitations.)
 steering note once the user has spent more than N turns there; two grace
 turns later the session routes to the checkpoint's `on_failure`.
 
+### Reversibility: tool tiers, rewind, compensation
+
+Some tool calls change the world. `ToolSpec.tier` classifies how badly:
+
+| `tier` | Meaning | On rewind across it |
+| --- | --- | --- |
+| `reversible` | Pure state (a read) | Undone structurally |
+| `compensable` | Real side effect that `compensate: <tool id>` can undo | Needs caller confirmation, then the compensation tool runs |
+| `irreversible` | Cannot be undone | Rewind is refused |
+
+`tier` is optional and **unannotated playbooks behave exactly as before**:
+`ToolSpec.effective_tier` guesses conservatively at rewind time (safe HTTP
+methods → reversible, everything else → compensable-without-`compensate`,
+so a rewind refuses) and never activates the interception guard. Load-time
+validation: `compensate` requires `tier: compensable`, may not name the
+tool itself, and must reference a declared tool.
+
+```yaml
+tools:
+  - {id: hold_slot, method: POST, url: "...", tier: compensable,
+     compensate: release_hold}
+  - {id: release_hold, method: POST, url: "..."}
+  - {id: charge_card, method: POST, url: "...", tier: irreversible}
+```
+
+**Rewind** (`playbook/runtime.py::PlaybookRuntime.rewind`) restores
+conversation *state* to a past log version. Speech is irreversible, so
+nothing is deleted: a `RevertEvent` marks the version range superseded and
+the fold skips those state effects while every utterance stays in the
+transcript. It returns a `RewindOutcome` with status `done`,
+`needs_confirmation` (compensable effects in range - the pending tool ids
+come back with it), or `refused` (an irreversible effect, or a compensable
+one with no `compensate` tool). Compensation tools run *before* the revert
+so their templates still see the results about to be reverted (a hold id,
+say). A `repair_note` lands as a repair steer so the Talker acknowledges
+the correction instead of resetting the conversation.
+
+**Interception.** Explicitly tiered tools are additionally guarded *before*
+they fire (`playbook/runtime.py::PlaybookRuntime._intercept`), with no
+check at all for `reversible` or untiered ones. Neither tier may fire while
+a repair is in flight. Beyond that, a `compensable` tool needs the
+checkpoint's required slots to meet the same per-slot gate the Director
+uses to advance; an `irreversible` one needs every required slot
+*confirmed*, plus - when the host passes
+`PlaybookAgent(intercept_llm=...)` - a single fast classifier call that
+fails **closed**.
+
+### Loop 2 — the Supervisor (opt-in)
+
+The Director judges one utterance at a time and structurally cannot see
+failures that unfold *across* turns. The Supervisor
+(`playbook/supervisor.py::Supervisor`) is a trajectory-level reviewer that
+runs after each completed turn, off the speech path. Enable it with
+`guidelines: {supervisor: true}` (top-level `supervisor: true` in the
+simple format) - it then reuses the Director's model - or hand a dedicated
+model to `PlaybookAgent(supervisor_llm=...)`, which wins over the
+playbook's opt-in. Unset, nothing runs and behavior is unchanged.
+
+Cost is proportional to trouble: `detect_triggers` is a pure function over
+the folded state and costs nothing, and an LLM verdict is spent only when
+one fires - and then only off a 2-turn cooldown, which a pending
+compensation confirmation bypasses. The triggers:
+
+| Trigger | Fires when |
+| --- | --- |
+| `repair_streak` | ≥2 repair notes since the checkpoint was entered |
+| `oscillation` | A full A,B,A,B round trip in advance targets |
+| `turn_budget` | User turns exceed the checkpoint's `turn_budget` |
+| `degraded` | A `DegradedEvent` since the checkpoint was entered |
+| `slot_churn:<key>` | ≥3 distinct Director-written values for one slot |
+| `repeated_interrupt:<id>` | The same interrupt fired ≥2 times |
+| `compensation_pending` | A rewind is awaiting the caller's confirmation |
+
+The verdict maps to five verbs, all landing as ordinary events at the turn
+boundary: **inject** a repair brief, **redirect** to another checkpoint,
+**rewind** wrong state, **discard** the current detour, or **handover** to
+a human. Two guardrails are structural, not prompt-hope: a redirect to a
+terminal checkpoint is blocked (ending a call is the Director's job), and a
+rewind that fires compensation only honors the verdict's `confirmed` flag
+when a confirmation was actually surfaced to the caller on the previous
+turn. A third is a floor rather than a ceiling: a `turn_budget` trigger may
+not resolve to a no-op, so a passive verdict is replaced with a forward
+steer toward the checkpoint's goal before the runtime's hard backstop has
+to force-advance. A malformed verdict records a `DegradedEvent` and is
+dropped - it never disturbs the call.
+
 ## 8. Speech control
 
 What the agent says is controlled at four levels, strongest first:
 
 1. **`say_verbatim`** - the exact line, Jinja-rendered over
    `{slots, views, results}`, bypassing the Talker LLM entirely. Use for
-   regulated or contractual speech. Surfaced at most once per checkpoint
-   entry by the runtime; if the conversation lingers at a `say_verbatim`
-   checkpoint the Talker generates follow-ups from guidance.
+   regulated or contractual speech. Two paths surface it: the runtime
+   speaks it as pass-through at most once per checkpoint entry
+   (`playbook/runtime.py::PlaybookRuntime._speak_verbatim`, deduped against
+   what was already said since that entry), and the Talker yields it
+   instead of streaming whenever it speaks from a `say_verbatim`
+   checkpoint - so a caller who lingers there hears the line again, never
+   an improvisation. `strict: true` extends the same discipline to a
+   checkpoint with *no* `say_verbatim`: it speaks the recovery line rather
+   than generating one (§3).
 2. **`never_say`** - phrases rendered into the Talker's system block as an
    explicit prohibition.
 3. **`guidance`** - prose direction for the checkpoint, templated over the
@@ -704,17 +944,39 @@ otherwise. The env lane is never rendered, even if a view expression tries
 to read it.
 
 **Canned lines and timeouts.** Three host-facing strings live on the
-`Talker` (`superdialog.playbook.talker`): `FILLER` ("One moment, let me
-confirm that…", spoken when a hard-gate barrier outlasts `barrier_timeout`,
-default 0.4 s), `HOLD_LINE` (spoken if the Director is still silent after
-the hold window - the playbook's `policies.hold_timeout`, default 4 s, or
-an explicit `PlaybookAgent(hold_timeout=…)` override), and `RECOVERY_LINE`
-(spoken when the Talker LLM fails twice). Localize them via the
-`Talker(..., filler=, hold_line=, recovery_line=)` constructor parameters;
-`PlaybookAgent` currently builds its Talker with the English defaults
-(forwarding these is roadmap). The rendered view is packed under
-`token_budget` (default 4000 estimated tokens): persona, guidance, notes,
-slots, and views are protected; only older transcript turns are dropped.
+`Talker` (`playbook/talker.py`): `FILLER` ("One moment, let me confirm
+that…", spoken when a hard-gate barrier outlasts `barrier_timeout`),
+`HOLD_LINE` (spoken if the Director is still silent after the hold window -
+the playbook's `policies.hold_timeout`, default 4 s, or an explicit
+`PlaybookAgent(hold_timeout=…)` override), and `RECOVERY_LINE` (spoken when
+the Talker LLM fails twice).
+
+The first two are **authorable in the playbook**, which is how a
+non-English persona localizes them without a host wiring Python overrides:
+
+```yaml
+policies:
+  hold_timeout: 4.0
+  filler: "एक सेकंड, मैं देख लेती हूँ…"
+  hold_line: "थोड़ा समय लग रहा है — लाइन पर बने रहिए।"
+```
+
+Resolution order, per `playbook/agent.py::PlaybookAgent.__init__`: an
+explicit `PlaybookAgent(filler=…, hold_line=…)` argument wins, else the
+playbook's `policies.filler` / `policies.hold_line`, else the Talker's
+built-in English defaults. Because the resolution happens inside
+`PlaybookAgent`, authored lines also reach playbooks run through the
+`DialogMachine` facade, which has no filler arguments of its own.
+
+Each accepts a `SpokenLine` - a plain string, or a
+`Callable[[ConversationState], str]` called with the live state at speak
+time (a language-aware filler). A provider that raises degrades to the
+built-in default; a filler must never kill the turn. `recovery_line` stays
+a `Talker` constructor parameter only.
+
+The rendered view is packed under `token_budget` (default 4000 estimated
+tokens): persona, guidance, notes, slots, and views are protected; only
+older transcript turns are dropped.
 
 ## 9. Testing, evals, and optimization
 
@@ -830,10 +1092,15 @@ default 4-persona suite keeps dev runs reasonable.
 
 Shipped: `superdialog optimize` (reflective prose optimizer - paired-round
 acceptance, prose-only targeted edits, simple-format round-trip, generated
-persona suites); simple-format `interrupts`; simple-format routing
-(`then:`, `terminal:`/`outcome:`, `branches:`, `then_say:`) with strict
-unknown-key validation; the unified loader; configurable
-`policies.hold_timeout`. **Structure mutation** in optimize
+persona suites); simple-format `interrupts` including `resume: true`
+detours; simple-format routing (`then:`, `terminal:`/`outcome:`,
+`branches:`, `then_say:`) with strict unknown-key validation; the unified
+loader; configurable `policies.hold_timeout`; and the unversioned wave this
+guide documents - `guidelines:` voice configuration, the global
+`knowledge_base`, authored `policies.filler` / `policies.hold_line`, the
+top-level `llm:` block, `multi_entity` + checkpoint `entity`,
+`pronunciations:`, `strict`, `resolve_from`, tool tiers with rewind and
+compensation, and the Loop-2 Supervisor. **Structure mutation** in optimize
 (checkpoint split/merge/reorder, slot-schema tightening) remains future, as
 do GEPA-style frontier parent sampling, production-log feedback ingestion,
 CI metric-threshold gates, and response caching across rounds.

@@ -18,9 +18,20 @@ while the model owns the phrasing - and it is the **default everywhere**:
 the unified loader runs full playbooks, simple-format playbooks, and legacy
 flow JSON (auto-compiled via `compile_flow`) on the same engine, so users
 never have to think about which artifact they hold. The legacy
-**DialogMachine** graph engine remains fully supported behind the same
-`Agent` protocol as an explicit opt-in (`--mode flow` in the CLI); the
-surrounding machinery (sessions, adapters, tools) is shared (see §7).
+**graph engine** remains fully supported behind the same `Agent` protocol
+as an explicit opt-in (`--mode flow` in the CLI); the surrounding machinery
+(sessions, adapters, tools) is shared (see §7).
+
+> **`DialogMachine` names two things.** Today
+> `dialog_machine.py::DialogMachine` is the unified *facade* that drives
+> either engine and defaults to Playbook. In older prose it named the
+> legacy graph engine itself (`superdialog.machine`). This doc says
+> "**the facade**" for the entry point and "**the legacy graph engine**"
+> for the runtime; bare `DialogMachine` always means the facade. Full
+> disambiguation - including the three spellings of the engine axis
+> (`--mode flow` / `engine="flow"` / internal `"graph"`) and the two
+> unrelated "supervisors" - is in
+> [01-architecture.md](01-architecture.md) §1.
 
 ## 2. Why standalone
 
@@ -81,11 +92,11 @@ your problem is conversation state, this is the right size."*
 
 | Audience | Why they care |
 |---|---|
-| **Voice developer using LiveKit / PipeCat today** | Drop SuperDialog in as the brain; stop hand-writing turn logic. `PlaybookAgent` gives real token streaming through the same adapters; legacy DialogMachine remains for graph-railed flows |
+| **Voice developer using LiveKit / PipeCat today** | Drop SuperDialog in as the brain; stop hand-writing turn logic. `PlaybookAgent` gives real token streaming through the same adapters; the legacy graph engine remains for graph-railed flows |
 | **Chatbot developer (text-only)** | `superdialog generate` a playbook, chat against it from the CLI, embed it with FastAPI through the `Agent` protocol |
-| **Developer with compliance / scripted flows** | Author the flow graph as the spec - every path enumerable and lintable - and run it compiled on the Playbook engine (default), or on DialogMachine via `--mode flow` |
+| **Developer with compliance / scripted flows** | Author the flow graph as the spec - every path enumerable and lintable - and run it compiled on the Playbook engine (default), or on the legacy graph engine via `--mode flow` |
 | **Developer whose calls must feel human** | Playbook: checkpoints gate outcomes while the model owns the phrasing; event log gives replay and eval for free |
-| **Enterprise dev with their own LLM** | Plug their custom LLM URI (`custom/internal/...`) into DialogMachine, or any streaming/completing model pair into Playbook's `StreamsLLM`/`CompletesLLM` protocols |
+| **Enterprise dev with their own LLM** | Plug their custom LLM URI (`custom/internal/...`) into the facade, or any streaming/completing model pair into Playbook's `StreamsLLM`/`CompletesLLM` protocols |
 | **Unpod Voice Infra customer** | SuperDialog is the default brain Unpod offers; same code runs locally and inside Unpod cloud |
 
 ## 7. Two engines
@@ -104,8 +115,9 @@ notes - both over an append-only, event-sourced log that doubles as the
 audit, replay, and eval artifact. Soft checkpoints never block; hard gates barrier the Talker at
 irreversible moments (payments, identity) until the Director's verdict lands.
 
-**DialogMachine** (`superdialog.DialogMachine`; engine internals live in
-`superdialog.machine`) is the legacy graph-railed state machine: the
+**The legacy graph engine** (internals in `superdialog.machine`; reached
+through the same `DialogMachine` facade with `engine="flow"`) is the
+graph-railed state machine: the
 flow graph decides what is *possible* and the LLM picks among the outgoing edges.
 Every transition is authored, every reachable utterance path is enumerable, and
 the CLI can lint and draw the graph. That made it strong where determinism is
@@ -122,7 +134,7 @@ and still cost two serial LLM calls per turn with only cosmetic streaming. Rathe
 than bolt on a seventh hatch, the Playbook engine moves fluidity to the model and
 keeps the framework's authority where it belongs: on outcomes.
 
-| | DialogMachine (legacy, opt-in) | Playbook (default) |
+| | Graph engine (legacy, opt-in) | Playbook (default) |
 |---|---|---|
 | Authoring unit | Graph node + edges | Checkpoint (goal, slots, guidance, advance rules) |
 | Who owns fluidity | The graph | The model, inside checkpoints |
@@ -132,10 +144,11 @@ keeps the framework's authority where it belongs: on outcomes.
 | State | Snapshot context | Event-sourced log (replay, audit, eval) |
 | Best for | Deterministic compliance flows | Conversations that must feel human |
 
-Two engines, one entry point: `DialogMachine` is the recommended way in. It
-runs the Playbook engine by default; pass `engine="flow"` for the legacy graph
-runtime. Both engines sit behind the existing `superdialog.agent.Agent`
-protocol, so `SessionWorker` and the host adapters run either one unchanged:
+Two engines, one entry point: the `DialogMachine` facade is the recommended
+way in. It runs the Playbook engine by default; pass `engine="flow"` for the
+legacy graph runtime. Both engines sit behind the existing
+`superdialog.agent.Agent` protocol, so `SessionWorker` and the host adapters
+run either one unchanged:
 
 ```python
 from superdialog import DialogMachine
@@ -152,18 +165,23 @@ README quickstart).
 they now run **compiled on the Playbook engine**: `Playbook.load` detects
 flow JSON and converts it via `compile_flow`, with `coverage_report(flow,
 pb)` proving every node, edge, and action mapped (validated against a
-61-node production booking flow). DialogMachine remains fully supported
-for anyone who wants the original graph runtime - pass `--mode flow`. New
+61-node production booking flow). The graph engine remains fully supported
+for anyone who wants the original runtime - pass `--mode flow`. New
 investment goes into the Playbook engine.
 
 **Shipped since:** `superdialog optimize` closes the run → eval → improve
 loop over playbook artifacts (paired evals, prose-only targeted edits,
 output in the source format); `superdialog generate` bootstraps a playbook
 from a description; the CLI chats against any artifact on the Playbook
-engine. **Roadmap (future, not built yet):** host plumbing that feeds voice
-events (silence timeouts, barge-in signals) into the event log as external
-events. Today the text path through the `Agent` protocol works with all
+engine; and an unversioned wave of playbook authoring surfaces landed on
+top (§8). Today the text path through the `Agent` protocol works with all
 existing adapters.
+
+> **Status: roadmap — not built.** Host plumbing that feeds voice events
+> (silence timeouts, barge-in signals) into the event log as external
+> events. `PlaybookRuntime.on_external` accepts them today, but no shipped
+> adapter emits them automatically. Full roadmap list:
+> [04-playbook-guide.md](04-playbook-guide.md) §10.
 
 ## 8. What it does well
 
@@ -175,7 +193,7 @@ existing adapters.
 | LLM provider abstraction (model URIs) | shipped (v0.1) |
 | Tools: Python callables, HTTP endpoints, MCP servers | shipped (v0.1) |
 | Mid-conversation flow switching (`FlowSet`, `switch_flow`) | shipped (v0.1) |
-| CLI: `generate`, `chat` (Playbook engine by default), `optimize`, `playbook compile/chat/run`, `flow lint / draw / generate` (legacy), `eval` | shipped |
+| CLI: `generate`, `chat` (Playbook engine by default), `optimize`, `playbook {compile,chat,run}`, `flow {lint,draw,generate}` (legacy), `eval {flow,gen-dataset,run,bench,serve,suite}`, `benchmark` | shipped |
 | Adapters: LiveKit `DialogMachineLLM`, PipeCat `make_processor`, FastAPI, WebSocket | shipped (v0.1) |
 | `Agent` Protocol + `Session` + `SessionWorker` (multi-conversation lifecycle, in-process persistence, per-session locking) | shipped (v0.2) |
 | `LLMAgent`, `LangChainAgent` (non-DM brains usable in SessionWorker; LangChainAgent via the `langchain` extra, `superdialog.agents.langchain_agent`) | shipped (v0.2) |
@@ -185,9 +203,18 @@ existing adapters.
 | Sandboxed declarative tools and Director pipelines (HTTP + python, retry/middleware) | shipped |
 | Flow → playbook migration: `compile_flow`, `coverage_report` | shipped |
 | Replay + persona eval bridge: `replay`, `run_session`, `run_eval` | shipped |
-| Distributed stores (`RedisSessionStore`, `FileSessionStore`, `SQLiteSessionStore`) + `RedisLockBackend` | planned |
+| Voice configuration in the artifact: `guidelines:` (channel, tone, language, timezone anchor, gender, call-type patterns), global `knowledge_base`, authored `pronunciations:` | shipped |
+| Authored barrier lines: `policies.filler` / `policies.hold_line`, string or state-aware callable | shipped |
+| Playbook-declared models: top-level `llm:` block + `Playbook.resolve_llm_providers` (supersedes `guidelines.director_model`/`talker_model`) | shipped |
+| Simple-format routing (`then`, `terminal`/`outcome`, `branches`, `then_say`) and `resume: true` interrupt detours | shipped |
+| Verbatim discipline (`strict`), id resolution (`resolve_from`), multi-entity slot scoping (`multi_entity` + checkpoint `entity`) | shipped |
+| Tool reversibility tiers + `rewind` / compensation / pre-materialization interception | shipped |
+| Loop-2 `Supervisor` (trajectory review off the speech path; `guidelines.supervisor` or `PlaybookAgent(supervisor_llm=)`) | shipped |
+| Observability: `Observer` protocol, `LangfuseObserver`, `set_observer`, `register_llm_callback` | shipped |
+| Distributed session stores (`RedisSessionStore`, `FileSessionStore`, `SQLiteSessionStore`) + `RedisLockBackend` | protocol only - superdialog ships `InMemorySessionStore` / `NullSessionStore` / `AsyncioLockBackend`; a Redis backend ships downstream in supervoice |
 | Pluggable HTTP auth (`BearerAuth`, `BasicAuth`, callable) | planned |
-| `superdialog eval` CLI (flow audit / synthetic corpus) | shipped |
+| `superdialog eval` CLI (flow audit / synthetic corpus / A/B harness / suites) | shipped |
+| `superdialog benchmark` (RAGAS + deterministic, raw LLM vs SuperDialog) | shipped |
 | `superdialog optimize` (playbook run → eval → improve loop; paired evals, prose-only edits, source-format output) | shipped |
 
 ## 9. What it explicitly is not

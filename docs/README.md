@@ -7,9 +7,11 @@ SuperDialog is a **standalone open-source framework** for building
 conversational brains. Text in, text out. Embeddable anywhere - LiveKit,
 PipeCat, FastAPI, CLI, custom. Two engines behind one `Agent` protocol:
 **Playbook**, the default - a checkpoint compound runtime (streaming Talker + async
-Director) for fluid, outcome-driven conversations, and
-**DialogMachine**, the legacy graph-railed dialog state machine
-(opt-in via `superdialog chat --mode flow`).
+Director) for fluid, outcome-driven conversations, and the legacy
+**graph engine**, a graph-railed dialog state machine (opt-in via
+`superdialog chat --mode flow`). `DialogMachine` is the facade over both,
+not a synonym for the legacy engine -
+[01-architecture.md](01-architecture.md) §1 disambiguates.
 
 This folder is the canonical documentation set.
 
@@ -19,15 +21,15 @@ This folder is the canonical documentation set.
 
 | Doc | Purpose |
 |---|---|
-| [00-overview.md](00-overview.md) | Positioning - what SuperDialog is, why standalone, why OSS; Playbook as the default engine, DialogMachine as legacy mode |
-| [01-architecture.md](01-architecture.md) | Engine internals - the Playbook runtime (event log, Talker/Director, process layer; the default) and the legacy DialogMachine flow graph |
-| [02-api-reference.md](02-api-reference.md) | Function signatures and worked examples for the Playbook engine and the legacy DialogMachine |
+| [00-overview.md](00-overview.md) | Positioning - what SuperDialog is, why standalone, why OSS; Playbook as the default engine, the graph engine as legacy mode; the shipped-capability table |
+| [01-architecture.md](01-architecture.md) | Engine internals - the Playbook runtime (event log, Talker/Director, process layer; the default), the legacy flow graph, the naming disambiguation callout (§1), and observability + LLM routing (§5) |
+| [02-api-reference.md](02-api-reference.md) | Function signatures, the full artifact model (`Playbook` / `Checkpoint` / `SlotSpec` / `ToolSpec` field tables), the CLI table, and worked examples for both engines |
 | [03-embedding-guides.md](03-embedding-guides.md) | How to embed in LiveKit, PipeCat, FastAPI, CLI chatbot, unit tests |
-| [04-playbook-guide.md](04-playbook-guide.md) | Playbooks in two parts - Part 1: authoring formats (simple + full); Part 2: technical design (runtime, process layer, evals/optimize) |
+| [04-playbook-guide.md](04-playbook-guide.md) | Playbooks in two parts - Part 1: authoring formats (simple + full, `guidelines:`, `llm:`, `strict`, `resolve_from`, multi-entity, pronunciations); Part 2: technical design (runtime, process layer, tool tiers + rewind, the Loop-2 Supervisor, speech control, evals/optimize) |
 | [05-eval-guide.md](05-eval-guide.md) | Playbook-vs-vanilla A/B eval - `superdialog eval run`, the two pluggable seams (transport + metric framework), transcript-only scoring, and the two mutually-exclusive RAGAS pins |
-| [06-playbook-execution-flow.md](06-playbook-execution-flow.md) | Code-verified execution trace - the two-brain turn loop, every touchpoint with file:line, the render steering surface, playbook semantics → behavior, patterns, and measured advantages vs a vanilla LLM |
+| [06-playbook-execution-flow.md](06-playbook-execution-flow.md) | Code-verified execution trace - the two-brain turn loop, every touchpoint cited by symbol, the render steering surface, playbook semantics → behavior, patterns, and measured advantages vs a vanilla LLM |
 | [07-running-evals.md](07-running-evals.md) | Operator runbook - setup, the `eval bench` fast path and the explicit gen-dataset/run/serve phases, every flag, how to read the report, dataset format, recipes, and gotchas |
-| [decisions.md](decisions.md) | OSS-specific decisions: license, repo, governance, roadmap |
+| [decisions.md](decisions.md) | OSS-specific decisions: license, repo, governance, roadmap, and the itemised unversioned shipped wave |
 
 ---
 
@@ -42,13 +44,18 @@ This folder is the canonical documentation set.
   tools, gates, or typed slots).
 - **Operating an existing flow JSON?** It runs on the Playbook engine -
   `Playbook.load` auto-detects flow JSON and compiles it via `compile_flow`;
-  `--mode flow` opts into the legacy DialogMachine
+  `--mode flow` opts into the legacy graph engine
   ([04-playbook-guide.md](04-playbook-guide.md)).
 - **Embedding into a host?** [03-embedding-guides.md](03-embedding-guides.md) -
-  every guide runs on the default Playbook engine; the legacy
-  DialogMachine implements the same `Agent` protocol, so each guide applies
+  every guide runs on the default Playbook engine; the legacy graph
+  engine implements the same `Agent` protocol, so each guide applies
   to it too.
-- **Looking up a signature?** [02-api-reference.md](02-api-reference.md).
+- **Tuning a call that already runs?** [04-playbook-guide.md](04-playbook-guide.md)
+  Part 2 - speech control and localized barrier lines (§8), tool tiers and
+  rewind (§7), and the opt-in Loop-2 Supervisor for conversations that
+  derail across turns (§7).
+- **Looking up a signature or a model field?**
+  [02-api-reference.md](02-api-reference.md).
 - **Auditing whether the engine beats a plain prompt?**
   [05-eval-guide.md](05-eval-guide.md) - A/B a playbook against a vanilla LLM
   handed the same playbook, scored from the transcript alone. To actually
