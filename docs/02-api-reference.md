@@ -112,9 +112,19 @@ Engine selection (`engine="auto"`, the default): a `Flow`/`FlowSet` object
 keeps the legacy graph engine (back-compat); a `Playbook` object, a path
 string, or a parsed dict runs the Playbook engine. Override with
 `engine="flow"` (force the graph runtime; `ValueError` on a `Playbook`) or
-`engine="playbook"` (force the Playbook engine, compiling a flow if needed).
-Missing both `llm` and `director_llm` in Playbook mode raises a clear
-`ValueError`.
+`engine="playbook"`. Missing both `llm` and `director_llm` in Playbook mode
+raises a clear `ValueError`.
+
+`engine="playbook"` carries one trap: it does **not** compile a
+`Flow`/`FlowSet` *object*. `dialog_machine.py::DialogMachine._ensure_backend`
+hands anything that is neither a `Playbook` nor a path string to
+`playbook/models.py::Playbook._from_doc`, which compiles a legacy flow only
+when the input is a **dict** carrying `nodes` + `initial_node`; a `Flow`
+object falls through to `Playbook.model_validate` and raises
+`pydantic.ValidationError` on first use. Since `auto` already routes path
+strings and parsed dicts to the Playbook engine, hand it the flow as a dict -
+`DialogMachine(flow.model_dump(), llm=...)` (or the parsed JSON) - rather than
+reaching for the override.
 
 In Playbook mode, `llm` is the Talker and the Director unless `director_llm`
 splits them; `tools=` bridges each `Tool` through its own `execute()`. Graph-only
@@ -986,8 +996,14 @@ replays the step once. `"replay"` is the only `then` value.
   `"timer.<name>"`; fired via `runtime.on_external(...)`.
 - `InterruptSpec(id, when, judge="llm", to, resume=False)` - global routes;
   `judge` is `"llm" | "event"`; `judge: llm` interrupts ride the Director
-  verdict. `resume=True` restoration is deferred (validation accepts it;
-  the runtime does not restore yet).
+  verdict. `resume=True` **is** restored at runtime: taking the interrupt
+  pushes the departed checkpoint onto `resume_stack` and sets
+  `entered_via_resume` (`playbook/state.py::ConversationState.fold`), and the
+  runtime advances back to `resume_stack[-1]` with rule `"resume"` once the
+  detour finishes (`playbook/runtime.py::PlaybookRuntime.on_user_text` and
+  `PlaybookRuntime._hop`, or on demand via `PlaybookRuntime.pop_detour`).
+  The "deferred" comment on `playbook/models.py::InterruptSpec.resume` is
+  stale.
 - `SilencePolicy(max_prompts=2, prompts=[], then="")` - the *n*-th silence
   since checkpoint entry speaks `prompts[n-1]` (returned as
   `ExternalResult.prompt`); past `max_prompts` the session routes to `then`.

@@ -19,7 +19,7 @@ brain option - live in that product's own repository, not here.
 | 4 | Repo location | **Separate public repo** (e.g. `github.com/unpod/super-dialog`). Not in the main Unpod monorepo. Independent release train. |
 | 5 | Coupling to Unpod Voice Infra | **None.** Voice Infra depends on SuperDialog as one option; SuperDialog does not import any Unpod-platform code. |
 | 6 | Language | **Python first.** TypeScript later if community asks. |
-| 7 | LLM URI scheme | **`provider/model`**, LiveKit/litellm-style. See [01-architecture.md §2.3](01-architecture.md). |
+| 7 | LLM URI scheme | **`provider/model`**, LiveKit/litellm-style. See [01-architecture.md §5.3](01-architecture.md). |
 | 8 | Custom LLM provider scope | **Process-global** registry via `register_llm_provider(...)`. One mental model. |
 | 9 | Tool interface | **Three shapes, one method:** `PythonTool`, `HttpTool`, `MCPTool`. All register through the facade's `DialogMachine(tools=[...])` on the legacy graph engine; the default Playbook engine declares tools in the playbook's process layer and binds them via `PlaybookAgent(python_tools=...)`. |
 | 10 | Streaming | **Opt-in via `stream=` flag.** One `turn()` method. `stream=False` returns `Turn`; `stream="text"` returns async iterator. |

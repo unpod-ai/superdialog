@@ -175,9 +175,12 @@ dm = DialogMachine("kyc.yaml", llm="custom/my-gateway/gpt-4.1-mini")
 - `register_llm_provider(name, base_url, api_key, api_style="openai")` stores a
   `CustomProviderConfig` in a process-global registry (`llm/registry.py`).
 - `custom/<name>/<model>` resolves through LiteLLM with the registered
-  `api_base` and `api_key`, regardless of `SUPERDIALOG_LLM_BACKEND`
-  (`llm/resolver.py::_litellm_resolve`). The URI is split on the first two
-  slashes only, so everything after `<name>` is the model:
+  `api_base` and `api_key`, regardless of `SUPERDIALOG_LLM_BACKEND` - the
+  short-circuit past the backend selector lives in
+  `llm/resolver.py::_build_backend`, the registry lookup and
+  `LitellmProvider` construction in `llm/resolver.py::_litellm_resolve`. The
+  URI is split on the first two slashes only, so everything after `<name>`
+  is the model:
   `custom/my-gateway/openai/gpt-4.1-mini` sends `openai/gpt-4.1-mini`
   upstream.
 - `api_key` may be a **zero-arg callable** returning a fresh token per

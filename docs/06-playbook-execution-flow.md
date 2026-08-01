@@ -240,8 +240,10 @@ entire world in fixed order:
 └──────────────────────────────────────────────────────────────┘
 ```
 
-Items 4–14 are appended in exactly this order inside
-`render.py::_system_block`.
+Items 4–14 keep this relative order inside `render.py::_system_block`. One
+block is elided above: when the checkpoint declares `handover`,
+`blocks.handover` is appended between "Never say" (7) and the Correction
+note (8).
 
 Observability is built in: every turn emits `[guidelines] fed=[...]` and
 `[turn-trace] side=brain version=N checkpoint=... slots=<keys only>` as

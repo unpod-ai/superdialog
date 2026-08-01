@@ -113,8 +113,9 @@ asyncio.run(main())
 > )
 > ```
 
-> **Legacy graph engine:** `superdialog chat kyc.json --mode flow` runs the
-> original graph engine. In code, construct
+> **Legacy graph engine:** `superdialog chat --flow kyc.json --mode flow`
+> runs the original graph engine (the `chat` subparser takes no positional
+> argument - the path goes to `--flow`). In code, construct
 > `DialogMachine(Flow.load("kyc.json"), llm=..., engine="flow",
 > traversal_dir="./traversal_history")` and drive the same loop;
 > `traversal_dir` writes a timestamped JSON per completed session (full node
@@ -154,9 +155,12 @@ translates between LiveKit's `ChatContext` and SuperDialog's `turn()` API.
 On the Playbook engine, streaming is real: the Talker's tokens reach TTS
 as they are generated, and a barge-in (the host aborting the stream
 mid-utterance) interrupts speech, never the state machine - the Director's
-decision still lands. Voice-event plumbing (feeding silence timeouts into
-`agent.runtime.on_external`) is roadmap; today the adapter covers the text
-path.
+decision still lands.
+
+> **Status: roadmap — not built.** Voice-event plumbing: silence and
+> barge-in `ExternalEvent`s raised automatically by the LiveKit adapter.
+> `adapters/livekit.py` feeds no external events today, so a LiveKit host
+> must call `agent.runtime.on_external` itself.
 
 > **Advanced / legacy:** pass a `PlaybookAgent` for explicit Talker/Director
 > LLMs, or `DialogMachine(Flow.load("kyc.json"), llm="anthropic/claude-opus-4-7",
@@ -228,8 +232,9 @@ app = FastAPI()
 worker = SessionWorker(
     agent_factory=lambda: DialogMachine("booking.yaml", llm="openai/gpt-4.1-mini"),
     store=InMemorySessionStore(),  # swap in a distributed SessionStore in
-                                   # production (RedisSessionStore is planned;
-                                   # implement the SessionStore protocol today)
+                                   # production; supervoice ships a Redis one
+                                   # (playbook_pool/session_store.py::
+                                   #  RedisSessionStore)
 )
 
 @app.post("/turn")
@@ -246,8 +251,11 @@ async def turn(payload: dict):
 
 `result.metadata` carries `checkpoint`, `version`, `ended`, and (on terminal
 checkpoints) `outcome`. External events - webhooks, timers, silence - go to
-`agent.runtime.on_external(...)` from your own endpoints; automatic
-voice-event plumbing through the host adapters is roadmap.
+`agent.runtime.on_external(...)` from your own endpoints.
+
+> **Status: roadmap — not built.** Automatic voice-event plumbing through
+> the host adapters; today every external event is raised by host code
+> calling `runtime.on_external` directly.
 
 One caveat: the in-process `SessionWorker` works as-is because agents stay
 cache-resident, but durable or multi-worker resume requires persisting
@@ -263,25 +271,49 @@ Mount on Intercom-style chat widget, WhatsApp webhook, SMS gateway, or anywhere 
 
 ## 5. Unpod Voice Infrastructure
 
-This is the production voice path. SuperDialog runs on the developer's machine via a WebSocket runner; Unpod's infra connects to it.
+This is the production voice path, and its runner lives in the `unpod` SDK,
+not in this package. An **Agent Runner** - a long-lived process registered
+under an `agent_id` - carries the text side of the call. It never listens:
+when a call is assigned it **dials** the Speech Worker's bridge
+(`transport="dial_out"`, the default in unpod-sdk
+`connectivity/runner.py::AgentRunner.__init__`; `serve`, where your process
+listens and Unpod connects in, is the deprecated model with teardown
+scheduled).
 
 ```python
 import os
 
-from superdialog.adapters.websocket import WebSocketRunner
+from superdialog import DialogMachine
+from unpod.connectivity import AgentRunner, CallContext
 
-WebSocketRunner(
-    agent=playbook_agent,           # any Agent - built as in §2 or §4
-    agent_id="kerali-kyc-bot",      # registers with Unpod
+
+async def entrypoint(ctx: CallContext) -> None:
+    ctx.session.dialog_machine = DialogMachine("kyc.yaml", llm="openai/gpt-4.1-mini")
+    await ctx.session.run()
+
+
+AgentRunner(
+    entrypoint=entrypoint,
+    agent_id="kerali-kyc-bot",      # the same agent_id the Pipe carries
     api_key=os.environ["UNPOD_API_KEY"],
-).serve(port=8080)
+).start()
 ```
 
-For multi-tenant serving, pass `worker=SessionWorker(...)` instead of
-`agent=`; every inbound frame then carries a `session_id`. A legacy
-`DialogMachine` (or a `SessionWorker` of them) drops in unchanged.
+`session.dialog_machine` auto-wraps a superdialog `DialogMachine` or
+`LLMAgent` in `unpod.adapters.superdialog::SuperDialogAdapter`; any other
+`Agent` goes through that adapter explicitly. Text crosses the bridge in both
+directions - audio never leaves the Speech Worker.
 
-Then on Unpod side, the Identity binds the inbound number to this agent. When a call lands, Unpod connects to your WSS endpoint, streams text in, and sends agent text out for TTS. See the Unpod voice platform docs for the full picture.
+Then on the Unpod side a **Pipe** (a voice profile bound to an `agent_id`)
+attaches to the inbound number. The number, the Pipe and the runner never
+reference each other directly: they rendezvous on `agent_id` at call time.
+See the Unpod voice platform docs for the full picture.
+
+> **Not this path:** `superdialog.adapters.websocket::WebSocketRunner` is a
+> standalone WebSocket front door with its own JSON protocol
+> (`user_text` / `agent_chunk`), unrelated to the Unpod bridge protocol. Use
+> it to put an agent behind your *own* socket - `agent=` for single-tenant,
+> `worker=SessionWorker(...)` for session-keyed multi-tenant serving.
 
 **When to use:** you want voice + numbers + speech infrastructure without writing telephony code.
 
@@ -362,8 +394,7 @@ through `worker.acquire(session_id)` - see §4 above.
 > **Note on sync hosts:** wrapping every `agent.turn(...)` in
 > `asyncio.run` creates a fresh event loop per call. For sustained traffic
 > this is wasteful; either route through `SessionWorker` from an existing
-> async runtime, or maintain a single long-lived loop. A dedicated
-> `SyncDialogMachine` wrapper is on the roadmap.
+> async runtime, or maintain a single long-lived loop.
 
 ---
 
@@ -375,7 +406,7 @@ through `worker.acquire(session_id)` - see §4 above.
 | LiveKit | `DialogMachineLLM` (accepts any Agent) | ~8 |
 | PipeCat | `make_processor` (accepts any Agent) | ~12 |
 | FastAPI | None - direct route or `SessionWorker` | ~6 |
-| Unpod Voice Infra | `WebSocketRunner` | ~6 |
+| Unpod Voice Infra | `AgentRunner` (unpod SDK; auto-wraps in `SuperDialogAdapter`) | ~8 |
 | Unit test | None - direct calls | ~3 |
 | Custom (Slack, Discord, IRC, etc.) | None - direct callback | ~3 |
 

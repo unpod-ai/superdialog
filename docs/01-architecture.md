@@ -415,7 +415,7 @@ The mapping, validated against the 61-node golf flow
 - **Silence nodes** become `policies.silence` (prompts kept in chain order);
   the token-expiry global edge + refresh node become `middleware`; other
   global edges become `interrupts` - always with `resume=False`
-  (`compiler.py::FlowIndex._build_interrupts` hardcodes it), because a graph
+  (`compiler.py::_Compiler._build_interrupts` hardcodes it), because a graph
   global edge carries no return target. Authored playbooks can set
   `resume: true` and get detour restoration at runtime (§3.1); compiled
   flows cannot.
