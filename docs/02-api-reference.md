@@ -19,8 +19,6 @@ recommended way in; it drives either engine behind the same `Agent` protocol:
   Select it with `DialogMachine(..., engine="flow")` (or `superdialog chat
   --mode flow`); flows keep working unchanged.
 
-  
-
 ---
 
 ## Construction
@@ -104,7 +102,7 @@ DialogMachine(
     flow: Flow | FlowSet | None = None, # back-compat keyword alias for source
     engine: str = "auto",               # "auto" | "playbook" | "flow"
     director_llm: str | None = None,    # Playbook: strong-Director override
-    barrier_timeout: float = 0.4,       # Playbook: hard-gate Director wait
+    barrier_timeout: float = 0.4,       # Playbook: hard-gate Director wait (see below)
     hold_timeout: float | None = None,  # Playbook: None -> policies.hold_timeout
     settle_before_speak: bool = False,  # Playbook: offline-eval knob (see PlaybookAgent)
 )
@@ -121,7 +119,10 @@ Missing both `llm` and `director_llm` in Playbook mode raises a clear
 In Playbook mode, `llm` is the Talker and the Director unless `director_llm`
 splits them; `tools=` bridges each `Tool` through its own `execute()`. Graph-only
 methods (`switch_flow`, `seed`, `load_flow_state`) raise `NotImplementedError`
-in Playbook mode, and `flow_state` returns `None`.
+in Playbook mode, and `flow_state` returns `None`. `barrier_timeout` defaults
+to `0.4` here - deliberately an order tighter than `PlaybookAgent`'s own `4.0`
+default, because `DialogMachine` is the voice path where a caller hears the
+silence; do not "fix" the mismatch.
 
 Set `traversal_dir` (graph engine) to a directory path and the machine will
 write a timestamped JSON file recording every node visited, every turn, and
@@ -143,6 +144,14 @@ The primary method. One method, one parameter for streaming mode. **Always
 async** - there is no synchronous wrapper. Drive it from `asyncio.run(...)`
 or any async runtime.
 
+`context` is **graph-only**: `dialog_machine.py::DialogMachine._run_turn`
+merges it into `machine.context.userdata`, and the Playbook branch of
+`turn` never forwards it. `stream`'s real annotation is
+`stream: bool | Literal["text"]`; `"text"` is a spelling that names the
+chunk type (`stream.py::StreamChunk`) and behaves exactly like `True` -
+both engines test it for truthiness only, and the Playbook branch passes
+`stream=bool(stream)` down.
+
 ```python
 # Non-streaming
 reply = await dialog_machine.turn("hello")
@@ -160,14 +169,22 @@ async for chunk in stream:
 - `tool_calls: list[ToolCall]`
 - `metadata: dict` (latency, tokens, model used)
 
-> **Streaming policy (v0.2):** the v0.2 implementation resolves the turn
-> in one shot, then surfaces the response as whitespace-delimited chunks.
-> The chunk shape (`StreamChunk(text, done, turn)`) is stable. The
-> Playbook engine's `PlaybookAgent` already streams provider tokens live -
-> see [Playbook engine](#playbook-engine).
+**Streaming depends on the engine.** In the default Playbook mode
+`DialogMachine.turn(stream=True)` returns
+`await pb.turn(text, stream=bool(stream))` straight from the wrapped
+`PlaybookAgent` (`playbook/agent.py::PlaybookAgent.turn` →
+`PlaybookAgent._stream_turn`), so chunks are **live provider tokens** while
+the Director settles concurrently - see [Playbook engine](#playbook-engine).
+
+> **Streaming policy (v0.2), `engine="flow"` only:** on the graph runtime
+> `dialog_machine.py::DialogMachine._stream_turn` resolves the turn in one
+> shot, then surfaces the response as whitespace-delimited chunks. The chunk
+> shape (`StreamChunk(text, done, turn)`) is stable and identical on both
+> engines.
 
 > **Status: roadmap — not built.** True provider-level streaming inference
-> for `DialogMachine.turn(stream=True)`; planned for v0.4.
+> for the **graph engine** (`DialogMachine(engine="flow").turn(stream=True)`);
+> planned for v0.4. Playbook mode already streams live.
 
 ### `reset()`
 
@@ -182,6 +199,21 @@ the old model).
 ```python
 dialog_machine.set_llm("anthropic/claude-haiku-4-5")
 ```
+
+### `set_observer(observer: Observer, trace_id: str)`
+
+Bind a backend-agnostic observability sink for generation tracing; works on
+both engines (graph wraps the provider in `TracingProvider`, Playbook drops
+the cached backend so the next `_ensure_backend` rebuilds with traced
+Talker/Director providers). See
+[01-architecture.md §5.1](01-architecture.md#51-the-observer-seam-observabilityobserverpy).
+
+### `register_llm_callback(fn)`
+
+Register a per-LLM-call usage callback on both engines - the hook unpod-sdk
+wires so token usage (including cache read/write) reaches the platform usage
+ledger. See
+[01-architecture.md §5.2](01-architecture.md#52-the-billing-hook---register_llm_callback).
 
 ### `switch_flow(name: str)`
 
@@ -449,7 +481,8 @@ The actual module paths shipped in v0.2:
 | `superdialog.adapters.fastapi.FastAPIRouter` | Mountable FastAPI router exposing `/turn`, `/stream`, `/assist`, `/reset` |
 | `superdialog.adapters.websocket.WebSocketRunner` | Standalone WSS server (Unpod Voice Infra) |
 
-See `docs/03-embedding-guides.md` for working snippets per host.
+See [03-embedding-guides.md](03-embedding-guides.md) for working snippets per
+host.
 
 ---
 
@@ -556,8 +589,8 @@ WebSocketRunner(
 One `DialogMachine` instance, four hosts, one product surface.
 
 For the **full Unpod Voice Infra journey** - portal config (voice profile,
-number, agent binding) alongside the SDK code - see the Unpod voice
-platform docs.
+number, agent binding) alongside the SDK code - see
+[../../supervoice/docs/04-connectivity.md](../../supervoice/docs/04-connectivity.md).
 
 ---
 
@@ -570,7 +603,7 @@ while an async **Director** extracts slots, judges advancement, and runs
 tools. Checkpoints gate *outcomes*, not utterances - the Talker speaks
 freely; the Director decides when a step's goal is actually met.
 
-Authoring guide: [docs/04-playbook-guide.md](04-playbook-guide.md) - Part 1
+Authoring guide: [04-playbook-guide.md](04-playbook-guide.md) - Part 1
 the playbook formats (full and simple), Part 2 the technical design.
 Concepts and rationale:
 [decisions.md §6](decisions.md#6-decision-records);
@@ -641,7 +674,9 @@ Lookups:
 - `pb.initial_checkpoint_id -> str` - `initial` if set, else
   `"<first journey>.<its first checkpoint>"`.
 - `pb.checkpoint_ids() -> set[str]`, `pb.tool(id)`, `pb.pipeline(id)`,
-  `pb.slot_spec(key)` (first declaration wins).
+  `pb.slot_spec(key)` (first declaration wins). Note the miss behaviour
+  differs: `pb.tool` / `pb.pipeline` raise `KeyError`, while `pb.slot_spec`
+  returns `None`.
 
 **Validation** runs on construction (so on `from_yaml`/`from_json`/`load`
 too) and raises `ValueError` - surfaced as `pydantic.ValidationError`, a
