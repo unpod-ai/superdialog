@@ -20,7 +20,7 @@ flow JSON (auto-compiled via `compile_flow`) on the same engine, so users
 never have to think about which artifact they hold. The legacy
 **graph engine** remains fully supported behind the same `Agent` protocol
 as an explicit opt-in (`--mode flow` in the CLI); the surrounding machinery
-(sessions, adapters, tools) is shared (see §7).
+(sessions, adapters, tools) is shared (see §8).
 
 > **`DialogMachine` names two things.** Today
 > `dialog_machine.py::DialogMachine` is the unified *facade* that drives
@@ -33,7 +33,47 @@ as an explicit opt-in (`--mode flow` in the CLI); the surrounding machinery
 > unrelated "supervisors" - is in
 > [01-architecture.md](01-architecture.md) §1.
 
-## 2. Why standalone
+## 2. Terminology canon
+
+One table, shared verbatim by supervoice, unpod-sdk and superdialog docs. If a
+doc uses a name from the last column, that doc is stale.
+
+Most of these names belong to the Unpod voice stack that *embeds* SuperDialog,
+not to this library — SuperDialog itself appears in the table only as the
+**Playbook** row. They are here so that a reader moving between the three doc
+sets never has to re-learn a word: the process an Unpod call reaches is an
+**Agent Runner**, and the thing it runs is a **Playbook**.
+
+| Canonical name | Meaning | In code/logs | Deprecated aliases |
+|---|---|---|---|
+| **Speech Worker** | Voice-side worker. Joins the media room with STT/TTS (PipeCat pipeline). Audio never leaves it. | `worker/`, "media worker" in comments | media agent, speech agent, PipeWorker, pipecat side |
+| **Agent Runner** | Text-side worker: the developer's (or playbook pool's) long-lived process running the brain. Registers under an `agent_id`. | "brain runner" (`brain_resolver.py`, `brain_assign.py`), `playbook_pool/`, `[pbpool]` log prefix | agent worker, brain |
+| **Pipe** | Voice profile + `agent_id` binding, attachable to numbers. Many pipes may share one `agent_id`. | `Pipe`, `pipe_id` | speech pipe (prose form is fine), **Identity** (doc-only model; does not exist in code) |
+| **Playbook** | SuperDialog artifact the Agent Runner executes. | `Playbook`, `playbook_id` | — |
+| **Publish** | Managed hosting of an Agent Runner on Unpod cloud. Today: playbook-pool processes; roadmap: Docker per agent. | `publish/` saga | deploy (reserved for the three deployment mechanisms) |
+| **Transport: `serve` / `dial_out`** | Who connects to whom on the text bus. `dial_out` (current): the Agent Runner dials the Speech Worker's bridge acceptor. `serve` (deprecated, teardown scheduled): the runner serves, the worker dials. | `contracts/dispatch_protocol.py::WorkerCapabilities.transport` | "the runner serves the bridge" (03's stale locked model) |
+
+The `In code/logs` column above names symbols inside Unpod's own services:
+`worker/`, `publish/`, `playbook_pool/`, `brain_resolver.py` and
+`contracts/dispatch_protocol.py` live in the supervoice repo, not in this
+package. The identity trio (`agent_id` / `worker_id` / `pool`) is defined once
+in the SDK docs —
+[unpod-sdk `docs/02-run-your-agent.md`](../../unpod-sdk/docs/02-run-your-agent.md).
+
+### 2.1 SuperDialog-specific names
+
+Repo-local rows: not part of the shared canon, but the collisions this repo's
+own prose has to resolve. Full disambiguation is
+[01-architecture.md](01-architecture.md) §1.
+
+| Canonical name | Meaning | In code/logs | Deprecated aliases |
+|---|---|---|---|
+| **The facade** (`DialogMachine`) | Unified entry point that drives either engine; defaults to Playbook. Bare `DialogMachine` always means this. | `dialog_machine.py::DialogMachine` | dialog machine (as a synonym for the legacy engine) |
+| **The legacy graph engine** | The graph-railed dialog state machine, reached through the facade as an explicit opt-in. | `superdialog.machine`, `engine="flow"` / `--mode flow` / internal `"graph"` (`dialog_machine.py::_select_engine`) | `DialogMachine` (bare), flow engine, dialog machine |
+| **Director** | The Playbook engine's async half: extracts slots, judges advancement, runs tools, writes steering notes. Off the speech path. | `playbook/director.py::Director` | supervisor (its own docstring and the Talker prompt still say so) |
+| **Supervisor** (Loop-2) | Opt-in trajectory reviewer over completed turns. Unrelated to the Director. | `playbook/supervisor.py::Supervisor` | director |
+
+## 3. Why standalone
 
 Two reasons:
 
@@ -46,7 +86,7 @@ telephony forecloses every non-voice use case.
 SuperDialog (as one brain option), not the other way around. Putting SuperDialog
 inside the platform makes the platform non-modular and the framework non-portable.
 
-## 3. Why OSS
+## 4. Why OSS
 
 - **Community pull.** LiveKit and PipeCat owe their adoption to OSS. Releasing a
   strong dialog framework - with good docs, working LiveKit/PipeCat adapters, and
@@ -59,7 +99,7 @@ inside the platform makes the platform non-modular and the framework non-portabl
   further. The closed parts (telephony, voice profiles) are the parts they don't
   care about owning.
 
-## 4. Why it ships first
+## 5. Why it ships first
 
 Three reasons:
 
@@ -76,7 +116,7 @@ the framework actually solves the *"developer wants to own their flow"* problem 
 hypothesize. If the OSS adoption signal is weak, the Voice Infra GTM (which
 depends on the same hypothesis) needs rethinking before we burn cycles on it.
 
-## 5. Positioning
+## 6. Positioning
 
 SuperDialog is to **conversation flow** what n8n is to **integration workflow** -
 a simple, composable, eval-able runtime for orchestrating turn-by-turn logic.
@@ -88,7 +128,7 @@ to escalate, and which outcome the session ended with.
 It is intentionally smaller than LangChain in surface area. The pitch is: *"if
 your problem is conversation state, this is the right size."*
 
-## 6. Audiences
+## 7. Audiences
 
 | Audience | Why they care |
 |---|---|
@@ -99,7 +139,7 @@ your problem is conversation state, this is the right size."*
 | **Enterprise dev with their own LLM** | Plug their custom LLM URI (`custom/internal/...`) into the facade, or any streaming/completing model pair into Playbook's `StreamsLLM`/`CompletesLLM` protocols |
 | **Unpod Voice Infra customer** | SuperDialog is the default brain Unpod offers; same code runs locally and inside Unpod cloud |
 
-## 7. Two engines
+## 8. Two engines
 
 **Playbook** (`superdialog.playbook`) - the default engine - works on one
 principle: **checkpoints gate outcomes, not utterances.** A playbook
@@ -174,7 +214,7 @@ loop over playbook artifacts (paired evals, prose-only targeted edits,
 output in the source format); `superdialog generate` bootstraps a playbook
 from a description; the CLI chats against any artifact on the Playbook
 engine; and an unversioned wave of playbook authoring surfaces landed on
-top (§8). Today the text path through the `Agent` protocol works with all
+top (§9). Today the text path through the `Agent` protocol works with all
 existing adapters.
 
 > **Status: roadmap — not built.** Host plumbing that feeds voice events
@@ -183,7 +223,7 @@ existing adapters.
 > adapter emits them automatically. Full roadmap list:
 > [04-playbook-guide.md](04-playbook-guide.md) §10.
 
-## 8. What it does well
+## 9. What it does well
 
 | Capability | Status |
 |---|---|
@@ -217,7 +257,7 @@ existing adapters.
 | `superdialog benchmark` (RAGAS + deterministic, raw LLM vs SuperDialog) | shipped |
 | `superdialog optimize` (playbook run → eval → improve loop; paired evals, prose-only edits, source-format output) | shipped |
 
-## 9. What it explicitly is not
+## 10. What it explicitly is not
 
 - **Not a UI flow designer.** That belongs to a downstream tool (future,
   n8n-style).
@@ -228,7 +268,7 @@ existing adapters.
 - **Not a hosted service.** A library. Hosting is offered by Voice Infra for
   those who want it.
 
-## 10. Success criteria
+## 11. Success criteria
 
 - **GitHub stars and forks.** Baseline target TBD, but real numbers - not vanity
   metrics.
@@ -245,7 +285,7 @@ existing adapters.
   what fraction stick? This is the funnel justification for releasing the
   framework freely.
 
-## 11. Anti-goals
+## 12. Anti-goals
 
 We will refuse to:
 - Add features that only matter on a phone call (audio handling, RTP, SIP, etc.).

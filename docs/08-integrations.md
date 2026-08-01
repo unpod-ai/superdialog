@@ -313,6 +313,9 @@ which is why a session behaves identically on either transport.
 
 ## Consumed by
 
+Sibling checkouts of the two repos that embed this library, not files in this
+package.
+
 - **supervoice** -
   [04-connectivity.md](../../supervoice/docs/04-connectivity.md) is the
   canonical cross-repo story: how a phone number, a voice profile, and a
@@ -321,6 +324,14 @@ which is why a session behaves identically on either transport.
 - **supervoice** -
   [03-publish-and-runners.md](../../supervoice/docs/03-publish-and-runners.md)
   for the publish saga and pool operations behind Door B.
+- **unpod-sdk** -
+  [06-deployment.md](../../unpod-sdk/docs/06-deployment.md) puts the same
+  doors in front of a developer: its mechanism 1 is Door B (§2.2), and its
+  §"The local alternative" is Door A (§2.1).
+- **unpod-sdk** -
+  [02-run-your-agent.md](../../unpod-sdk/docs/02-run-your-agent.md) for the
+  other way a Playbook reaches a live call: an Agent Runner wrapping it in
+  `SuperDialogAdapter` rather than a door serving it as a model.
 
 ## Related docs
 

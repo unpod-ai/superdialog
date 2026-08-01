@@ -21,7 +21,7 @@ This folder is the canonical documentation set.
 
 | Doc | Purpose |
 |---|---|
-| [00-overview.md](00-overview.md) | Positioning - what SuperDialog is, why standalone, why OSS; Playbook as the default engine, the graph engine as legacy mode; the shipped-capability table |
+| [00-overview.md](00-overview.md) | Positioning - what SuperDialog is, why standalone, why OSS; the terminology canon shared verbatim with the supervoice and unpod-sdk doc sets plus this repo's own names (§2); Playbook as the default engine, the graph engine as legacy mode; the shipped-capability table |
 | [01-architecture.md](01-architecture.md) | Engine internals - the Playbook runtime (event log, Talker/Director, process layer; the default), the legacy flow graph, the naming disambiguation callout (§1), and observability + LLM routing (§5) |
 | [02-api-reference.md](02-api-reference.md) | Function signatures, the full artifact model (`Playbook` / `Checkpoint` / `SlotSpec` / `ToolSpec` field tables), the CLI table, and worked examples for both engines |
 | [03-embedding-guides.md](03-embedding-guides.md) | How to embed in LiveKit, PipeCat, FastAPI, CLI chatbot, unit tests |
