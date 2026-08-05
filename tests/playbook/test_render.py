@@ -11,7 +11,11 @@ from superdialog.playbook.events import (
 )
 from superdialog.llm.prompt_cache import CACHE_PREFIX_KEY
 from superdialog.playbook.models import Playbook
-from superdialog.playbook.render import estimate_tokens, render_view
+from superdialog.playbook.render import (
+    _strip_routing_directives,
+    estimate_tokens,
+    render_view,
+)
 from superdialog.playbook.state import ConversationState
 from tests.playbook.test_models import MINIMAL_YAML
 
@@ -156,6 +160,64 @@ def test_guidance_is_jinja_rendered_with_views() -> None:
     system = view.messages[0]["content"]
     assert "09:00" in system and "Ravi" in system
     assert "{{" not in system
+
+
+def test_strip_routing_directives_drops_call_sentences() -> None:
+    text = (
+        "After greeting, wait for the caller. The INSTANT the caller says "
+        "ANYTHING call greeting_to_details IMMEDIATELY with ZERO words. "
+        "Do NOT ask follow-ups or use last_course_name to answer."
+    )
+    out = _strip_routing_directives(text)
+    assert "call greeting_to_details" not in out
+    assert "After greeting, wait for the caller." in out
+    assert "Do NOT ask follow-ups" in out
+
+
+def test_strip_routing_directives_keeps_call_back_phrasing() -> None:
+    text = "Ask the caller when would be a good time to call back."
+    assert _strip_routing_directives(text) == text
+
+
+def test_strip_routing_directives_keeps_lines_without_snake_case() -> None:
+    text = "Speak ordinals: 'second player' — never say 'player 2'."
+    assert _strip_routing_directives(text) == text
+
+
+def test_strip_routing_directives_preserves_blank_lines_and_bullets() -> None:
+    text = (
+        "PATH A — first line.\n"
+        "\n"
+        "- keep this bullet\n"
+        "- drop this one: call collect_to_check_availability now\n"
+    )
+    out = _strip_routing_directives(text)
+    lines = out.split("\n")
+    assert lines[0] == "PATH A — first line."
+    assert lines[1] == ""
+    assert lines[2] == "- keep this bullet"
+    assert "collect_to_check_availability" not in lines[3]
+
+
+def test_render_view_strips_routing_directive_from_guidance() -> None:
+    yaml_text = textwrap.dedent("""
+        persona: "Assistant."
+        journeys:
+          j:
+            checkpoints:
+              - id: present
+                guidance: |-
+                  Tell the caller their slot is confirmed.
+                  The instant they confirm, call slot_to_hold immediately with zero words.
+    """)
+    pb = Playbook.from_yaml(yaml_text)
+    log = EventLog()
+    log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint="j.present", rule="init"))
+    state = ConversationState.fold(log)
+    view = render_view(pb, state, token_budget=10_000)
+    system = view.messages[0]["content"]
+    assert "Tell the caller their slot is confirmed." in system
+    assert "slot_to_hold" not in system
 
 
 def test_ssti_payloads_contained() -> None:

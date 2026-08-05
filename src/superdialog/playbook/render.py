@@ -9,6 +9,7 @@ Guidance/say_verbatim are Jinja templates over {slots, views, results}.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -170,6 +171,54 @@ def render_template(
         return text
 
 
+# The Director's routing decisions come entirely from cp.advance_when (a
+# separate, structured field of `when`/`to` rules) -- director.py's
+# _verdict_prompt never references cp.guidance at all. So free-text
+# instructions in cp.guidance like "call collect_to_check_availability
+# immediately" serve no functional purpose for either engine: the Director
+# never reads them, and the Talker has no real tool-calling channel to obey
+# them with. Yet the Talker IS the sole consumer of this field (see
+# _system_block below) -- a weak model told to "call X" with no way to
+# actually do so hallucinates fake tool-call syntax instead (JSON dumps,
+# <|tool_call|> tags, self-closing <call:X/> tags -- see the filters in
+# talker.py that exist purely to catch what leaks past this). This strips
+# the trigger at the source instead of only catching it after the fact.
+#
+# Snake_case identifiers never appear in genuine caller-facing prose in
+# this domain (no course name, date, or greeting line uses one), so a
+# call-type verb near one is a reliable, low-false-positive signal of a
+# routing directive rather than real spoken-style guidance. "call back"/
+# "call you"/"call the club" survive untouched since there's no snake_case
+# token nearby.
+_ROUTING_CLAUSE_RE = re.compile(
+    r"\b(?:call|invoke|fire|emit)\b[^.!?\n]{0,60}?\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b",
+    re.IGNORECASE,
+)
+# Splits on sentence-ending punctuation followed by whitespace and a
+# capital letter -- deliberately conservative so a quoted period inside a
+# clause (e.g. "say 'Okay.' then call...") is NOT treated as a sentence
+# boundary (the char right after the quote is lowercase, so it survives as
+# one unit). When a routing clause is fused with caller-facing text in the
+# same sentence this way, the whole sentence drops together -- an accepted
+# trade-off: the sentence-length case (this splitter's target) is the
+# common shape in the source playbook, and the fused case's caller-facing
+# fragment lost is minor phrasing the Talker can still infer.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z])")
+
+
+def _strip_routing_directives(text: str) -> str:
+    """Drop guidance sentences instructing the Talker to 'call' an internal
+    action/edge id. See module comment above for the rationale/trade-offs."""
+    if not text:
+        return text
+    out_lines = []
+    for line in text.split("\n"):
+        sentences = _SENTENCE_SPLIT_RE.split(line)
+        kept = [s for s in sentences if not _ROUTING_CLAUSE_RE.search(s)]
+        out_lines.append(" ".join(kept).strip())
+    return "\n".join(out_lines)
+
+
 def _known_info(pb: Playbook, state: ConversationState) -> str:
     """Body of the "Known information" block.
 
@@ -261,7 +310,7 @@ def _system_block(pb: Playbook, state: ConversationState) -> tuple[str, str]:
     if state.steering_note and state.steering_kind == "steer":
         parts.append(f"## Direction from supervisor\n{state.steering_note}")
     if cp:
-        guidance = render_template(cp.guidance, pb, state, ns=ns)
+        guidance = _strip_routing_directives(render_template(cp.guidance, pb, state, ns=ns))
         parts.append(f"## Current step: {cp.id}\nGoal: {cp.goal}\n{guidance}".strip())
         missing = [
             k for k, s in cp.slots.items() if s.required and k not in state.slots

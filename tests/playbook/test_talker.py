@@ -75,6 +75,172 @@ async def test_streams_tokens_and_reports_version() -> None:
     assert sum(c.final for c in chunks) == 1
 
 
+async def test_suppresses_json_tool_call_dump() -> None:
+    # Exact production shape: the whole turn is a raw JSON tool-call dump,
+    # split across several small stream chunks the way a real LLM streams.
+    pb, state = _state("booking.collect")
+    llm = StreamLLM(
+        [
+            '{\n  "tool_calls": [\n',
+            '    {\n      "function": "slot_to_profile_check",\n',
+            '      "parameters": {\n        "slot_id": "slot_x"\n',
+            "      }\n    }\n  ]\n}",
+        ]
+    )
+    chunks = [c async for c in Talker(pb, llm).speak(state)]
+    text = "".join(c.text for c in chunks)
+    # Suppressed entirely: Talker's own attempt-2 retry + recovery_line
+    # kicks in (RECOVERY_LINE), same as a genuinely empty completion.
+    assert text == RECOVERY_LINE
+
+
+async def test_does_not_suppress_normal_speech_with_braces_midsentence() -> None:
+    # Only a turn that OPENS with '{' or '[' is treated as suspect --
+    # ordinary speech that happens to contain braces later is untouched.
+    pb, state = _state("booking.collect")
+    llm = StreamLLM(["The price is ", "12000", " rupees (approx {market rate})."])
+    chunks = [c async for c in Talker(pb, llm).speak(state)]
+    assert (
+        "".join(c.text for c in chunks)
+        == "The price is 12000 rupees (approx {market rate})."
+    )
+
+
+async def test_flushes_json_shaped_text_without_tool_call_markers() -> None:
+    # Starts with '{' but isn't a tool-call dump (no recognized keys) --
+    # conservative: flush rather than discard on ambiguity.
+    pb, state = _state("booking.collect")
+    llm = StreamLLM(['{"note": "not a real tool call"}'])
+    chunks = [c async for c in Talker(pb, llm).speak(state)]
+    assert "".join(c.text for c in chunks) == '{"note": "not a real tool call"}'
+
+
+async def test_strips_hallucinated_tool_call_span() -> None:
+    pb, state = _state("booking.collect")
+    llm = StreamLLM(
+        [
+            "Sure, ",
+            "<|tool_call>",
+            "call:golfai_teetime.collect_to_check_availability",
+            "{course_id: 'x', date: '2026-08-06'}",
+            "<tool_call|>",
+            " one moment.",
+        ]
+    )
+    chunks = [c async for c in Talker(pb, llm).speak(state)]
+    assert "".join(c.text for c in chunks) == "Sure,  one moment."
+    assert "tool_call" not in "".join(c.text for c in chunks)
+
+
+async def test_strips_tool_call_span_with_asymmetric_tags() -> None:
+    # Production observed a malformed variant: open tag has the pipe before
+    # the angle bracket, close tag has it after -- both must be recognized.
+    pb, state = _state("booking.collect")
+    llm = StreamLLM(
+        [
+            "Ok, ",
+            "<|tool_call>_call:course_pref_to_availability{players: 1}",
+            "<tool_call|>",
+        ]
+    )
+    chunks = [c async for c in Talker(pb, llm).speak(state)]
+    assert "".join(c.text for c in chunks) == "Ok, "
+
+
+async def test_flushes_unterminated_tool_call_span() -> None:
+    # No close tag before the stream ends -- flushed as-is, not discarded.
+    # Regression guard: an earlier version discarded this, which silently
+    # ate a caller's real confirmed answer in production when the model
+    # opened a tool-call tag then kept speaking normally without ever
+    # emitting the literal close-tag string.
+    pb, state = _state("booking.collect")
+    llm = StreamLLM(["All set. ", "<|tool_call>call:whatever{incomplete"])
+    chunks = [c async for c in Talker(pb, llm).speak(state)]
+    assert (
+        "".join(c.text for c in chunks)
+        == "All set. <|tool_call>call:whatever{incomplete"
+    )
+
+
+async def test_does_not_swallow_real_speech_after_unclosed_open_tag() -> None:
+    # The actual production failure mode: the model opens a tool-call tag
+    # then keeps generating normal, meaningful speech afterward without
+    # ever closing it. That trailing speech must reach the caller.
+    pb, state = _state("booking.collect")
+    llm = StreamLLM(
+        [
+            "<|tool_call>",
+            "Got it -- ",
+            "one player, ",
+            "day after tomorrow at nine.",
+        ]
+    )
+    chunks = [c async for c in Talker(pb, llm).speak(state)]
+    text = "".join(c.text for c in chunks)
+    assert "one player" in text
+    assert "day after tomorrow" in text
+
+
+async def test_discards_unclosed_bare_function_call_invocation() -> None:
+    # Exact production shape: <|tool_call>_hold_slot(slot_id='...') spoken
+    # verbatim, no close tag, no trailing natural-language content -- just
+    # a bare call expression. Unlike the mixed-content case above, there's
+    # nothing here to lose by discarding, so this is the one case that
+    # discards an unclosed span instead of flushing it. With the whole turn
+    # suppressed, this also triggers Talker's own produced_any retry ->
+    # recovery_line.
+    pb, state = _state("booking.collect")
+    llm = StreamLLM(
+        ["<|tool_call>_hold_slot(slot_id='slot_course_95f50dfb_2026-08-06_1200')"]
+    )
+    chunks = [c async for c in Talker(pb, llm).speak(state)]
+    text = "".join(c.text for c in chunks)
+    assert text == RECOVERY_LINE
+    assert "_hold_slot" not in text
+
+
+async def test_tool_call_filter_does_not_touch_normal_speech() -> None:
+    pb, state = _state("booking.collect")
+    llm = StreamLLM(["Which ", "city ", "would you like?"])
+    chunks = [c async for c in Talker(pb, llm).speak(state)]
+    assert "".join(c.text for c in chunks) == "Which city would you like?"
+
+
+async def test_strips_self_closing_action_tag_leak() -> None:
+    # Exact production shape: a self-closing tag naming the compiled action
+    # directly, e.g. <call:collect_to_check_availability .../> -- contains
+    # neither "tool_call" (misses _filter_tool_call_leakage) nor a leading
+    # '{'/'[' (misses _filter_structured_output_leak). Suppressed entirely,
+    # so both attempts end up empty and the turn recovers via RECOVERY_LINE.
+    pb, state = _state("booking.collect")
+    llm = StreamLLM(
+        [
+            '<call:collect_to_check_availability course_id="course_76e249e0" ',
+            'date="2026-08-07" preferred_time="09:00" players=1 />',
+        ]
+    )
+    chunks = [c async for c in Talker(pb, llm).speak(state)]
+    text = "".join(c.text for c in chunks)
+    assert text == RECOVERY_LINE
+    assert "<call:" not in text
+
+
+async def test_generic_tag_filter_flushes_unterminated_tag() -> None:
+    pb, state = _state("booking.collect")
+    llm = StreamLLM(["<call:foo bar=", '"1" but then keeps talking normally'])
+    chunks = [c async for c in Talker(pb, llm).speak(state)]
+    assert "".join(c.text for c in chunks) == (
+        '<call:foo bar="1" but then keeps talking normally'
+    )
+
+
+async def test_generic_tag_filter_does_not_touch_normal_speech() -> None:
+    pb, state = _state("booking.collect")
+    llm = StreamLLM(["Is that ", "less ", "than ", "5 people?"])
+    chunks = [c async for c in Talker(pb, llm).speak(state)]
+    assert "".join(c.text for c in chunks) == "Is that less than 5 people?"
+
+
 async def test_say_verbatim_bypasses_llm() -> None:
     pb, state = _state("booking.confirm")
     llm = StreamLLM(["should not be called"])
@@ -90,6 +256,56 @@ async def test_failure_retries_once_then_recovers() -> None:
     assert "".join([c.text async for c in flaky.speak(state)]) == "ok!"
     dead = Talker(pb, StreamLLM([], fail_times=99))
     assert RECOVERY_LINE in "".join([c.text async for c in dead.speak(state)])
+
+
+async def test_clean_but_empty_stream_recovers_instead_of_dead_air() -> None:
+    # The LLM stream completes with no exception but yields nothing at all --
+    # same failure shape a filter-suppressed turn produces. This must recover
+    # exactly like a raised exception does, not fall through to silence.
+    pb, state = _state("booking.collect")
+    empty = Talker(pb, StreamLLM([]))
+    chunks = [c async for c in empty.speak(state)]
+    assert "".join(c.text for c in chunks) == RECOVERY_LINE
+    assert empty._llm.calls == 2
+
+
+class EmptyThenRespondsLLM:
+    """Empty on call 1 (mimics a checkpoint's own "say nothing" guidance
+    being followed literally); real speech on call 2. Records the messages
+    passed to each call so the retry-override system message can be
+    asserted on."""
+
+    def __init__(self, second_call_text: str) -> None:
+        self.second_call_text = second_call_text
+        self.calls_messages: list[list[dict[str, str]]] = []
+
+    async def stream(self, messages, **kwargs):
+        self.calls_messages.append(messages)
+        if len(self.calls_messages) == 1:
+            return
+        yield self.second_call_text
+
+
+async def test_retry_overrides_say_nothing_guidance_with_speech() -> None:
+    # Root cause seen in production: checkpoint guidance instructs "say
+    # NOTHING / zero words" once all slots are set, trusting a tool-calling
+    # channel the Talker doesn't have. The model complies literally -> a
+    # clean empty stream on attempt 1, indistinguishable from a genuine
+    # failure. The retry must inject an override strong enough to make the
+    # model speak instead of silently repeating the same empty response.
+    pb, state = _state("booking.collect")
+    llm = EmptyThenRespondsLLM("Got it, one player -- let me check that for you.")
+    chunks = [c async for c in Talker(pb, llm).speak(state)]
+    text = "".join(c.text for c in chunks)
+    assert text == "Got it, one player -- let me check that for you."
+    assert RECOVERY_LINE not in text
+    assert len(llm.calls_messages) == 2
+    first_call, second_call = llm.calls_messages
+    assert not any("empty" in m["content"].lower() for m in first_call)
+    assert any(
+        "empty" in m["content"].lower() and "never output nothing" in m["content"].lower()
+        for m in second_call
+    )
 
 
 async def test_hard_gate_filler_then_speech() -> None:
