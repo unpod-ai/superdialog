@@ -179,9 +179,23 @@ def _verdict_prompt(
         "\n".join(f"- id={i.id!r}: {i.when}" for i in pb.interrupts if i.judge == "llm")
         or "(none)"
     )
+    def _slot_type_annotation(s: SlotSpec) -> str:
+        # Enum members are validated by _coerce_slot's strict membership
+        # check (value in spec.values), but were never actually shown to the
+        # extracting LLM here -- only the literal word "enum" was. The model
+        # had no way to know it must output the exact member string (e.g.
+        # "1") rather than a natural free-text form (e.g. "one"), so a
+        # perfectly correct-sounding extraction like "one player" -> "one"
+        # silently failed coercion and the slot was dropped with no error,
+        # no retry, and no signal anywhere in the logs. Listing the allowed
+        # values inline lets the model self-normalize to a member it can see.
+        if s.type == "enum" and s.values:
+            return f"enum values={'|'.join(s.values)}"
+        return s.type
+
     slot_lines = (
         "\n".join(
-            f"- {k} ({s.type}{', required' if s.required else ''}): {s.description}"
+            f"- {k} ({_slot_type_annotation(s)}{', required' if s.required else ''}): {s.description}"
             for k, s in cp.slots.items()
         )
         or "(none)"

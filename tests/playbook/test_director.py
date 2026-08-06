@@ -307,6 +307,26 @@ async def test_enum_and_type_validation() -> None:
     assert writes["count"].value == 7 and isinstance(writes["count"].value, int)
 
 
+async def test_verdict_prompt_lists_enum_members() -> None:
+    # Root cause of a production bug: _coerce_slot validates enum extractions
+    # by strict membership (value in spec.values), but the prompt previously
+    # showed only the literal word "enum" for an enum slot's type -- never
+    # the actual allowed member strings. A model extracting a perfectly
+    # sensible free-text form ("one" for a caller who said "one player")
+    # silently failed that membership check and the slot was dropped with
+    # no error anywhere. Asserting the members appear in the prompt is the
+    # regression guard for that gap.
+    pb = Playbook.from_yaml(TYPED_SLOTS_YAML)
+    log = EventLog()
+    log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint="j.c", rule="init"))
+    log.append(UtteranceEvent(role="user", text="mode a"))
+    state = ConversationState.fold(log, playbook=pb)
+    llm = CannedLLM({"slots": {}, "advance": None, "note": None})
+    await Director(pb, llm).evaluate(state)
+    system = llm.calls[0][0]["content"]
+    assert "values=a|b" in system
+
+
 async def test_verdict_prompt_warns_against_injection() -> None:
     pb, state = _state()
     llm = CannedLLM({"slots": {}, "advance": None, "note": None})
