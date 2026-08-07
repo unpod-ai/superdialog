@@ -48,12 +48,22 @@ def load_traversal(path: str | Path) -> dict[str, Any]:
 
 
 def traversal_to_scripted_user(traversal: dict[str, Any]) -> ScriptedUser:
-    """Extract user utterances in traversal order for exact replay."""
-    messages = [
-        step["user_message"]
-        for step in traversal.get("traversal", [])
-        if step.get("user_message")
-    ]
+    """Extract user utterances in traversal order for exact replay.
+
+    Steps sharing a turn (quiescence chains repeat the turn's user_message
+    on every advance step) contribute that utterance once.
+    """
+    messages: list[str] = []
+    seen_turns: set[int] = set()
+    for step in traversal.get("traversal", []):
+        if not step.get("user_message"):
+            continue
+        turn = step.get("turn")
+        if turn is not None:
+            if turn in seen_turns:
+                continue
+            seen_turns.add(turn)
+        messages.append(step["user_message"])
     return ScriptedUser(messages)
 
 

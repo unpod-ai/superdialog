@@ -9,6 +9,13 @@ from typing import Any
 from superdialog.playbook.agent import PlaybookAgent
 from superdialog.playbook.eval.models import PersonaSpec
 from superdialog.playbook.eval.runner import run_session
+from superdialog.playbook.events import (
+    AdvanceEvent,
+    DegradedEvent,
+    EventLog,
+    SlotWriteEvent,
+    UtteranceEvent,
+)
 from superdialog.playbook.models import Playbook
 from superdialog.playbook.traversal import build_playbook_traversal, save_playbook_traversal
 from tests.playbook.test_director import CannedLLM
@@ -157,3 +164,155 @@ async def test_save_playbook_traversal_writes_json() -> None:
         loaded = json.loads(path.read_text())
         assert loaded["session_id"] == t["session_id"]
         assert loaded["playbook_file"] == "hotel.yaml"
+
+
+# --- dwell steps: every user turn yields a step -------------------------
+
+
+def _log(*events: Any) -> EventLog:
+    log = EventLog()
+    for e in events:
+        log.append(e)
+    return log
+
+
+def test_dwell_turns_get_steps() -> None:
+    # init advance into collect; turn 1 (no advance); turn 2 (advance to
+    # confirm); turn 3 (no advance, dwelling in confirm).
+    log = _log(
+        AdvanceEvent(from_checkpoint=None, to_checkpoint="booking.collect", rule="init"),
+        UtteranceEvent(role="assistant", text="Hi! Where would you like to go?"),
+        UtteranceEvent(role="user", text="I want a hotel"),  # turn 1
+        UtteranceEvent(role="assistant", text="Which city?"),
+        UtteranceEvent(role="user", text="Pune 2026-06-12"),  # turn 2
+        SlotWriteEvent(key="city", value="Pune", status="confirmed", by="director"),
+        AdvanceEvent(
+            from_checkpoint="booking.collect",
+            to_checkpoint="booking.confirm",
+            rule="r1",
+        ),
+        UtteranceEvent(role="assistant", text="Your booking is held."),
+        UtteranceEvent(role="user", text="thanks"),  # turn 3
+        UtteranceEvent(role="assistant", text="You're welcome"),
+    )
+    t = build_playbook_traversal(log, Playbook.from_yaml(MINIMAL_YAML))
+    steps = t["traversal"]
+    assert [s["step"] for s in steps] == [1, 2, 3, 4]
+
+    init, dwell_a, adv, dwell_b = steps
+    assert init["advance_rule"] == "init"
+    assert init["turn"] is None
+    assert init["bot_message"] == "Hi! Where would you like to go?"
+
+    # turn 1: no advance → dwell step in collect
+    assert dwell_a["from_checkpoint"] == dwell_a["to_checkpoint"] == "booking.collect"
+    assert dwell_a["advance_rule"] == "dwell"
+    assert dwell_a["advance_by"] is None
+    assert dwell_a["turn"] == 1
+    assert dwell_a["user_message"] == "I want a hotel"
+    assert dwell_a["bot_message"] == "Which city?"  # the reply that FOLLOWED turn 1
+    assert dwell_a["goal"] == "Have city and date"
+    assert dwell_a["slots_written"] == {}
+    assert dwell_a["tool_calls"] == []
+    assert dwell_a["degraded"] is False
+
+    # turn 2: advance — no dwell step for this turn (no double-counting)
+    assert adv["advance_rule"] == "r1"
+    assert adv["from_checkpoint"] == "booking.collect"
+    assert adv["to_checkpoint"] == "booking.confirm"
+    assert adv["turn"] == 2
+    assert adv["user_message"] == "Pune 2026-06-12"
+    assert adv["bot_message"] == "Your booking is held."
+    assert "city" in adv["slots_written"]
+
+    # turn 3: dwell in confirm
+    assert dwell_b["from_checkpoint"] == dwell_b["to_checkpoint"] == "booking.confirm"
+    assert dwell_b["advance_rule"] == "dwell"
+    assert dwell_b["turn"] == 3
+    assert dwell_b["user_message"] == "thanks"
+    assert dwell_b["bot_message"] == "You're welcome"
+
+
+def test_dwell_step_carries_window_events_and_latency() -> None:
+    # Dwell buckets carry the slot writes / degraded flag that landed during
+    # their turn window — junk_rejected and no-advance extractions visible.
+    log = _log(
+        AdvanceEvent(from_checkpoint=None, to_checkpoint="booking.collect", rule="init"),
+        UtteranceEvent(role="user", text="junk input"),  # turn 1, no advance
+        SlotWriteEvent(key="city", value="Pune", status="provisional", by="director"),
+        DegradedEvent(component="director", detail="junk_rejected"),
+        UtteranceEvent(role="assistant", text="Could you repeat that?"),
+    )
+    latency = {"director": {"per_turn_ms": [111]}, "talker": {"per_turn_ms": [222]}}
+    t = build_playbook_traversal(log, Playbook.from_yaml(MINIMAL_YAML), latency=latency)
+    steps = t["traversal"]
+    assert len(steps) == 2
+    dwell = steps[1]
+    assert dwell["advance_rule"] == "dwell"
+    assert dwell["slots_written"]["city"]["value"] == "Pune"
+    assert dwell["degraded"] is True
+    assert dwell["director_ms"] == 111
+    assert dwell["talker_ms"] == 222
+
+
+def test_multi_advance_turn_produces_one_step_per_advance_no_dwell() -> None:
+    # Quiescence chain: one turn, two advances → two steps, no dwell step.
+    log = _log(
+        AdvanceEvent(from_checkpoint=None, to_checkpoint="booking.collect", rule="init"),
+        UtteranceEvent(role="user", text="Pune 2026-06-12"),  # turn 1
+        AdvanceEvent(
+            from_checkpoint="booking.collect",
+            to_checkpoint="booking.confirm",
+            rule="r1",
+        ),
+        AdvanceEvent(
+            from_checkpoint="booking.confirm",
+            to_checkpoint="booking.close",
+            rule="pipeline",
+            by="expr",
+        ),
+        UtteranceEvent(role="assistant", text="Done."),
+    )
+    t = build_playbook_traversal(log, Playbook.from_yaml(MINIMAL_YAML))
+    rules = [s["advance_rule"] for s in t["traversal"]]
+    assert rules == ["init", "r1", "pipeline"]
+    assert [s["turn"] for s in t["traversal"]] == [None, 1, 1]
+
+
+def test_scripted_user_replays_each_turn_once() -> None:
+    # Dwell turns replay too; a quiescence chain's repeated user_message
+    # contributes one line, not one per advance step.
+    from superdialog.playbook.eval.from_traversal import traversal_to_scripted_user
+
+    log = _log(
+        AdvanceEvent(from_checkpoint=None, to_checkpoint="booking.collect", rule="init"),
+        UtteranceEvent(role="user", text="hello"),  # turn 1: dwell
+        UtteranceEvent(role="assistant", text="hi"),
+        UtteranceEvent(role="user", text="Pune 2026-06-12"),  # turn 2: chain
+        AdvanceEvent(
+            from_checkpoint="booking.collect",
+            to_checkpoint="booking.confirm",
+            rule="r1",
+        ),
+        AdvanceEvent(
+            from_checkpoint="booking.confirm",
+            to_checkpoint="booking.close",
+            rule="pipeline",
+            by="expr",
+        ),
+    )
+    t = build_playbook_traversal(log, Playbook.from_yaml(MINIMAL_YAML))
+    user = traversal_to_scripted_user(t)
+    assert user._messages == ["hello", "Pune 2026-06-12"]
+
+
+def test_dwell_does_not_touch_visits_or_graph_edges() -> None:
+    log = _log(
+        AdvanceEvent(from_checkpoint=None, to_checkpoint="booking.collect", rule="init"),
+        UtteranceEvent(role="user", text="hello"),  # dwell turn
+        UtteranceEvent(role="assistant", text="hi"),
+    )
+    t = build_playbook_traversal(log, Playbook.from_yaml(MINIMAL_YAML))
+    collect = next(c for c in t["checkpoints"] if c["id"] == "booking.collect")
+    assert collect["visit_count"] == 1  # init only; dwell never increments
+    assert not any(e["rule"] == "dwell" for e in t["graph"]["advance_edges"])
