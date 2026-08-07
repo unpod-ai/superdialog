@@ -317,6 +317,70 @@ async def test_callable_hold_line() -> None:
     assert any("थोड़ा समय लग रहा है, एक moment…" in t for t in received)
 
 
+def _gated_never_say_state(phrase: str) -> tuple[Playbook, ConversationState]:
+    """Playbook with a single hard-gate checkpoint declaring ``never_say``."""
+    import textwrap
+
+    yaml_text = textwrap.dedent(f'''
+        persona: "Assistant."
+        journeys:
+          j:
+            checkpoints:
+              - id: gatecp
+                gate: hard
+                guidance: "confirm the thing"
+                never_say:
+                  - "{phrase}"
+              - id: done
+                terminal: true
+    ''')
+    pb = Playbook.from_yaml(yaml_text)
+    log = EventLog()
+    log.append(
+        AdvanceEvent(from_checkpoint=None, to_checkpoint="j.gatecp", rule="init")
+    )
+    return pb, ConversationState.fold(log, playbook=pb)
+
+
+async def test_filler_respects_never_say() -> None:
+    """golf lists the engine's own filler in never_say; it must be excised."""
+    pb, state = _gated_never_say_state("One moment, let me confirm that")
+
+    async def director_done() -> ConversationState:
+        await anyio.sleep(0.1)
+        return state
+
+    talker = Talker(
+        pb, StreamLLM(["All", " set."]), barrier_timeout=0.01, hold_timeout=0.5
+    )
+    chunks = [c async for c in talker.speak(state, director_done=director_done)]
+    assert all("One moment" not in c.text for c in chunks)
+    assert "".join(c.text for c in chunks).endswith("All set.")
+
+
+async def test_filler_excised_to_punctuation_is_skipped() -> None:
+    """never_say covering the FULL filler (incl. ellipsis) leaves punctuation
+    only — no filler chunk may be yielded at all."""
+    import re
+
+    pb, state = _gated_never_say_state(FILLER)  # full text incl. trailing "…"
+
+    async def director_done() -> ConversationState:
+        await anyio.sleep(0.1)
+        return state
+
+    talker = Talker(
+        pb, StreamLLM(["All", " set."]), barrier_timeout=0.01, hold_timeout=0.5
+    )
+    chunks = [c async for c in talker.speak(state, director_done=director_done)]
+    assert all("One moment" not in c.text for c in chunks)
+    # No non-empty chunk consisting solely of non-word chars (e.g. "… ").
+    assert not any(
+        c.text and not re.sub(r"[\W_]+", "", c.text) for c in chunks
+    )
+    assert "".join(c.text for c in chunks).endswith("All set.")
+
+
 async def test_broken_line_provider_degrades_to_defaults() -> None:
     # A raising provider must never kill the turn — defaults speak instead.
     pb, state = _state("booking.confirm")

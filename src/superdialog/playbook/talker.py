@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import traceback
 from typing import Any, AsyncIterator, Awaitable, Callable, Protocol
 
@@ -160,10 +161,17 @@ class Talker:
             with anyio.move_on_after(self._barrier_timeout):
                 fresh = await director_done()
             if fresh is None:
-                yield SpeechChunk(
-                    text=self._resolve_line(self._filler, state, FILLER) + " ",
-                    spoke_from_version=state.version,
-                )
+                filler_text = self._resolve_line(self._filler, state, FILLER)
+                folded = [p.casefold() for p in (cp.never_say or []) if p]
+                if folded:
+                    filler_text = _excise(filler_text, folded)
+                # Skip a filler that excision reduced to punctuation/space —
+                # speaking "…" alone is worse than silence.
+                if re.sub(r"[\W_]+", "", filler_text, flags=re.UNICODE):
+                    yield SpeechChunk(
+                        text=filler_text + " ",
+                        spoke_from_version=state.version,
+                    )
                 with anyio.move_on_after(self._hold_timeout):
                     fresh = await director_done()
             if fresh is None:  # Director is down: degrade politely, never hang
