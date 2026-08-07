@@ -448,7 +448,12 @@ async def test_exit_say_skipped_on_interrupt_and_policy_advances() -> None:
     await rt.start()
     await rt.on_user_text("goodbye now")
     assert rt.state.ended
-    assert rt.state.steering_note is None
+    # v2: a terminal interrupt carries the closing steer — the invariant
+    # under test is that the happy-path exit_say PITCH did not fire, not
+    # that no steer exists at all.
+    note = rt.state.steering_note or ""
+    assert "Transition line" not in note  # exit_say never fires on interrupts
+    assert "ending the call" in note  # the closing steer took its place
     # policy advance (silence routing): a failure exit, not a pitch moment
     rt2 = PlaybookRuntime(
         pb,

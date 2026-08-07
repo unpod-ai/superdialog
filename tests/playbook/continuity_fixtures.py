@@ -61,6 +61,8 @@ CONTINUITY_YAML = textwrap.dedent("""
     interrupts:
       - {id: price_guardrail, when: "caller asks about price", judge: llm,
          to: main.pricing_faq, resume: true}
+      - {id: global_goodbye, when: "caller says goodbye", judge: llm,
+         to: main.close, resume: false}
       - {id: availability_guardrail, when: "caller asks about availability",
          judge: llm, to: main.availability_faq, resume: true}
 """)

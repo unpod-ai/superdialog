@@ -99,3 +99,33 @@ async def test_unknown_interrupt_id_is_logged_and_falls_through() -> None:
         and e.detail == "unknown_interrupt_id:no_such_id"
     ]
     assert len(degraded) == 2
+
+
+async def test_goodbye_interrupt_to_terminal_carries_closing_steer() -> None:
+    """A goodbye-class interrupt into a TERMINAL checkpoint must steer the
+    Talker to a brief close: simple-format playbooks have no authored
+    verbatim on the closing step, and an unguided Talker free-wheels into
+    offers/pitches on the goodbye turn (Rohan-1 eval, ts 0.3-0.4 every run)."""
+    rt = _rt([{"slots": {}, "advance": None, "note": None,
+               "interrupt": "global_goodbye"}])
+    await rt.start()
+    await rt.on_user_text("Then I'm good. Goodbye.")
+    assert rt.state.ended
+    assert rt.state.steering_note is not None
+    assert "no questions, no offers" in rt.state.steering_note
+
+
+async def test_goodbye_terminal_closing_steer_gated_by_legacy() -> None:
+    from superdialog.playbook.models import Playbook as _PB
+    from tests.playbook.continuity_fixtures import CONTINUITY_YAML as _Y
+
+    pb = _PB.from_yaml(_Y).model_copy(update={"legacy_continuity": True})
+    rt = _rt(
+        [{"slots": {}, "advance": None, "note": None,
+          "interrupt": "global_goodbye"}],
+        pb=pb,
+    )
+    await rt.start()
+    await rt.on_user_text("Goodbye.")
+    assert rt.state.ended
+    assert rt.state.steering_note is None  # legacy: no closing steer

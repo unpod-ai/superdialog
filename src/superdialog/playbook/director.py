@@ -819,6 +819,30 @@ class Director:
                         rule=f"interrupt:{spec.id}",
                     )
                 )
+                if (
+                    not self._pb.legacy_continuity
+                    and self._pb.checkpoint(spec.to).terminal
+                ):
+                    # Close-class interrupt (goodbye/DNC) into a terminal
+                    # checkpoint: the closing step often has no authored
+                    # verbatim (simple playbooks fold the closing line into
+                    # persona prose), and an unguided Talker free-wheels into
+                    # offers/pitches on the goodbye turn (Rohan-1 eval judged
+                    # 'offered additional assistance' every run, ts 0.3-0.4).
+                    # Appended AFTER the AdvanceEvent so the fold's advance-
+                    # time steering reset doesn't clear it.
+                    events.append(
+                        SteeringNoteEvent(
+                            text=(
+                                "The caller is ending the call. Deliver only "
+                                "a brief, warm close in one or two short "
+                                "sentences — no questions, no offers, no new "
+                                "information, no attempts to continue the "
+                                "conversation."
+                            ),
+                            kind="steer",
+                        )
+                    )
                 return DirectorDecision(events=events)
 
         target = verdict.get("advance")
