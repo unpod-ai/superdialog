@@ -635,6 +635,8 @@ async def test_prose_only_advance_not_steered_under_legacy() -> None:
 
 Interrupt advances stay `corroborated=None`.
 
+> **Snippet flaw** — `slot_written_this_turn` ordering: as written above it would also count the rule's own `set:` writes already in `events` (fixed in implementation: computed before rule.set — see design doc deviations, d30edb7).
+
 **Step 4:** PASS + suite. Note: `runtime._emit_exit_say` composes with a same-turn note — verify `test_exit_say_composes_with_same_turn_director_note` still passes; if the uncorroborated steer collides with exit_say composition, the exit_say line wins and the uncorroborated text rides its `(Also: …)` suffix — that is acceptable, update the assertion accordingly.
 
 **Step 5: Commit** — `feat(playbook): classify advances as corroborated/uncorroborated; steer prose-only advances under v2`

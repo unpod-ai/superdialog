@@ -22,7 +22,7 @@ Live calls lose conversational continuity: the bot re-asks answered questions, c
 | Advance mechanism | Director still proposes (light path); engine classifies every advance as corroborated / uncorroborated |
 | Strictness | Soft-gate: uncorroborated advances pass **with** a steer and an audit event; nothing blocks |
 | Supervisor | Default-on under v2; trigger-gated (not per-turn), reuses the director LLM |
-| Cost ceiling | 2 LLM calls per turn on the happy path; ~+8% worst case on derailed calls (measured against westgate1) |
+| Cost ceiling | 2 LLM calls per turn on the happy path; +8-16% on fully-conveyor calls (hard ceiling ~+24%, see §4), zero on healthy calls; sticky triggers watermarked so identical stale trajectories are never re-reviewed |
 
 Non-goals (YAGNI): compiled intent enums, spoken-goal ledger, new per-turn LLM calls, playbook format changes, playbook linter, model-floor policy. The last two are follow-on tracks.
 
@@ -80,7 +80,7 @@ These fix the westgate2 failure sequence (steps 10–12: `global_price_lookup_gu
 
 ### 4. Supervisor default-on and host truthfulness
 
-**Supervisor.** `guidelines.supervisor` defaults to `true` under v2 (legacy keeps `false`). It reuses the director LLM as already wired in `PlaybookAgent.__init__`. Cost stays trigger-gated: pure-Python detection on every completed turn, one LLM call only when a trigger fires past the 2-turn cooldown (compensation-pending reviews bypass the cooldown), off the speech path. Measured against westgate1 (25 turns, 50 LLM calls): roughly 3–4 supervisor firings ≈ +8% calls; a healthy call pays zero. Two new triggers in `detect_triggers`:
+**Supervisor.** `guidelines.supervisor` defaults to `true` under v2 (legacy keeps `false`). It reuses the director LLM as already wired in `PlaybookAgent.__init__`. Cost stays trigger-gated: pure-Python detection on every completed turn, one LLM call only when a trigger fires past the 2-turn cooldown (compensation-pending reviews bypass the cooldown), off the speech path. Sticky triggers are additionally **watermarked** (see deviations §6): a firing requires NEW qualifying evidence since the last review, so identical stale trajectories are never re-reviewed. Measured against westgate1 (25 turns, 50 LLM calls, ~16 directed advances): an all-conveyor call fires at most once per new uncorroborated advance past cooldown — ~8 firings for westgate1's advance clustering ≈ +8-16% on fully-conveyor calls (hard cooldown-bound ceiling ~12 firings ≈ +24% if fresh conveyor advances land in every 2-turn window for the whole call); in practice streak evidence between reviews is consumed in batches, so observed cost stays well under. A healthy call pays zero. Two new triggers in `detect_triggers`:
 
 - `uncorroborated_streak` — ≥2 consecutive uncorroborated advances;
 - `junk_rejected:<key>` — the same slot rejected ≥2 times.
@@ -108,12 +108,32 @@ Merging the supervisor into the director was considered and rejected: the trajec
 1. Ship the unconditional bug fixes (E1/E2/E3/E9 engine; E5/E7/E8 host). No flag.
 2. Ship v2 semantics behind the flag with default **legacy** for one release; enable v2 on one QA agent; compare traversals.
 3. Flip the default to v2. Westgate and golf get `legacy_continuity: true` only if regressions surface.
+4. Release note for downstream test suites: scripted-director fixtures on v2 playbooks must pin `guidelines: {supervisor: false}` — under v2 the supervisor defaults on and reuses the director LLM, so a scripted verdict sequence would otherwise be consumed by supervisor reviews.
 
 **Testing** (registered as a new `playbook-continuity` module in `scripts/run_tests.sh`):
 
 - **Traversal regression fixtures:** replay the three production event sequences and assert — westgate2's self-interrupt yields a steer, not an advance, and `qualify_location` resumes; golfai's backward bounce is marked uncorroborated; `'None'` and `''` writes are rejected.
 - **Unit:** corroboration classifier (all three clauses plus negatives), junk-guard table, detour-scoped suppression, resume-stack expiry, filler excision through `never_say`.
 - **Supervisor:** trigger tests for `uncorroborated_streak` and `junk_rejected`.
+
+## Implementation deviations (reconciled)
+
+Deltas between this design (and the implementation plan's snippets) and what shipped on `feat/playbook-continuity-v2`:
+
+1. **Corroboration clause (c) ordering.** `slot_written_this_turn` is computed BEFORE `rule.set` writes are appended — a rule's own `set:` stamp never vouches for its advance; clause (c) evidence is caller-derived verdict extraction only. The implementation plan's Task 8 snippet carried the flaw (it counted events already appended, including set writes); fixed in d30edb7.
+2. **Recorded decision: old evidence still corroborates clause (a).** `requires` met by OLD state corroborate an advance — clause (a) has no recency requirement; recency lives entirely in clause (c).
+3. **Resume-stack expiry is fold-pure and SILENT.** No `DegradedEvent` — the fold cannot append events; the non-resume is visible in traversals as the absent return. Caveat: `max_hops` (8) exceeds the age budget (6), so one exhausted quiescence chain can expire an entry within a single turn.
+4. **Nested-resume fold fix.** On a resume pop, `entered_via_resume = bool(remaining stack)` — nested detours unwind level by level. Accepted bounded ceiling: a Task-9-stranded entry can be resumed-to if a later detour pops on top of it within the 6-advance window; clear-on-fall-through was rejected (ambiguous for nested chains); the expiry reaper bounds the effect.
+5. **Junk signal shape.** Implemented as `DegradedEvent(detail="junk_rejected:<entity-namespaced key>")` rather than a new event type; the generic `degraded` supervisor trigger excludes it so a single benign rejection never spends a supervisor call.
+6. **Sticky supervisor triggers are WATERMARKED** (post-plan addition). Sticky triggers (`uncorroborated_streak`, `junk_rejected`, `slot_churn`, `repeated_interrupt`) only fire when their newest qualifying event is newer than the supervisor's last-reviewed version. Added after cost analysis showed un-watermarked all-conveyor calls would breach the +8% budget ~3x (an established streak re-fires every cooldown window: ~12 of 50 baseline calls ≈ +24%). Updated cost figures in §4.
+7. **Deferred / known gaps:**
+   - `say_verbatim` still bypasses `never_say` (the verbatim yield skips the stream excision filter).
+   - `compiler.py`'s flows_json path has no `legacy_continuity` source — flow-compiled playbooks cannot opt out at the flow level.
+   - The churn dampener removes the accidental repair-note delivery for long-confirmed re-asks (that accidental delivery was the false-positive source).
+   - `SupervisorDecision` accepts garbage that type-checks as `action="none"` silently — harden with a required `action` or `extra="forbid"` in a follow-up.
+   - The `slot_churn` trigger label is not entity-namespaced while `junk_rejected` is — align in a follow-up.
+   - `expr_gated_advance_target` refinement: NOT implemented (YAGNI — the verdict prompt only advertises llm-rule targets, so the mislabel window is negligible).
+   - Release-note item: scripted-director fixtures on v2 playbooks must pin `guidelines: {supervisor: false}` (see Rollout step 4).
 
 ## Appendix — audit findings referenced above
 

@@ -561,8 +561,10 @@ class PlaybookRuntime:
         # entry turn so the answer is spoken first.
         # ponytail: one pop per quiet turn; nested detours unwind level by
         # level across turns. A real advance off this target orphans the
-        # stacked entry deliberately (Task 9 corroborated fall-through);
-        # stranded entries are reaped by fold expiry (_RESUME_STACK_MAX_AGE).
+        # stacked entry deliberately (Task 9 corroborated fall-through); a
+        # later detour popping on top can still resume INTO the stranded
+        # entry within the expiry window (accepted, bounded); otherwise
+        # fold expiry reaps it (_RESUME_STACK_MAX_AGE).
         if (
             not hold_resume
             and state.entered_via_resume
