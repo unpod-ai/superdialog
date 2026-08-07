@@ -527,3 +527,41 @@ def test_explicit_supervisor_llm_always_wins() -> None:
     yaml_text = MINIMAL_YAML + "\nlegacy_continuity: true\n"
     agent = _agent_for(yaml_text, supervisor_llm=CannedLLM(_IDLE_VERDICT))
     assert agent._supervisor is not None
+
+
+# --- _LLMTimer time-to-first-token -------------------------------------------
+
+
+async def test_llm_timer_records_ttft_separately() -> None:
+    from superdialog.playbook.agent import _LLMTimer
+
+    class SlowFirstTokenLLM:
+        async def stream(self, messages, **kw):
+            await anyio.sleep(0.03)  # 30ms to first token
+            yield "first"
+            yield "rest"  # immediate
+
+    timer = _LLMTimer(SlowFirstTokenLLM())
+    async for _ in timer.stream([]):
+        pass
+    stats = timer.stats
+    assert stats["ttft_mean_ms"] >= 25
+    assert stats["ttft_p95_ms"] >= 25
+    # ttft strictly <= total stream duration
+    assert stats["ttft_mean_ms"] <= stats["mean_ms"]
+
+
+async def test_llm_timer_stats_without_streams_have_no_ttft_keys() -> None:
+    """A timer used only for complete() (director) must not emit ttft keys."""
+    from superdialog.playbook.agent import _LLMTimer
+
+    class CompleteOnlyLLM:
+        async def complete(self, messages, **kw):
+            return "done"
+
+    timer = _LLMTimer(CompleteOnlyLLM())
+    await timer.complete([])
+    stats = timer.stats
+    assert stats["calls"] == 1
+    assert "ttft_mean_ms" not in stats
+    assert "ttft_p95_ms" not in stats

@@ -113,6 +113,9 @@ def build_playbook_traversal(
     # AdvanceEvents yield one step per advance (quiescence chains unchanged);
     # turns with no advance yield a DWELL step (from == to, rule="dwell") so
     # multi-turn dwell inside a checkpoint is visible per-turn.
+    # In a quiescence chain every step of the turn carries the same
+    # bot_message/user_message (the turn's exchange stamped on each of its
+    # steps), so a transcript-style consumer must dedupe by turn.
     traversal_steps: list[dict[str, Any]] = []
     step_num = 0
     current_cp: str | None = None

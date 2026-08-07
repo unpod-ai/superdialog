@@ -44,6 +44,7 @@ class _LLMTimer:
     def __init__(self, inner: Any) -> None:
         self._inner = inner
         self.latencies_ms: list[float] = []  # every call, flat
+        self.ttft_ms: list[float] = []  # stream calls only: time to first chunk
         self._turn_buckets: list[list[float]] = []  # per turn, list of call durations
         self._current_bucket: list[float] | None = None
 
@@ -69,8 +70,12 @@ class _LLMTimer:
         self, messages: list[dict[str, str]], **kw: Any
     ) -> AsyncIterator[str]:
         t0 = time.perf_counter()
+        first_seen = False
         try:
             async for chunk in self._inner.stream(messages, **kw):
+                if not first_seen:
+                    first_seen = True
+                    self.ttft_ms.append((time.perf_counter() - t0) * 1000)
                 yield chunk
         finally:
             self._record((time.perf_counter() - t0) * 1000)
@@ -81,12 +86,17 @@ class _LLMTimer:
             return {"calls": 0, "mean_ms": 0.0, "p95_ms": 0.0, "per_turn_ms": []}
         s = sorted(self.latencies_ms)
         per_turn = [round(sum(b), 1) for b in self._turn_buckets]
-        return {
+        out: dict[str, Any] = {
             "calls": len(s),
             "mean_ms": round(sum(s) / len(s), 1),
             "p95_ms": round(s[int(len(s) * 0.95)], 1),
             "per_turn_ms": per_turn,  # index 0 = turn 1; total LLM ms per user turn
         }
+        if self.ttft_ms:  # only when streams were timed; director stats unchanged
+            t = sorted(self.ttft_ms)
+            out["ttft_mean_ms"] = round(sum(t) / len(t), 1)
+            out["ttft_p95_ms"] = round(t[int(len(t) * 0.95)], 1)
+        return out
 
 
 class PlaybookAgent:
