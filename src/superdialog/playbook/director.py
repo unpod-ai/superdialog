@@ -61,6 +61,15 @@ _CASTS: dict[str, Callable[[Any], Any]] = {
 
 _INVALID = object()  # sentinel: value failed validation; skip the write
 
+#: Values a verdict sometimes emits that mean "nothing extracted". Writing
+#: them as confirmed truth poisoned the Talker prompt every turn
+#: (configuration='None', city='' in production traversals).
+_JUNK_VALUES = {"", "none", "null", "n/a", "na", "not specified", "unknown"}
+
+
+def _is_junk(value: Any) -> bool:
+    return isinstance(value, str) and value.strip().lower() in _JUNK_VALUES
+
 _RECOVER_NOTE = (
     "The caller is frustrated or repeating themselves — do NOT end the call. "
     "Acknowledge the confusion, correct course, and keep helping."
@@ -535,6 +544,15 @@ class Director:
             slot_spec = cp.slots.get(key)
             if slot_spec is None or slot_spec.authoritative:
                 continue  # reject slots not defined in current checkpoint, or authoritative
+            if not self._pb.legacy_continuity and _is_junk(value):
+                # Auditable rejection: repeated junk on one key is a
+                # supervisor trigger (junk_rejected:<key>, Task 12).
+                events.append(
+                    DegradedEvent(
+                        component="director", detail=f"junk_rejected:{key}"
+                    )
+                )
+                continue
             coerced = _coerce_slot(value, slot_spec, state.now)
             if coerced is _INVALID:
                 continue  # bad cast / enum miss: treat as not extracted

@@ -4,6 +4,7 @@ import textwrap
 from superdialog.playbook.director import Director
 from superdialog.playbook.events import (
     AdvanceEvent,
+    DegradedEvent,
     EventLog,
     SessionStartEvent,
     SlotWriteEvent,
@@ -543,3 +544,46 @@ def test_verdict_prompt_flat_when_not_multi_entity() -> None:
     assert "You are collecting details for:" not in system
     assert '"Already known"' not in system  # grouping not introduced
     assert "Already known: " in system  # today's flat shape
+
+
+_JUNK_TABLE = ["None", "", "none", "NULL", "n/a", "Not Specified", "unknown", " none "]
+
+
+async def test_junk_slot_values_are_rejected_under_v2() -> None:
+    # The director LLM emits 'None'/''/'not specified' as confirmed slot
+    # values in production; under v2 they are not-extracted, audited as
+    # junk_rejected:<key>.
+    for junk in _JUNK_TABLE:
+        pb, state = _state()
+        llm = CannedLLM({"slots": {"city": junk}, "advance": None, "note": None})
+        decision = await Director(pb, llm).evaluate(state)
+        writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
+        assert not [e for e in writes if e.key == "city"], f"wrote junk {junk!r}"
+        degraded = [e for e in decision.events if isinstance(e, DegradedEvent)]
+        assert any(e.detail == "junk_rejected:city" for e in degraded), repr(junk)
+    # Negative: a real value merely CONTAINING a junk token must be written.
+    pb, state = _state()
+    llm = CannedLLM({"slots": {"city": "Noneville"}, "advance": None, "note": None})
+    decision = await Director(pb, llm).evaluate(state)
+    writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
+    assert [e for e in writes if e.key == "city" and e.value == "Noneville"]
+    assert not [e for e in decision.events if isinstance(e, DegradedEvent)]
+
+
+async def test_junk_slot_values_pass_under_legacy() -> None:
+    # legacy_continuity: true preserves the old accept-anything behavior
+    # byte-for-byte: 'None' is written, no junk_rejected audit event.
+    pb = Playbook.from_yaml(MINIMAL_YAML).model_copy(
+        update={"legacy_continuity": True}
+    )
+    log = EventLog()
+    log.append(
+        AdvanceEvent(from_checkpoint=None, to_checkpoint="booking.collect", rule="init")
+    )
+    log.append(UtteranceEvent(role="user", text="Pune tomorrow please"))
+    state = ConversationState.fold(log, playbook=pb)
+    llm = CannedLLM({"slots": {"city": "None"}, "advance": None, "note": None})
+    decision = await Director(pb, llm).evaluate(state)
+    writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
+    assert [e for e in writes if e.key == "city" and e.value == "None"]
+    assert not [e for e in decision.events if isinstance(e, DegradedEvent)]
