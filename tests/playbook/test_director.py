@@ -625,3 +625,72 @@ async def test_declared_enum_member_is_never_junk_under_v2() -> None:
     writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
     assert [e for e in writes if e.key == "tier" and e.value == "unknown"]
     assert not [e for e in decision.events if isinstance(e, DegradedEvent)]
+
+
+async def test_identical_confirmed_rewrite_is_dropped_under_v2() -> None:
+    # westgate2 wrote `staying` 4x with the identical value: re-extracting
+    # an already-confirmed value must produce no event (no version churn).
+    for raw in ["Pune", "  Pune  "]:  # comparison is on the COERCED value
+        pb, state = _state(
+            extra_events=[
+                SlotWriteEvent(
+                    key="city", value="Pune", status="confirmed", by="director"
+                )
+            ]
+        )
+        llm = CannedLLM({"slots": {"city": raw}, "advance": None, "note": None})
+        decision = await Director(pb, llm).evaluate(state)
+        writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
+        assert not [e for e in writes if e.key == "city"], repr(raw)
+        assert not [e for e in decision.events if isinstance(e, DegradedEvent)]
+
+
+async def test_identical_provisional_rewrite_still_written_under_v2() -> None:
+    # Re-extraction of a provisional value is meaningful signal
+    # (fast-release/confirmation flows) — the rewrite IS emitted.
+    pb, state = _state(
+        extra_events=[
+            SlotWriteEvent(
+                key="city", value="Pune", status="provisional", by="director"
+            )
+        ]
+    )
+    llm = CannedLLM({"slots": {"city": "Pune"}, "advance": None, "note": None})
+    decision = await Director(pb, llm).evaluate(state)
+    writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
+    assert [e for e in writes if e.key == "city" and e.value == "Pune"]
+
+
+async def test_changed_value_rewrite_still_written_under_v2() -> None:
+    # A correction must flow: confirmed "Pune" -> verdict "Mumbai" is written.
+    pb, state = _state(
+        extra_events=[
+            SlotWriteEvent(
+                key="city", value="Pune", status="confirmed", by="director"
+            )
+        ]
+    )
+    llm = CannedLLM({"slots": {"city": "Mumbai"}, "advance": None, "note": None})
+    decision = await Director(pb, llm).evaluate(state)
+    writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
+    assert [e for e in writes if e.key == "city" and e.value == "Mumbai"]
+
+
+async def test_identical_confirmed_rewrite_kept_under_legacy() -> None:
+    # legacy_continuity: true preserves the old rewrite-everything behavior.
+    pb = Playbook.from_yaml(MINIMAL_YAML).model_copy(
+        update={"legacy_continuity": True}
+    )
+    log = EventLog()
+    log.append(
+        AdvanceEvent(from_checkpoint=None, to_checkpoint="booking.collect", rule="init")
+    )
+    log.append(UtteranceEvent(role="user", text="Pune tomorrow please"))
+    log.append(
+        SlotWriteEvent(key="city", value="Pune", status="confirmed", by="director")
+    )
+    state = ConversationState.fold(log, playbook=pb)
+    llm = CannedLLM({"slots": {"city": "Pune"}, "advance": None, "note": None})
+    decision = await Director(pb, llm).evaluate(state)
+    writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
+    assert [e for e in writes if e.key == "city" and e.value == "Pune"]

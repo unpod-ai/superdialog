@@ -566,6 +566,16 @@ class Director:
             coerced = _coerce_slot(value, slot_spec, state.now)
             if coerced is _INVALID:
                 continue  # bad cast / enum miss: treat as not extracted
+            existing = state.slots.get(_ekey(cp.entity, key))
+            if (
+                not self._pb.legacy_continuity
+                and existing is not None
+                and existing.status == "confirmed"
+                and existing.value == coerced
+            ):
+                # Identical confirmed value re-extracted: no event, no version
+                # churn (westgate2 wrote `staying` 4x with the same value).
+                continue
             events.append(
                 SlotWriteEvent(
                     key=key,
