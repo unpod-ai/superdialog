@@ -157,3 +157,31 @@ async def test_prose_only_advance_not_steered_under_legacy() -> None:
         if isinstance(e, AdvanceEvent) and e.to_checkpoint == "main.ask_budget"
     ]
     assert adv and adv[-1].corroborated is False
+
+
+async def test_corroborated_advance_beats_forced_resume() -> None:
+    rt = _rt([
+        {"slots": {}, "interrupt": "price_guardrail"},
+        {"slots": {"location": "Pune"}, "advance": "main.pitch"},
+    ])
+    await rt.start()
+    await rt.on_user_text("price?")
+    assert rt.state.checkpoint_id == "main.pricing_faq"
+    await rt.on_user_text("it's for Pune by the way")
+    # v2: the evidence-backed advance is honored, NOT the forced return
+    assert rt.state.checkpoint_id == "main.pitch"
+
+
+async def test_corroborated_advance_defers_to_resume_under_legacy() -> None:
+    pb = Playbook.from_yaml(CONTINUITY_YAML).model_copy(
+        update={"legacy_continuity": True}
+    )
+    rt = _rt([
+        {"slots": {}, "interrupt": "price_guardrail"},
+        {"slots": {"location": "Pune"}, "advance": "main.pitch"},
+    ], pb=pb)
+    await rt.start()
+    await rt.on_user_text("price?")
+    await rt.on_user_text("it's for Pune by the way")
+    # legacy: forced return still wins
+    assert rt.state.checkpoint_id == "main.ask_location"

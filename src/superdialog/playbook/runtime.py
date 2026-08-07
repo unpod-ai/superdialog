@@ -200,11 +200,23 @@ class PlaybookRuntime:
             and not is_interrupt
             and not decision.detour_continues
         ):
-            self._apply([e for e in decision.events if not isinstance(e, AdvanceEvent)])
-            await self._advance(state.resume_stack[-1], "resume", pass_through)
-            await self._apply_turn_budget(pass_through)
-            pass_through.extend(await self._quiesce())
-            return pass_through
+            corroborated_advance = (
+                advance is not None
+                and not self._pb.legacy_continuity
+                and getattr(advance, "corroborated", None) is True
+            )
+            if not corroborated_advance:
+                self._apply(
+                    [e for e in decision.events if not isinstance(e, AdvanceEvent)]
+                )
+                await self._advance(state.resume_stack[-1], "resume", pass_through)
+                await self._apply_turn_budget(pass_through)
+                pass_through.extend(await self._quiesce())
+                return pass_through
+            # Corroborated advance: fall through to the normal advance path
+            # below — the caller answered the detour AND routed with real
+            # evidence; dragging them back first would re-ask what they just
+            # said. The stranded stack entry is reaped by fold expiry (Task 10).
         if advance is not None and not advance.rule.startswith("interrupt:"):
             current = self.state.checkpoint_id
             if current is not None:  # we are leaving: surface its verbatim line

@@ -36,7 +36,12 @@ CONTINUITY_YAML = textwrap.dedent("""
           - id: pricing_faq
             goal: "Answer pricing questions"
             gate: soft
+            slots:
+              location: {type: str}
             guidance: "Answer pricing."
+            advance_when:
+              - {when: "caller names location", judge: llm, to: main.pitch,
+                 requires: [location]}
           - id: close
             terminal: true
             outcome: done
