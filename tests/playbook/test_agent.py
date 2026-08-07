@@ -444,3 +444,47 @@ async def test_mark_interrupted_noop_without_assistant_utterance():
     agent = _agent()
     agent.mark_interrupted("x")  # no turn yet → nothing to rewrite, must not raise
     assert not await _assistant_events(agent)
+
+
+async def test_mark_interrupted_noop_when_turn_logged_no_utterance():
+    """All-filler barge-in logs no assistant utterance this turn; the backward
+    scan must NOT reach back and rewrite the PREVIOUS turn's record."""
+    agent = _agent()
+    await agent.turn("hi")  # previous turn: logs assistant "Which city?"
+    # Log state after an all-filler barge-in: this turn's user utterance is
+    # appended (agent.py does so before the barrier) but no assistant
+    # utterance follows — every talker chunk was filler.
+    agent.runtime.log.append(UtteranceEvent(role="user", text="hello again"))
+    agent.mark_interrupted("One mo")
+    last = (await _assistant_events(agent))[-1]
+    assert last.text == "Which city?"  # previous turn untouched
+    assert not any(
+        "[interrupted by caller]" in e.text
+        for e in agent.runtime.log.events
+        if isinstance(e, UtteranceEvent)
+    )
+
+
+async def test_hold_line_only_turn_streams_but_logs_nothing():
+    """Director never settles: hold line streamed, no utterance logged,
+    Turn.text empty — the canned line never enters the transcript."""
+    from superdialog.playbook.talker import HOLD_LINE
+
+    hard_yaml = MINIMAL_YAML.replace("gate: soft", "gate: hard", 1)
+    agent = PlaybookAgent(
+        playbook=Playbook.from_yaml(hard_yaml),
+        talker_llm=StreamLLM(["Which", " city?"]),
+        director_llm=SlowDirectorLLM(_IDLE_VERDICT),  # 0.3s > barrier + hold
+        http=FakeHttp([]),
+        barrier_timeout=0.02,
+        hold_timeout=0.1,
+    )
+    streamed = ""
+    done = None
+    async for chunk in agent.stream_turn("hello"):
+        streamed += chunk.text or ""
+        if chunk.done:
+            done = chunk
+    assert HOLD_LINE in streamed  # the caller heard the hold line
+    assert not await _assistant_events(agent)  # canned lines never logged
+    assert done is not None and done.turn.text == ""

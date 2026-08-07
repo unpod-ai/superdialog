@@ -236,6 +236,11 @@ class PlaybookAgent:
         events = self.runtime.log.events
         for i in range(len(events) - 1, -1, -1):
             event = events[i]
+            if isinstance(event, UtteranceEvent) and event.role == "user":
+                # Nothing logged this turn (all-filler barge-in, or post-
+                # terminal user turn): there is no utterance of THIS turn to
+                # truncate — rewriting an older one would corrupt history.
+                return
             if isinstance(event, UtteranceEvent) and event.role == "assistant":
                 base = heard_text if heard_text else event.text
                 # UtteranceEvent is frozen; replace in place (same version, so
