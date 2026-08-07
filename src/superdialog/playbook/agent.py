@@ -135,12 +135,15 @@ class PlaybookAgent:
         )
         # Loop 2 (off the speech path): reviews the trajectory after a turn
         # completes, only when a trigger fires. An explicit ``supervisor_llm``
-        # wins; else ``guidelines.supervisor`` opts in and reuses the Director
+        # wins; else ``guidelines.supervisor`` decides (None resolves from the
+        # continuity mode: v2 → on, legacy → off) and reuses the Director
         # model (raw, untimed — the call is off the speech path, so it must not
-        # smear the Director's latency stats). None ⇒ no supervision (legacy).
-        sup_llm = supervisor_llm or (
-            director_llm if playbook.guidelines.supervisor else None
+        # smear the Director's latency stats).
+        _sup_flag = playbook.guidelines.supervisor
+        _sup_on = (
+            _sup_flag if _sup_flag is not None else not playbook.legacy_continuity
         )
+        sup_llm = supervisor_llm or (director_llm if _sup_on else None)
         self._supervisor = Supervisor(sup_llm, playbook) if sup_llm else None
         # Barrier lines: None keeps the Talker's built-in defaults. A host may
         # pass static text or a provider called with the live state at speak

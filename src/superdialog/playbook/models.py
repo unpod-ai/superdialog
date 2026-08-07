@@ -48,12 +48,12 @@ class GuidelineConfig(BaseModel):
     # dropping the author's intent.
     director_model: str | None = None
     talker_model: str | None = None
-    # Loop-2 opt-in: enable the trajectory-level Supervisor (recovery/redirect
-    # meta-agent). Off by default — byte-compatible. When true, PlaybookAgent
-    # runs it off the speech path, reusing the Director model unless the host
-    # passes an explicit ``supervisor_llm``. Set ``guidelines: {supervisor: true}``
-    # in the playbook to turn it on everywhere the agent is constructed.
-    supervisor: bool = False
+    # Loop 2: the trajectory-level Supervisor (recovery/redirect meta-agent).
+    # None = resolved from the playbook's continuity mode (v2 → on, legacy →
+    # off); an explicit true/false always wins. When on, PlaybookAgent runs it
+    # off the speech path, reusing the Director model unless the host passes
+    # an explicit ``supervisor_llm``. See PlaybookAgent.__init__.
+    supervisor: bool | None = None
 
 
 class LLMRoleConfig(BaseModel):

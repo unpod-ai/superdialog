@@ -117,7 +117,16 @@ async def test_max_turns_caps_incomplete_session() -> None:
 
 
 async def test_repair_and_degraded_counted() -> None:
-    agent = _agent(verdict=_IDLE_VERDICT)
+    # pin: scripted LLM, no supervisor reviews (the injected repair note would
+    # trip a trigger and the canned director verdict logs degraded:supervisor)
+    agent = PlaybookAgent(
+        playbook=Playbook.from_yaml(
+            MINIMAL_YAML + "\nguidelines:\n  supervisor: false\n"
+        ),
+        talker_llm=StreamLLM(["Which", " city?"]),
+        director_llm=CannedLLM(_IDLE_VERDICT),
+        http=FakeHttp([]),
+    )
     persona = PersonaSpec(
         name="bumpy", traits="confused", goal="book something", max_turns=2
     )

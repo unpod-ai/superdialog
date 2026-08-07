@@ -488,3 +488,42 @@ async def test_hold_line_only_turn_streams_but_logs_nothing():
     assert HOLD_LINE in streamed  # the caller heard the hold line
     assert not await _assistant_events(agent)  # canned lines never logged
     assert done is not None and done.turn.text == ""
+
+
+# --- Supervisor resolution: default-on under v2, opt-in under legacy ---------
+
+
+def _agent_for(yaml_text: str, **kwargs) -> PlaybookAgent:
+    return PlaybookAgent(
+        playbook=Playbook.from_yaml(yaml_text),
+        talker_llm=StreamLLM(["hi"]),
+        director_llm=CannedLLM(_IDLE_VERDICT),
+        http=FakeHttp([]),
+        **kwargs,
+    )
+
+
+def test_supervisor_default_on_under_v2() -> None:
+    assert _agent_for(MINIMAL_YAML)._supervisor is not None
+
+
+def test_supervisor_off_under_legacy() -> None:
+    assert _agent_for(MINIMAL_YAML + "\nlegacy_continuity: true\n")._supervisor is None
+
+
+def test_explicit_supervisor_false_wins_under_v2() -> None:
+    yaml_text = MINIMAL_YAML + "\nguidelines:\n  supervisor: false\n"
+    assert _agent_for(yaml_text)._supervisor is None
+
+
+def test_explicit_supervisor_true_wins_under_legacy() -> None:
+    yaml_text = (
+        MINIMAL_YAML + "\nlegacy_continuity: true\nguidelines:\n  supervisor: true\n"
+    )
+    assert _agent_for(yaml_text)._supervisor is not None
+
+
+def test_explicit_supervisor_llm_always_wins() -> None:
+    yaml_text = MINIMAL_YAML + "\nlegacy_continuity: true\n"
+    agent = _agent_for(yaml_text, supervisor_llm=CannedLLM(_IDLE_VERDICT))
+    assert agent._supervisor is not None

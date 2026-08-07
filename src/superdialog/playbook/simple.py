@@ -135,9 +135,10 @@ class SimplePlaybook(BaseModel):
     followup_enabled: bool = False
     # Opt-in: scope slot storage/lookups per step entity. Off ⇒ unchanged.
     multi_entity: bool = False
-    # Opt-in: enable the trajectory-level Supervisor (loop 2 — recovery/redirect
-    # meta-agent). Off ⇒ unchanged. See GuidelineConfig.supervisor.
-    supervisor: bool = False
+    # Trajectory-level Supervisor (loop 2 — recovery/redirect meta-agent).
+    # None ⇒ resolved from the continuity mode; explicit true/false wins.
+    # See GuidelineConfig.supervisor.
+    supervisor: bool | None = None
     # Continuity v2 escape hatch: true restores pre-v2 semantics (no junk-slot
     # rejection, no churn dampener, no uncorroborated-advance steer, supervisor
     # stays opt-in). New playbooks get v2 by default. See Playbook.legacy_continuity.

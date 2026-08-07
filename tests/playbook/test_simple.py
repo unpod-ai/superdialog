@@ -59,14 +59,17 @@ def test_detection_simple_vs_playbook() -> None:
     assert is_simple_playbook({"playbook": []}) is False
 
 
-def test_supervisor_flag_defaults_off_and_passes_through() -> None:
+def test_supervisor_flag_defaults_none_and_passes_through() -> None:
     import yaml
 
-    off = simple_to_playbook(yaml.safe_load(SIMPLE))
-    assert off.guidelines.supervisor is False  # byte-compatible default
+    default = simple_to_playbook(yaml.safe_load(SIMPLE))
+    # None ⇒ resolved from the continuity mode at agent construction
+    assert default.guidelines.supervisor is None
     doc = yaml.safe_load(SIMPLE)
     doc["supervisor"] = True
     assert simple_to_playbook(doc).guidelines.supervisor is True
+    doc["supervisor"] = False
+    assert simple_to_playbook(doc).guidelines.supervisor is False
 
 
 def test_step_gate_defaults_hard_and_passes_soft_through() -> None:
