@@ -699,6 +699,13 @@ class Director:
                             SteeringNoteEvent(text=_RECOVER_NOTE, kind="repair")
                         )
                         return DirectorDecision(events=events)
+                    # Computed before rule.set writes — a rule's own set:
+                    # stamp must not vouch for its advance; clause (c)
+                    # evidence is caller-derived verdict extraction only.
+                    slot_written_this_turn = any(
+                        isinstance(e, SlotWriteEvent) and e.key in cp.slots
+                        for e in events
+                    )
                     for k, v in rule.set.items():
                         events.append(
                             SlotWriteEvent(
@@ -709,10 +716,6 @@ class Director:
                                 entity=cp.entity,
                             )
                         )
-                    slot_written_this_turn = any(
-                        isinstance(e, SlotWriteEvent) and e.key in cp.slots
-                        for e in events
-                    )
                     corroborated = bool(rule.requires) or slot_written_this_turn
                     events.append(
                         AdvanceEvent(

@@ -77,6 +77,40 @@ async def test_slot_written_this_turn_corroborates_rule_without_requires() -> No
     assert adv and adv[-1].corroborated is True
 
 
+async def test_rule_set_write_does_not_self_corroborate() -> None:
+    # A prose-only rule whose set: targets a slot DECLARED on the current
+    # checkpoint must not count its own bookkeeping stamp as evidence —
+    # clause (c) is caller-derived verdict extraction only.
+    yaml = CONTINUITY_YAML.replace(
+        "to: main.ask_budget}",
+        "to: main.ask_budget, set: {pitch_ack: done}}",
+    ).replace(
+        'gate: soft\n        guidance: "Pitch."',
+        "gate: soft\n        slots:\n"
+        "          pitch_ack: {type: str}\n"
+        '        guidance: "Pitch."',
+    )
+    assert yaml != CONTINUITY_YAML
+    rt = _rt(
+        [
+            {"slots": {"location": "Pune"}, "advance": "main.pitch"},
+            {"slots": {}, "advance": "main.ask_budget"},
+        ],
+        pb=Playbook.from_yaml(yaml),
+    )
+    await rt.start()
+    await rt.on_user_text("Pune")
+    await rt.on_user_text("hmm what?")
+    adv = [
+        e
+        for e in rt.log.events
+        if isinstance(e, AdvanceEvent) and e.to_checkpoint == "main.ask_budget"
+    ]
+    assert adv and adv[-1].corroborated is False
+    assert rt.state.steering_note is not None
+    assert "without confirmed input" in rt.state.steering_note
+
+
 async def test_expr_advance_is_corroborated() -> None:
     # Insert an expr rule ahead of ask_location's llm rule; once the verdict
     # writes the location slot, the quiescence loop fires the expr rule.
