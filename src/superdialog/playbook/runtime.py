@@ -559,8 +559,9 @@ class PlaybookRuntime:
         # turn (answer heard) and nothing else routed this turn, return to the
         # step we left. user_turns_in_checkpoint>=1 defers the return past the
         # entry turn so the answer is spoken first.
-        # ponytail: single-level only. A real advance off this target orphans
-        # the stacked entry deliberately (Task 9 corroborated fall-through);
+        # ponytail: one pop per quiet turn; nested detours unwind level by
+        # level across turns. A real advance off this target orphans the
+        # stacked entry deliberately (Task 9 corroborated fall-through);
         # stranded entries are reaped by fold expiry (_RESUME_STACK_MAX_AGE).
         if (
             not hold_resume

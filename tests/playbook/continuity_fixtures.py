@@ -42,12 +42,20 @@ CONTINUITY_YAML = textwrap.dedent("""
             advance_when:
               - {when: "caller names location", judge: llm, to: main.pitch,
                  requires: [location]}
+          - id: availability_faq
+            goal: "Answer availability questions"
+            gate: soft
+            slots:
+              callback_time: {type: str}
+            guidance: "Answer availability."
           - id: close
             terminal: true
             outcome: done
     interrupts:
       - {id: price_guardrail, when: "caller asks about price", judge: llm,
          to: main.pricing_faq, resume: true}
+      - {id: availability_guardrail, when: "caller asks about availability",
+         judge: llm, to: main.availability_faq, resume: true}
 """)
 
 

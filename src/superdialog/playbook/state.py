@@ -219,6 +219,11 @@ class ConversationState(BaseModel):
                 elif e.rule == "resume" and s.resume_stack:
                     s.resume_stack = s.resume_stack[:-1]
                     s.resume_stack_seq = s.resume_stack_seq[:-1]
+                    # Nested unwind: entries left after the pop mean the step
+                    # we just resumed INTO is itself the outer detour's target,
+                    # so the next quiet turn must keep unwinding to the top
+                    # entry rather than stranding it until expiry.
+                    entered_via_resume = bool(s.resume_stack)
                 s.entered_via_resume = entered_via_resume
                 # Expire stale entries oldest-first: an entry stranded for
                 # more than _RESUME_STACK_MAX_AGE advances would teleport the

@@ -384,6 +384,32 @@ def test_resume_stack_entry_survives_within_max_age() -> None:
     assert state.resume_stack_seq == [2]
 
 
+def test_resume_stack_entry_survives_at_exactly_max_age() -> None:
+    # Push at seq 2, six subsequent advances -> age exactly 6; the expiry
+    # comparator is strictly >, so the boundary entry survives.
+    pb = Playbook.from_yaml(CONTINUITY_YAML)
+    state = ConversationState.fold(_detour_log(6), playbook=pb)
+    assert state.resume_stack == ["main.ask_location"]
+    assert state.resume_stack_seq == [2]
+
+
+def test_revert_resurrects_expired_resume_entry() -> None:
+    # Seven aging advances expire the entry; a RevertEvent superseding them
+    # must bring it back on refold — dead advances don't age live detours.
+    from superdialog.playbook.events import RevertEvent
+
+    pb = Playbook.from_yaml(CONTINUITY_YAML)
+    log = _detour_log(7)  # v1 init, v2 interrupt push, v3-v9 aging advances
+    assert ConversationState.fold(log, playbook=pb).resume_stack == []
+    log.append(
+        RevertEvent(superseded_from=3, superseded_to=9, reason="undo", by="supervisor")
+    )
+    state = ConversationState.fold(log, playbook=pb)
+    assert state.resume_stack == ["main.ask_location"]
+    assert state.resume_stack_seq == [2]
+    assert state.checkpoint_id == "main.pricing_faq"
+
+
 def test_resume_pop_still_works_before_expiry() -> None:
     pb = Playbook.from_yaml(CONTINUITY_YAML)
     log = EventLog()
