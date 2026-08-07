@@ -5,6 +5,7 @@ from superdialog.playbook.events import (
     EnvWriteEvent,
     EventLog,
     ExternalEvent,
+    RevertEvent,
     SessionEndEvent,
     SlotWriteEvent,
     SteeringNoteEvent,
@@ -396,8 +397,6 @@ def test_resume_stack_entry_survives_at_exactly_max_age() -> None:
 def test_revert_resurrects_expired_resume_entry() -> None:
     # Seven aging advances expire the entry; a RevertEvent superseding them
     # must bring it back on refold — dead advances don't age live detours.
-    from superdialog.playbook.events import RevertEvent
-
     pb = Playbook.from_yaml(CONTINUITY_YAML)
     log = _detour_log(7)  # v1 init, v2 interrupt push, v3-v9 aging advances
     assert ConversationState.fold(log, playbook=pb).resume_stack == []

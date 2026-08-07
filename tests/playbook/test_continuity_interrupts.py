@@ -1,8 +1,5 @@
 from superdialog.playbook.events import AdvanceEvent, DegradedEvent
-from superdialog.playbook.models import Playbook
-from superdialog.playbook.runtime import PlaybookRuntime
-from tests.playbook.continuity_fixtures import CONTINUITY_YAML, SeqLLM
-from tests.playbook.test_toolexec import FakeHttp
+from tests.playbook.continuity_fixtures import make_runtime
 
 INTERRUPT = {
     "slots": {},
@@ -12,13 +9,7 @@ INTERRUPT = {
 }
 PLAIN = {"slots": {}, "advance": None, "note": None}
 
-
-def _rt(payloads: list[dict]) -> PlaybookRuntime:
-    return PlaybookRuntime(
-        Playbook.from_yaml(CONTINUITY_YAML),
-        director_llm=SeqLLM(payloads),
-        http=FakeHttp([]),
-    )
+_rt = make_runtime
 
 
 async def test_self_interrupt_holds_detour_instead_of_self_looping() -> None:

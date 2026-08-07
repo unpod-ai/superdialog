@@ -11,8 +11,7 @@ from superdialog.playbook.events import AdvanceEvent, DegradedEvent, SlotWriteEv
 from superdialog.playbook.models import Playbook
 from superdialog.playbook.runtime import PlaybookRuntime
 from superdialog.playbook.supervisor import detect_triggers
-from tests.playbook.continuity_fixtures import CONTINUITY_YAML, SeqLLM
-from tests.playbook.test_toolexec import FakeHttp
+from tests.playbook.continuity_fixtures import CONTINUITY_YAML, make_runtime
 
 PRICE = {"slots": {}, "advance": None, "note": None, "interrupt": "price_guardrail"}
 AVAIL = {
@@ -23,13 +22,15 @@ AVAIL = {
 }
 PLAIN = {"slots": {}, "advance": None, "note": None}
 
+_rt = make_runtime
 
-def _rt(payloads: list[dict], pb: Playbook | None = None) -> PlaybookRuntime:
-    return PlaybookRuntime(
-        pb or Playbook.from_yaml(CONTINUITY_YAML),
-        director_llm=SeqLLM(payloads),
-        http=FakeHttp([]),
-    )
+# ask_budget's rule with requires stripped so its hop can be prose-only
+# (same idiom as test_continuity_advances).
+BUDGET_STRIPPED_YAML = CONTINUITY_YAML.replace(
+    "to: main.close,\n             requires: [budget]}",
+    "to: main.close}",
+)
+assert BUDGET_STRIPPED_YAML != CONTINUITY_YAML  # guard: the surgery landed
 
 
 def _trajectory(rt: PlaybookRuntime) -> list[tuple[str | None, str, str]]:
@@ -72,12 +73,7 @@ async def test_golfai_conveyor_bounce_reads_uncorroborated() -> None:
     """golfai conveyor: one real answer, then prose-only advances. The second
     advance is uncorroborated + steered; a third prose-only advance makes the
     supervisor's uncorroborated_streak trigger fire."""
-    yaml = CONTINUITY_YAML.replace(  # requires-stripped ask_budget rule so the
-        "to: main.close,\n             requires: [budget]}",  # third hop can be
-        "to: main.close}",  # prose-only (same idiom as test_continuity_advances)
-    )
-    assert yaml != CONTINUITY_YAML
-    pb = Playbook.from_yaml(yaml)
+    pb = Playbook.from_yaml(BUDGET_STRIPPED_YAML)
     rt = _rt(
         [
             {"slots": {"location": "Pune"}, "advance": "main.pitch"},
@@ -95,6 +91,8 @@ async def test_golfai_conveyor_bounce_reads_uncorroborated() -> None:
     assert rt.state.steering_note is not None  # steer live at ask_budget
     assert "without confirmed input" in rt.state.steering_note
     await rt.on_user_text("uh")
+    adv = [e for e in rt.log.events if isinstance(e, AdvanceEvent)]
+    assert adv[-1].corroborated is False  # third hop: direct plan-letter pin
     assert "uncorroborated_streak" in detect_triggers(rt.state, rt.log, pb)
 
 
@@ -171,18 +169,13 @@ async def test_interrupt_advances_stamp_corroborated_none() -> None:
 async def test_junk_only_turn_prose_advance_is_uncorroborated() -> None:
     """golfai budget='None': the junk write is rejected (DegradedEvent), so the
     same verdict's requires-less advance has no evidence — uncorroborated."""
-    yaml = CONTINUITY_YAML.replace(
-        "to: main.close,\n             requires: [budget]}",
-        "to: main.close}",
-    )
-    assert yaml != CONTINUITY_YAML
     rt = _rt(
         [
             {"slots": {"location": "Pune"}, "advance": "main.pitch"},
             {"slots": {}, "advance": "main.ask_budget"},
             {"slots": {"budget": "None"}, "advance": "main.close"},
         ],
-        pb=Playbook.from_yaml(yaml),
+        pb=Playbook.from_yaml(BUDGET_STRIPPED_YAML),
     )
     await rt.start()
     await rt.on_user_text("Pune")

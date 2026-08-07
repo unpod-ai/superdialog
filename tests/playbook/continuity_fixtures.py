@@ -3,6 +3,13 @@
 import json
 import textwrap
 
+from superdialog.playbook.models import Playbook
+from superdialog.playbook.runtime import PlaybookRuntime
+
+# Imported from a sibling test module — acceptable smell, beats three
+# drifting copies of FakeHttp (reviewer-sanctioned).
+from tests.playbook.test_toolexec import FakeHttp
+
 CONTINUITY_YAML = textwrap.dedent("""
     persona: "Test assistant."
     journeys:
@@ -74,3 +81,14 @@ class SeqLLM:
         if self._payloads:
             return json.dumps(self._payloads.pop(0))
         return json.dumps({"slots": {}, "advance": None, "note": None})
+
+
+def make_runtime(
+    payloads: list[dict], pb: Playbook | None = None
+) -> PlaybookRuntime:
+    """Runtime wired for continuity tests: SeqLLM director, no-op http."""
+    return PlaybookRuntime(
+        pb or Playbook.from_yaml(CONTINUITY_YAML),
+        director_llm=SeqLLM(payloads),
+        http=FakeHttp([]),
+    )

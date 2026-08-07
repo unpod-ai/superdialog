@@ -1,3 +1,6 @@
+import re
+import textwrap
+
 import anyio
 
 from superdialog.playbook.events import AdvanceEvent, EventLog, UtteranceEvent
@@ -217,7 +220,6 @@ def test_default_hold_timeout_is_four_seconds() -> None:
 
 
 async def test_strict_checkpoint_speaks_verbatim_without_llm() -> None:
-    import textwrap
     yaml_text = textwrap.dedent('''
         persona: "Assistant."
         journeys:
@@ -243,8 +245,6 @@ async def test_strict_checkpoint_speaks_verbatim_without_llm() -> None:
 async def test_strict_without_verbatim_does_not_call_llm() -> None:
     # A strict checkpoint with NO say_verbatim must still not improvise via the
     # LLM; it falls back to the recovery line.
-    import textwrap
-    from superdialog.playbook.talker import RECOVERY_LINE
     yaml_text = textwrap.dedent('''
         persona: "Assistant."
         journeys:
@@ -319,8 +319,6 @@ async def test_callable_hold_line() -> None:
 
 def _gated_never_say_state(phrase: str) -> tuple[Playbook, ConversationState]:
     """Playbook with a single hard-gate checkpoint declaring ``never_say``."""
-    import textwrap
-
     yaml_text = textwrap.dedent(f'''
         persona: "Assistant."
         journeys:
@@ -361,8 +359,6 @@ async def test_filler_respects_never_say() -> None:
 async def test_filler_excised_to_punctuation_is_skipped() -> None:
     """never_say covering the FULL filler (incl. ellipsis) leaves punctuation
     only — no filler chunk may be yielded at all."""
-    import re
-
     pb, state = _gated_never_say_state(FILLER)  # full text incl. trailing "…"
 
     async def director_done() -> ConversationState:

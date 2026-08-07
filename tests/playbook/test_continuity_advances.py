@@ -3,17 +3,9 @@ steer, and corroborated advances beating a forced detour resume."""
 
 from superdialog.playbook.events import AdvanceEvent
 from superdialog.playbook.models import Playbook
-from superdialog.playbook.runtime import PlaybookRuntime
-from tests.playbook.continuity_fixtures import CONTINUITY_YAML, SeqLLM
-from tests.playbook.test_toolexec import FakeHttp
+from tests.playbook.continuity_fixtures import CONTINUITY_YAML, make_runtime
 
-
-def _rt(payloads, pb=None):
-    return PlaybookRuntime(
-        pb or Playbook.from_yaml(CONTINUITY_YAML),
-        director_llm=SeqLLM(payloads),
-        http=FakeHttp([]),
-    )
+_rt = make_runtime
 
 
 async def test_requires_backed_advance_is_corroborated_and_silent() -> None:
