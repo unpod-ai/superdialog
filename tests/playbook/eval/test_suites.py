@@ -451,3 +451,47 @@ def test_no_reentry_ignores_probe_phase_version_reset() -> None:
     s = _suite(expect={"bye-case": SuiteExpect(no_reentry=True)}, min_composite=None)
     checks = evaluate_expectations(s, _report(), log)
     assert [c.passed for c in checks] == [True]
+
+
+# -- engine-log capture (the goodbye:fired observability contract) -----------------
+
+
+def test_capture_engine_logs_routes_logger_records_into_stream() -> None:
+    """[DIRECTOR]/[turn-trace] markers are logging records (INFO/DEBUG) with no
+    configured handler; the capture context must tee them into the bench log
+    stream and restore logger state after (regression: 4eed0b9 converted the
+    markers from print to logging, silently blinding goodbye:fired)."""
+    import io
+    import logging
+
+    stream = io.StringIO()
+    rt_log = logging.getLogger("superdialog.playbook.runtime")
+    with su._capture_engine_logs(stream):
+        rt_log.info("[DIRECTOR] verdict advance=interrupt:global_goodbye cp=x")
+        rt_log.debug("[turn-trace] side=brain version=3 checkpoint=main.a")
+    out = stream.getvalue()
+    assert "interrupt:global_goodbye" in out
+    assert "[turn-trace]" in out
+    # restored: records no longer reach the stream
+    rt_log.info("[DIRECTOR] verdict advance=after cp=y")
+    assert "advance=after" not in stream.getvalue()
+
+
+def test_run_bench_captures_logger_emitted_markers(tmp_path, monkeypatch) -> None:
+    """_run_bench's returned log must contain logger-emitted engine markers,
+    not just print() output — the exact gap that made goodbye:fired
+    unfalsifiable while the monkeypatched unit tests stayed green."""
+    import logging
+
+    def fake_cmd_bench(args):
+        print("[eval-progress] mode=playbook case 1/1 rep 1/1 id=c1")
+        logging.getLogger("superdialog.playbook.runtime").info(
+            "[DIRECTOR] verdict advance=interrupt:global_goodbye cp=main.x"
+        )
+        return 0
+
+    monkeypatch.setattr("superdialog.eval.cli.cmd_bench", fake_cmd_bench)
+    suite = _suite()
+    log = su._run_bench(suite, suite.dataset, tmp_path, "j", "u")
+    assert "id=c1" in log  # stdout still captured
+    assert "interrupt:global_goodbye" in log  # logger records captured too

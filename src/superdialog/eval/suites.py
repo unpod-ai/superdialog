@@ -39,6 +39,7 @@ import contextlib
 import hashlib
 import io
 import json
+import logging
 import re
 import sys
 from pathlib import Path
@@ -333,6 +334,32 @@ class _Tee(io.TextIOBase):
         self._mirror.flush()
 
 
+@contextlib.contextmanager
+def _capture_engine_logs(stream: Any):
+    """Tee ``superdialog`` engine log records into the bench capture.
+
+    The behavioral checks grep the captured log for logger-emitted markers
+    ('[DIRECTOR] verdict advance=…' at INFO, '[turn-trace] …' at DEBUG).
+    Nothing configures a logging handler in this process, so without this
+    those records are dropped and goodbye:fired / no_reentry are
+    unfalsifiable — every suite failed goodbye:fired regardless of engine
+    behavior after 4eed0b9 converted the markers from print() to logging.
+    Scoped to the bench run and always removed; the logger level is
+    restored so the eval process doesn't leak DEBUG elsewhere.
+    """
+    logger = logging.getLogger("superdialog")
+    handler = logging.StreamHandler(stream)
+    handler.setLevel(logging.DEBUG)
+    prev_level = logger.level
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    try:
+        yield
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(prev_level)
+
+
 def _run_bench(suite: Suite, dataset: str, out_dir: Path, judge: str, user: str) -> str:
     """Invoke ``eval bench`` in-process; return the captured log text."""
     from .cli import cmd_bench
@@ -356,7 +383,7 @@ def _run_bench(suite: Suite, dataset: str, out_dir: Path, judge: str, user: str)
         out=str(out_dir),
     )
     tee = _Tee(sys.stdout)
-    with contextlib.redirect_stdout(tee):
+    with contextlib.redirect_stdout(tee), _capture_engine_logs(tee):
         rc = cmd_bench(args)
     log = tee.buffer_.getvalue()
     if rc != 0:

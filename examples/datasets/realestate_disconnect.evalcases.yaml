@@ -1,0 +1,127 @@
+# Disconnect-intent + interruption eval suite — derived from the QA failure
+# audit (call cut mid-conversation / goodbye ignored / objections not handled).
+# Measures the ENGINE-side surface: does the Director detect disconnect intent
+# (explicit, soft, Hindi), honor it promptly, and — just as important — NOT
+# end the call on objections/frustration that merely resemble disconnection.
+# (Audio-level barge-in — min_interruption_words / resume_false_interruption —
+# lives in super/ and cannot be exercised by text-turn evals.)
+playbook: examples/playbooks/realestate_site_visit.simple.yaml
+cases:
+  # 1. Explicit disconnect mid-flow: the word "goodbye" said clearly, early.
+  #    Success = agent closes politely, no further questions after the goodbye.
+  - id: explicit-disconnect-mid
+    playbook: examples/playbooks/realestate_site_visit.simple.yaml
+    persona:
+      name: Vikram
+      traits: >-
+        Polite but decisive. Answers name and language, listens to one line of
+        the pitch, then firmly ends: 'I am not interested. Please disconnect
+        the call. Goodbye.' After saying goodbye he gives no further answers —
+        at most repeats 'Goodbye.' once if the agent keeps talking.
+      goal: >-
+        End the call quickly and politely once he has said goodbye. Success
+        means the agent respects the goodbye immediately — acknowledges and
+        closes without asking anything further.
+      max_turns: 10
+      opening: "Hello, yes?"
+      ground_truth_slots:
+        name: Vikram
+        preferred_language: English
+
+  # 2. Soft disconnect INTENT — no 'bye' token at all. Tests pure LLM intent
+  #    detection (the deterministic backstop cannot fire here).
+  - id: soft-intent-driving
+    playbook: examples/playbooks/realestate_site_visit.simple.yaml
+    persona:
+      name: Sneha
+      traits: >-
+        Friendly but genuinely busy. Cooperates for the first few turns, then
+        says 'Actually I am driving right now, I really have to go. Can you
+        call me some other time?' — never uses the words bye or goodbye. If the
+        agent offers a callback she accepts and stops responding meaningfully.
+      goal: >-
+        Exit the call gracefully by stating she has to go. Success means the
+        agent recognizes the intent, offers a quick callback or closes, and
+        does NOT keep qualifying her.
+      max_turns: 10
+      opening: "Haan, hello."
+      ground_truth_slots:
+        name: Sneha
+        preferred_language: Hindi
+        stay_location: Thane
+
+  # 3. Hindi disconnect intent — 'फोन रखती हूँ' style closing, Devanagari only.
+  #    The Latin-token backstop cannot fire; measures multilingual intent.
+  - id: hindi-disconnect-meena
+    playbook: examples/playbooks/realestate_site_visit.simple.yaml
+    persona:
+      name: Meena
+      traits: >-
+        Hindi speaker. Shares her name and city, hears the pitch, then decides
+        to leave: 'ठीक है, अभी मैं फोन रखती हूँ। धन्यवाद।' — entirely in
+        Hindi, never says bye or goodbye in English. Repeats 'फोन रखिए,
+        धन्यवाद' once if the agent continues.
+      goal: >-
+        End the call in Hindi. Success means the agent understands the Hindi
+        closing, says a brief goodbye, and stops asking questions.
+      max_turns: 10
+      opening: "हेलो, हाँ बोलिए।"
+      ground_truth_slots:
+        name: Meena
+        preferred_language: Hindi
+        stay_location: Pune
+
+  # 4. Do-not-call: strong disconnect + compliance intent. Success = respectful
+  #    close, no re-pitch, acknowledges the do-not-call request.
+  - id: do-not-call-rajesh
+    playbook: examples/playbooks/realestate_site_visit.simple.yaml
+    persona:
+      name: Rajesh
+      traits: >-
+        Irritated from the start. Within two turns says 'Stop calling me.
+        Remove my number from your list. Do not call again.' Not abusive, but
+        firm. Ignores any further pitch; repeats the demand once if pushed.
+      goal: >-
+        Get the agent to confirm he will not be called again and end the call.
+        Success means the agent acknowledges the do-not-call request and closes
+        without attempting to qualify or pitch further.
+      max_turns: 8
+      opening: "Yes, who is this?"
+      ground_truth_slots:
+        name: Rajesh
+
+  # 5. THE CONTROL — objections + frustration that must NOT end the call.
+  #    Mirrors the QA transcript: short 'No.' interjections, 'I didn't say
+  #    that', repeating herself — the agent must repair and continue, and any
+  #    premature hangup is a failure. Distinguishes intent detection from
+  #    trigger-happiness.
+  - id: objecting-but-staying-pooja
+    playbook: examples/playbooks/realestate_site_visit.simple.yaml
+    persona:
+      name: Pooja
+      traits: >-
+        Interested but prickly. Interjects with short objections mid-flow:
+        'No.', 'Wait.', 'That is too expensive.', and corrects the agent
+        sharply when it assumes anything ('I didn't say that'). If asked
+        something twice she says 'I already told you' with irritation — but
+        she NEVER wants to end the call; she genuinely wants details of a
+        2 BHK in Thane for self use and stays until she gets them. If the
+        agent routes an exact-figure question (carpet area, flat-wise price)
+        to a sales advisor, she grumbles once but ACCEPTS it and answers the
+        agent's remaining qualification questions (language, self-use,
+        Thane) instead of repeating the demand.
+      goal: >-
+        Despite objecting and getting irritated, complete the enquiry for a
+        2 BHK in Thane for self use. Success means the call is NOT ended
+        prematurely by the agent — her frustration is repaired and the
+        qualification completes. Delivering exact carpet-area or flat-wise
+        price figures is NOT required for success: routing those to the
+        sales advisor while keeping her engaged counts as correct handling.
+      max_turns: 14
+      opening: "Hello. Make it quick please."
+      ground_truth_slots:
+        name: Pooja
+        preferred_language: English
+        stay_location: Thane
+        reason_for_looking: Self-use
+        configuration: 2 BHK
