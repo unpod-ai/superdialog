@@ -70,6 +70,7 @@ _JUNK_VALUES = {"", "none", "null", "n/a", "na", "not specified", "unknown"}
 def _is_junk(value: Any) -> bool:
     return isinstance(value, str) and value.strip().lower() in _JUNK_VALUES
 
+
 _RECOVER_NOTE = (
     "The caller is frustrated or repeating themselves — do NOT end the call. "
     "Acknowledge the confusion, correct course, and keep helping."
@@ -544,15 +545,22 @@ class Director:
             slot_spec = cp.slots.get(key)
             if slot_spec is None or slot_spec.authoritative:
                 continue  # reject slots not defined in current checkpoint, or authoritative
-            if not self._pb.legacy_continuity and (value is None or _is_junk(value)):
+            # A declared enum member is authored vocabulary, never junk
+            # (values: [yes, no, unknown] must be able to fill "unknown").
+            declared_member = slot_spec.type == "enum" and value in (
+                slot_spec.values or ()
+            )
+            if (
+                not self._pb.legacy_continuity
+                and not declared_member
+                and (value is None or _is_junk(value))
+            ):
                 # Auditable rejection: repeated junk on one key is a
                 # supervisor trigger (junk_rejected:<key>, Task 12).
                 # JSON null is junk too: str coercion would mint the literal
                 # 'None' string (the production configuration='None' origin).
                 events.append(
-                    DegradedEvent(
-                        component="director", detail=f"junk_rejected:{key}"
-                    )
+                    DegradedEvent(component="director", detail=f"junk_rejected:{key}")
                 )
                 continue
             coerced = _coerce_slot(value, slot_spec, state.now)

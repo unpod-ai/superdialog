@@ -598,3 +598,30 @@ async def test_junk_slot_values_pass_under_legacy() -> None:
         writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
         assert [e for e in writes if e.key == "city" and e.value == "None"], repr(raw)
         assert not [e for e in decision.events if isinstance(e, DegradedEvent)]
+
+
+ENUM_JUNK_MEMBER_YAML = textwrap.dedent("""
+    journeys:
+      j:
+        checkpoints:
+          - id: c
+            slots:
+              tier: {type: enum, values: ["unknown", "basic"]}
+          - id: end
+            terminal: true
+""")
+
+
+async def test_declared_enum_member_is_never_junk_under_v2() -> None:
+    # A junk-table token that is authored enum vocabulary must still fill:
+    # membership trumps the junk table.
+    pb = Playbook.from_yaml(ENUM_JUNK_MEMBER_YAML)
+    log = EventLog()
+    log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint="j.c", rule="init"))
+    log.append(UtteranceEvent(role="user", text="not sure, unknown I guess"))
+    state = ConversationState.fold(log, playbook=pb)
+    llm = CannedLLM({"slots": {"tier": "unknown"}, "advance": None, "note": None})
+    decision = await Director(pb, llm).evaluate(state)
+    writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
+    assert [e for e in writes if e.key == "tier" and e.value == "unknown"]
+    assert not [e for e in decision.events if isinstance(e, DegradedEvent)]
