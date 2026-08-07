@@ -452,35 +452,7 @@ class Talker:
         never_say = list(cp.never_say) if cp is not None else []
         for attempt in (1, 2):
             try:
-                messages = view.messages
-                if attempt == 2:
-                    # Retrying after an empty attempt 1. One cause seen in
-                    # production: checkpoint guidance itself instructs "say
-                    # NOTHING / zero words" once slots are complete, trusting
-                    # a tool-calling channel this Talker doesn't have — the
-                    # model complies literally, we see a clean empty stream,
-                    # and (correctly, from Talker's view) treat it the same
-                    # as a genuine failure. A retry that repeats the same
-                    # prompt just reproduces the same silence. Override with
-                    # a hard instruction that beats any "say nothing" text
-                    # in guidance, so the retry has a real chance of
-                    # producing the natural acknowledgment we actually want
-                    # instead of walking straight into recovery_line.
-                    messages = [
-                        *view.messages,
-                        {
-                            "role": "system",
-                            "content": (
-                                "Your previous response was empty. You must "
-                                "speak at least one short natural sentence "
-                                "this turn, acknowledging what you just "
-                                "heard — never output nothing, regardless of "
-                                "any earlier instruction to stay silent or "
-                                "say zero words."
-                            ),
-                        },
-                    ]
-                stream = self._llm.stream(messages)
+                stream = self._llm.stream(view.messages)
                 produced_any = False
                 try:
                     # never_say enforcement is deterministic, not prompt-hope:
@@ -516,36 +488,21 @@ class Talker:
                         await aclose()
                 if not produced_any:
                     # A filter (or the LLM itself) suppressed/emitted nothing
-                    # for this turn — e.g. a whole-turn JSON tool-call dump
-                    # discarded by _filter_structured_output_leak. Treat this
-                    # exactly like a failed attempt: retry once, then degrade
-                    # to recovery_line. Without this, a clean-but-empty
-                    # stream fell straight through to dead air instead —
-                    # silently worse than the leak it was suppressing.
-                    #
-                    # Logged at the same level/shape as the except-block's
-                    # failure log below so this path is diagnosable from logs
-                    # instead of being indistinguishable from an unrelated
-                    # double-generation -- the LLM adapter layer (e.g.
-                    # handler.py's _TalkerLLMAdapter) prints its own
-                    # per-attempt ttfb line even when THIS retry fires, so
-                    # without this log two successful-looking ttfb lines with
-                    # no visible cause connecting them look identical to a
-                    # completely different bug (e.g. preemptive-generation
-                    # replay) from the logs alone.
-                    _log.warning(
-                        "[talker] LLM stream attempt=%d produced no output "
-                        "(suppressed by a filter or genuinely empty) -- retrying",
-                        attempt,
+                    # for this turn — e.g. checkpoint guidance told the
+                    # Talker to say nothing / defer to a tool call, or a
+                    # leaked JSON/tag dump got excised outright. This used to
+                    # retry into a forced "say something" override, but that
+                    # produced a confident, FALSE commitment in production
+                    # ("Certainly, I will hold that slot for you" on a turn
+                    # the Director had NOT actually advanced or held
+                    # anything) — a wrong, specific claim is strictly worse
+                    # than true silence for a transactional voice agent.
+                    # Silence is accepted as-is here, never papered over with
+                    # invented words.
+                    _log.info(
+                        "[talker] LLM stream produced no output (suppressed "
+                        "by a filter or genuinely empty) -- accepting silence",
                     )
-                    if attempt == 2:
-                        yield SpeechChunk(
-                            text=self._recovery_line,
-                            final=True,
-                            spoke_from_version=view.spoke_from_version,
-                        )
-                        return
-                    continue
                 yield SpeechChunk(
                     text="", final=True, spoke_from_version=view.spoke_from_version
                 )

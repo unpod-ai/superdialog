@@ -7,7 +7,8 @@ stays independent of the legacy machine path.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+import re
+from datetime import date, datetime, timedelta
 
 from pydantic import BaseModel, Field
 
@@ -81,10 +82,10 @@ FOLLOWUP = """## Follow-ups & Callbacks
 """
 
 DATE_DISCIPLINE = """## Date & Time Discipline
-- A "## CURRENT DATE & TIME" line gives today's anchor. Resolve EVERY relative reference against it ("tomorrow"/"kal", "Monday", "in 2 days") to an exact absolute date (weekday + DD Month YYYY).
+- A "## CURRENT DATE & TIME" line gives today's anchor.
+- For a date slot, capture what the caller said in your own plain lowercase words ("tomorrow", "monday", "next friday", "in three days", "10 august") — do NOT compute the resulting calendar date yourself. Weekday/relative-date arithmetic done by you is unreliable and has caused real booking errors (e.g. resolving "Monday" to the wrong date); the system resolves it deterministically from what you capture. If the caller states an explicit date ("10 August", "2026-08-10"), capture that as stated instead.
 - To state an age or how long ago a date was, compute it FROM the anchor date above (anchor year − stated year, adjusted for month/day). NEVER assume the current year from your own knowledge or training data — a child born in August 2019 is about 6 years old when the anchor says 2026, not 3–4.
-- "tomorrow" is exactly ONE day after today; never resolve a future booking to a past date.
-- ALWAYS confirm the resolved absolute date back before booking.
+- ALWAYS confirm the resolved absolute date (given back to you under "Already known") back before booking.
 - Never invent a date/time the caller did not state. Once captured and confirmed, it is FIXED unless they explicitly reschedule.
 """
 
@@ -275,20 +276,66 @@ def datetime_anchor_line(now: datetime) -> str:
 # Indian convention: DD/MM/YYYY (the "%d/%m/%Y" entry). MM/DD ambiguity is caller-side.
 _ABS_FORMATS = ("%Y-%m-%d", "%d %B %Y", "%d %b %Y", "%B %d %Y", "%b %d, %Y", "%d/%m/%Y")
 
+_REL_DAYS = {"today": 0, "tomorrow": 1, "yesterday": -1}
+
+_WEEKDAYS = {
+    "monday": 0, "mon": 0,
+    "tuesday": 1, "tue": 1, "tues": 1,
+    "wednesday": 2, "wed": 2,
+    "thursday": 3, "thu": 3, "thurs": 3,
+    "friday": 4, "fri": 4,
+    "saturday": 5, "sat": 5,
+    "sunday": 6, "sun": 6,
+}
+
+_N_DAYS_RE = re.compile(r"^(?:in\s+)?(\d+)\s+days?(?:\s+from\s+now)?$")
+_N_WEEKS_RE = re.compile(r"^(?:in\s+)?(\d+)\s+weeks?(?:\s+from\s+now)?$")
+_WEEKDAY_RE = re.compile(
+    r"^(?:(this|next|coming|upcoming)\s+)?(" + "|".join(_WEEKDAYS) + r")$"
+)
+
+
+def _next_weekday(today: date, target: int, *, strictly_after: bool) -> date:
+    """Nearest ``target`` weekday on/after ``today``; ``strictly_after`` skips today itself."""
+    delta = (target - today.weekday()) % 7
+    if delta == 0 and strictly_after:
+        delta = 7
+    return today + timedelta(days=delta)
+
 
 def normalize_date(value: object, now: datetime | None):
     """Resolve a date value to an absolute ISO date string when possible.
 
-    Relative words resolve against ``now``; common absolute formats canonicalize
-    to YYYY-MM-DD; anything unrecognized is returned untouched (the Director
-    prompt's DATE_DISCIPLINE instruction is the primary normalization mechanism).
+    Relative expressions (weekday names, "next friday", "in 3 days", "in 2
+    weeks", today/tomorrow/yesterday) resolve against ``now`` in code; common
+    absolute formats canonicalize to YYYY-MM-DD; anything unrecognized is
+    returned untouched. This arithmetic is deliberately NOT delegated to the
+    Director LLM (see DATE_DISCIPLINE) -- a fast/cheap model computing weekday
+    math under latency pressure has produced real wrong-date bookings (e.g.
+    "Monday" resolved three days off), so the LLM is instructed to pass the
+    caller's relative words through as-is and this function does the math.
     """
     if not isinstance(value, str):
         return value
-    v = value.strip().lower()
-    rel = {"today": 0, "tomorrow": 1, "yesterday": -1}
-    if now is not None and v in rel:
-        return (now.date() + timedelta(days=rel[v])).isoformat()
+    v = re.sub(r"[?!.,]+$", "", value.strip().lower()).strip()
+    if now is not None:
+        if v in _REL_DAYS:
+            return (now.date() + timedelta(days=_REL_DAYS[v])).isoformat()
+        m = _N_DAYS_RE.match(v)
+        if m:
+            return (now.date() + timedelta(days=int(m.group(1)))).isoformat()
+        m = _N_WEEKS_RE.match(v)
+        if m:
+            return (now.date() + timedelta(days=7 * int(m.group(1)))).isoformat()
+        if v == "next week":
+            return (now.date() + timedelta(days=7)).isoformat()
+        m = _WEEKDAY_RE.match(v)
+        if m:
+            qualifier, day_name = m.group(1), m.group(2)
+            target = _next_weekday(
+                now.date(), _WEEKDAYS[day_name], strictly_after=qualifier == "next"
+            )
+            return target.isoformat()
     for fmt in _ABS_FORMATS:
         try:
             return datetime.strptime(value.strip(), fmt).date().isoformat()

@@ -89,9 +89,11 @@ async def test_suppresses_json_tool_call_dump() -> None:
     )
     chunks = [c async for c in Talker(pb, llm).speak(state)]
     text = "".join(c.text for c in chunks)
-    # Suppressed entirely: Talker's own attempt-2 retry + recovery_line
-    # kicks in (RECOVERY_LINE), same as a genuinely empty completion.
-    assert text == RECOVERY_LINE
+    # Suppressed entirely -> accepted as silence, no forced retry-into-speech
+    # (a forced "say something" retry previously produced confident but
+    # false commitments in production; silence is strictly safer).
+    assert text == ""
+    assert llm.calls == 1
 
 
 async def test_does_not_suppress_normal_speech_with_braces_midsentence() -> None:
@@ -187,15 +189,14 @@ async def test_discards_unclosed_bare_function_call_invocation() -> None:
     # a bare call expression. Unlike the mixed-content case above, there's
     # nothing here to lose by discarding, so this is the one case that
     # discards an unclosed span instead of flushing it. With the whole turn
-    # suppressed, this also triggers Talker's own produced_any retry ->
-    # recovery_line.
+    # suppressed, this is accepted as silence (no forced retry-into-speech).
     pb, state = _state("booking.collect")
     llm = StreamLLM(
         ["<|tool_call>_hold_slot(slot_id='slot_course_95f50dfb_2026-08-06_1200')"]
     )
     chunks = [c async for c in Talker(pb, llm).speak(state)]
     text = "".join(c.text for c in chunks)
-    assert text == RECOVERY_LINE
+    assert text == ""
     assert "_hold_slot" not in text
 
 
@@ -211,7 +212,7 @@ async def test_strips_self_closing_action_tag_leak() -> None:
     # directly, e.g. <call:collect_to_check_availability .../> -- contains
     # neither "tool_call" (misses _filter_tool_call_leakage) nor a leading
     # '{'/'[' (misses _filter_structured_output_leak). Suppressed entirely,
-    # so both attempts end up empty and the turn recovers via RECOVERY_LINE.
+    # accepted as silence (no forced retry-into-speech).
     pb, state = _state("booking.collect")
     llm = StreamLLM(
         [
@@ -221,7 +222,7 @@ async def test_strips_self_closing_action_tag_leak() -> None:
     )
     chunks = [c async for c in Talker(pb, llm).speak(state)]
     text = "".join(c.text for c in chunks)
-    assert text == RECOVERY_LINE
+    assert text == ""
     assert "<call:" not in text
 
 
@@ -258,22 +259,25 @@ async def test_failure_retries_once_then_recovers() -> None:
     assert RECOVERY_LINE in "".join([c.text async for c in dead.speak(state)])
 
 
-async def test_clean_but_empty_stream_recovers_instead_of_dead_air() -> None:
+async def test_clean_but_empty_stream_is_accepted_as_silence() -> None:
     # The LLM stream completes with no exception but yields nothing at all --
-    # same failure shape a filter-suppressed turn produces. This must recover
-    # exactly like a raised exception does, not fall through to silence.
+    # e.g. checkpoint guidance told it to say nothing / defer to a tool call,
+    # or a leak got filtered to empty. This is accepted as silence: forcing a
+    # retry into speech previously produced a confident but FALSE commitment
+    # in production ("Certainly, I will hold that slot for you" while
+    # nothing had actually been held) -- silence is strictly safer than an
+    # invented claim for a transactional voice agent. No retry, no recovery
+    # line, single LLM call.
     pb, state = _state("booking.collect")
     empty = Talker(pb, StreamLLM([]))
     chunks = [c async for c in empty.speak(state)]
-    assert "".join(c.text for c in chunks) == RECOVERY_LINE
-    assert empty._llm.calls == 2
+    assert "".join(c.text for c in chunks) == ""
+    assert empty._llm.calls == 1
 
 
 class EmptyThenRespondsLLM:
     """Empty on call 1 (mimics a checkpoint's own "say nothing" guidance
-    being followed literally); real speech on call 2. Records the messages
-    passed to each call so the retry-override system message can be
-    asserted on."""
+    being followed literally); would speak on call 2 if ever called."""
 
     def __init__(self, second_call_text: str) -> None:
         self.second_call_text = second_call_text
@@ -286,26 +290,21 @@ class EmptyThenRespondsLLM:
         yield self.second_call_text
 
 
-async def test_retry_overrides_say_nothing_guidance_with_speech() -> None:
+async def test_empty_stream_never_retries_into_forced_speech() -> None:
     # Root cause seen in production: checkpoint guidance instructs "say
     # NOTHING / zero words" once all slots are set, trusting a tool-calling
     # channel the Talker doesn't have. The model complies literally -> a
-    # clean empty stream on attempt 1, indistinguishable from a genuine
-    # failure. The retry must inject an override strong enough to make the
-    # model speak instead of silently repeating the same empty response.
+    # clean empty stream on attempt 1. A prior version of this code forced a
+    # second LLM call with a "you must speak" override, which improvised a
+    # false commitment ("I will hold that slot for you") on a turn nothing
+    # had actually been held. There must be no second call and no invented
+    # speech -- silence only.
     pb, state = _state("booking.collect")
     llm = EmptyThenRespondsLLM("Got it, one player -- let me check that for you.")
     chunks = [c async for c in Talker(pb, llm).speak(state)]
     text = "".join(c.text for c in chunks)
-    assert text == "Got it, one player -- let me check that for you."
-    assert RECOVERY_LINE not in text
-    assert len(llm.calls_messages) == 2
-    first_call, second_call = llm.calls_messages
-    assert not any("empty" in m["content"].lower() for m in first_call)
-    assert any(
-        "empty" in m["content"].lower() and "never output nothing" in m["content"].lower()
-        for m in second_call
-    )
+    assert text == ""
+    assert len(llm.calls_messages) == 1
 
 
 async def test_hard_gate_filler_then_speech() -> None:

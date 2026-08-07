@@ -320,6 +320,106 @@ async def test_authoritative_slots_never_written_by_verdict() -> None:
     assert [e for e in writes if e.key == "city"]
 
 
+RESOLVE_FROM_YAML = textwrap.dedent("""
+    journeys:
+      main:
+        checkpoints:
+          - id: collect
+            goal: "collect a course"
+            slots:
+              course_name:
+                description: "Course name the caller said"
+              course_id:
+                resolve_from:
+                  result: city_courses_result
+                  list_field: courses
+                  name_field: name
+                  id_field: course_id
+                description: "Confirmed course_id if already identified"
+            advance_when:
+              - {when: "course confirmed", judge: llm, to: main.done}
+          - id: done
+            terminal: true
+            outcome: completed
+""")
+
+
+def _resolve_from_state(with_candidates: bool) -> tuple[Playbook, ConversationState]:
+    pb = Playbook.from_yaml(RESOLVE_FROM_YAML)
+    log = EventLog()
+    log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint="main.collect", rule="init"))
+    log.append(UtteranceEvent(role="user", text="Book for DLF Golf Course"))
+    if with_candidates:
+        log.append(
+            ToolResultEvent(
+                tool="courses_by_city",
+                store_as="city_courses_result",
+                ok=True,
+                data={"courses": [{"name": "DLF Golf and Country Club", "course_id": "course_ddfd8225"}]},
+            )
+        )
+    return pb, ConversationState.fold(log, playbook=pb)
+
+
+async def test_resolve_from_slot_rejects_raw_name_when_candidate_list_missing() -> None:
+    # The real production failure: city_courses_result was never fetched
+    # (caller went straight from greeting to booking collection), yet the
+    # Director verdict still tried to write the caller's spoken name
+    # straight into course_id -- an opaque id field, never something the
+    # caller utters verbatim. Must be rejected, not stored as a fake id.
+    pb, state = _resolve_from_state(with_candidates=False)
+    llm = CannedLLM(
+        {
+            "slots": {"course_id": "DLF Golf Course", "course_name": "DLF Golf Course"},
+            "advance": None,
+            "note": None,
+        }
+    )
+    decision = await Director(pb, llm).evaluate(state)
+    writes = {e.key: e.value for e in decision.events if isinstance(e, SlotWriteEvent)}
+    assert "course_id" not in writes  # rejected: not a live candidate id
+    assert writes.get("course_name") == "DLF Golf Course"  # plain slot: unaffected
+
+
+async def test_resolve_from_slot_accepts_a_real_candidate_id() -> None:
+    pb, state = _resolve_from_state(with_candidates=True)
+    llm = CannedLLM(
+        {"slots": {"course_id": "course_ddfd8225"}, "advance": None, "note": None}
+    )
+    decision = await Director(pb, llm).evaluate(state)
+    writes = {e.key: e.value for e in decision.events if isinstance(e, SlotWriteEvent)}
+    assert writes.get("course_id") == "course_ddfd8225"
+
+
+async def test_resolve_from_slot_rejects_non_candidate_even_when_list_present() -> None:
+    # A live candidate list existing this turn doesn't excuse a value that
+    # isn't actually one of the listed ids (model hallucination, stale id).
+    pb, state = _resolve_from_state(with_candidates=True)
+    llm = CannedLLM(
+        {"slots": {"course_id": "DLF Golf Course"}, "advance": None, "note": None}
+    )
+    decision = await Director(pb, llm).evaluate(state)
+    writes = {e.key: e.value for e in decision.events if isinstance(e, SlotWriteEvent)}
+    assert "course_id" not in writes
+
+
+async def test_resolve_block_instructs_bare_affirmation_uses_assistant_offer() -> None:
+    # A caller confirming ("yes", "hold that") never restates the name/time
+    # the assistant just offered -- CANDIDATE RESOLUTION must tell the
+    # Director to match the ASSISTANT's own preceding turn against the
+    # candidate list in that case, not just the caller's current utterance
+    # (which is empty of any matchable name). Prompt-content regression
+    # guard, mirrors test_verdict_prompt_lists_enum_members' pattern: the
+    # LLM's actual reasoning can't be unit tested, but the instruction it's
+    # given can be.
+    pb, state = _resolve_from_state(with_candidates=True)
+    llm = CannedLLM({"slots": {}, "advance": None, "note": None})
+    await Director(pb, llm).evaluate(state)
+    system = llm.calls[0][0]["content"]
+    assert "BARE AFFIRMATION" in system
+    assert "ASSISTANT" in system
+
+
 TYPED_SLOTS_YAML = textwrap.dedent("""
     journeys:
       j:
