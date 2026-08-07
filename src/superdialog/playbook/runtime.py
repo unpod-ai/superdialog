@@ -194,7 +194,12 @@ class PlaybookRuntime:
         # step we left instead of honoring a plain advance that would wander off
         # (e.g. straight to closing). Slot writes the Director extracted this
         # turn are still applied so nothing is lost.
-        if state.entered_via_resume and state.resume_stack and not is_interrupt:
+        if (
+            state.entered_via_resume
+            and state.resume_stack
+            and not is_interrupt
+            and not decision.detour_continues
+        ):
             self._apply([e for e in decision.events if not isinstance(e, AdvanceEvent)])
             await self._advance(state.resume_stack[-1], "resume", pass_through)
             await self._apply_turn_budget(pass_through)
@@ -206,7 +211,7 @@ class PlaybookRuntime:
                 self._speak_verbatim(self._pb.checkpoint(current), pass_through)
         await self._apply_with_entry(decision.events, pass_through)
         await self._apply_turn_budget(pass_through)
-        pass_through.extend(await self._quiesce())
+        pass_through.extend(await self._quiesce(hold_resume=decision.detour_continues))
         return pass_through
 
     async def on_external(self, event: ExternalEvent) -> ExternalResult:
@@ -493,11 +498,16 @@ class PlaybookRuntime:
 
     # -- quiescence -----------------------------------------------------------
 
-    async def _quiesce(self) -> list[str]:
-        """Hop through pipelines/expr rules/auto advances until stable."""
+    async def _quiesce(self, hold_resume: bool = False) -> list[str]:
+        """Hop through pipelines/expr rules/auto advances until stable.
+
+        ``hold_resume`` suppresses the forced detour-return hop for this turn
+        (the Director signalled ``detour_continues``: the caller is still on
+        the detour topic — westgate2 steps 10-12).
+        """
         pass_through: list[str] = []
         for _ in range(self._max_hops):
-            if not await self._hop(pass_through):
+            if not await self._hop(pass_through, hold_resume=hold_resume):
                 break
         else:  # never went quiescent: audit the runaway hop loop
             self.log.append(
@@ -505,7 +515,7 @@ class PlaybookRuntime:
             )
         return pass_through
 
-    async def _hop(self, pass_through: list[str]) -> bool:
+    async def _hop(self, pass_through: list[str], hold_resume: bool = False) -> bool:
         """One quiescence hop; True when the system moved and should re-hop."""
         state = self.state
         if state.ended or state.checkpoint_id is None:
@@ -541,7 +551,8 @@ class PlaybookRuntime:
         # orphan the stacked entry — fine for KB-answer steps that don't advance
         # elsewhere; revisit if a resume target gains its own advance rules.
         if (
-            state.entered_via_resume
+            not hold_resume
+            and state.entered_via_resume
             and state.resume_stack
             and state.user_turns_in_checkpoint >= 1
         ):

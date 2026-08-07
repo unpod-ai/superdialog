@@ -40,6 +40,10 @@ class DirectorDecision(BaseModel):
     events: list[Event] = Field(default_factory=list)
     degraded: bool = False  # LLM failed; Talker continues solo
     detail: str = ""  # why degraded: llm_error | json_parse_error | non_dict_verdict
+    # The interrupt that fired targets the checkpoint we are already at (or a
+    # detour we are already inside): the runtime must hold the detour open
+    # this turn instead of forcing the resume return.
+    detour_continues: bool = False
 
 
 _CASTS: dict[str, Callable[[Any], Any]] = {
@@ -570,12 +574,25 @@ class Director:
                 interrupt_id = gb.id
         if interrupt_id:
             spec = next((i for i in self._pb.interrupts if i.id == interrupt_id), None)
-            # Guard: suppress interrupt if its target is already in the completed
-            # path — we've been there and moved forward, so re-firing would
-            # regress the conversation (e.g., global_card_not_received firing
-            # after delivery_query_raised because the transcript mentions the issue).
-            already_handled = spec is not None and spec.to in state.completed
-            if spec is not None and not already_handled:
+            if spec is not None and (
+                spec.to == cp_ref or spec.to in state.resume_stack
+            ):
+                # Already at (or inside the detour of) this interrupt's target.
+                # Re-firing would push the current step onto its own resume
+                # stack and later "resume" back to itself, stranding the real
+                # return point (westgate2 steps 10-12). Hold the detour open:
+                # keep handling the topic here this turn.
+                events.append(
+                    SteeringNoteEvent(
+                        text=(
+                            "The caller is continuing the same topic — keep "
+                            "handling it at this step before resuming the flow."
+                        ),
+                        kind="steer",
+                    )
+                )
+                return DirectorDecision(events=events, detour_continues=True)
+            if spec is not None:
                 # Terminal-interrupt slot guard: a goodbye should not silently
                 # drop required capture — but ONLY when the capture is nearly
                 # complete (>=2/3 of the playbook's required slots filled): at
