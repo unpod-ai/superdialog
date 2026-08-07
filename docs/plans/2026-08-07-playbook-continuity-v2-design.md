@@ -106,8 +106,8 @@ Merging the supervisor into the director was considered and rejected: the trajec
 **Rollout:**
 
 1. Ship the unconditional bug fixes (E1/E2/E3/E9 engine; E5/E7/E8 host). No flag.
-2. Ship v2 semantics behind the flag with default **legacy** for one release; enable v2 on one QA agent; compare traversals.
-3. Flip the default to v2. Westgate and golf get `legacy_continuity: true` only if regressions surface.
+2. ~~Ship v2 semantics behind the flag with default **legacy** for one release; enable v2 on one QA agent; compare traversals.~~ **Superseded (rollout gate decision, 2026-08-07):** the code ships v2 default-ON, matching the Decisions table. For the bake release, ops pins `legacy_continuity: true` on the westgate/golf production playbooks while QA agents run v2; compare traversals.
+3. ~~Flip the default to v2.~~ Remove the production pins once bake traversals look clean. `legacy_continuity: true` stays available per-agent if regressions surface.
 4. Release note for downstream test suites: scripted-director fixtures on v2 playbooks must pin `guidelines: {supervisor: false}` — under v2 the supervisor defaults on and reuses the director LLM, so a scripted verdict sequence would otherwise be consumed by supervisor reviews.
 
 **Testing** (registered as a new `playbook-continuity` module in `scripts/run_tests.sh`):
