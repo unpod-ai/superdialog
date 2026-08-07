@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from datetime import datetime
@@ -510,12 +511,26 @@ class Director:
         prompt = _verdict_prompt(
             self._pb, cp, state, request_confidence=self._fast_release
         )
+        # One retry on a transient call failure (timeout, rate limit, gateway
+        # blip): degrading straight to `degraded=True` on the first error left
+        # the Talker barrier-waiting on a Director that never speaks, then
+        # improvising a stray line once the barrier timed out -- observed in
+        # production as a hallucinated "(Wait for tool result)" turn. A
+        # single retry recovers the common transient case; a second failure
+        # still degrades as before.
         try:
             raw = await self._llm.complete(
                 prompt, **({"json_mode": True} if self._structured_output else {})
             )
         except Exception:
-            return DirectorDecision(degraded=True, detail="llm_error")
+            try:
+                await asyncio.sleep(0.3)
+                raw = await self._llm.complete(
+                    prompt,
+                    **({"json_mode": True} if self._structured_output else {}),
+                )
+            except Exception:
+                return DirectorDecision(degraded=True, detail="llm_error")
         # CompletesLLM promises str, but rich providers (LitellmProvider et al.)
         # return CompletionResult — accept both; .strip() on the object was a
         # per-turn AttributeError that silently killed every Director verdict.

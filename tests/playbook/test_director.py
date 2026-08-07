@@ -180,6 +180,47 @@ async def test_degraded_detail_distinguishes_failure_modes() -> None:
     assert (await Director(pb, ListLLM()).evaluate(state)).detail == "non_dict_verdict"
 
 
+async def test_llm_error_recovers_on_retry() -> None:
+    # A single transient failure (timeout, rate limit, gateway blip) must not
+    # degrade the turn -- the Talker would barrier-wait on a Director that
+    # never speaks, then improvise once its own timeout fired (a hallucinated
+    # "(Wait for tool result)" turn was observed in production from exactly
+    # this path). One retry recovers the common transient case.
+    pb, state = _state()
+
+    class FailsOnceLLM:
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        async def complete(self, messages, **kwargs) -> str:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RuntimeError("transient")
+            return json.dumps({"slots": {}, "advance": None, "note": None})
+
+    llm = FailsOnceLLM()
+    decision = await Director(pb, llm).evaluate(state)
+    assert not decision.degraded
+    assert llm.attempts == 2
+
+
+async def test_llm_error_still_degrades_after_retry_fails() -> None:
+    pb, state = _state()
+
+    class AlwaysRaisingLLM:
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        async def complete(self, messages, **kwargs) -> str:
+            self.attempts += 1
+            raise RuntimeError("boom")
+
+    llm = AlwaysRaisingLLM()
+    decision = await Director(pb, llm).evaluate(state)
+    assert decision.degraded and decision.detail == "llm_error"
+    assert llm.attempts == 2
+
+
 HARD_GATE_YAML = textwrap.dedent("""
     persona: "You verify payments."
     journeys:
