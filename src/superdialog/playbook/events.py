@@ -39,6 +39,10 @@ class AdvanceEvent(_Base):
     # "interrupt:<id>", "policy:<name>", "supervisor:<reason>"
     rule: str
     by: Literal["director", "expr", "policy", "supervisor"] = "director"
+    # v2 accountability: True = slot evidence / expr backed this advance;
+    # False = prose-only (steered); None = unclassified (interrupts, policy,
+    # resume, pre-v2 logs).
+    corroborated: bool | None = None
 
 
 class SteeringNoteEvent(_Base):

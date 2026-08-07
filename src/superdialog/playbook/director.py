@@ -491,6 +491,7 @@ class Director:
                         to_checkpoint=rule.to,
                         rule=rule.rule_id,
                         by="expr",
+                        corroborated=True,
                     )
                 )
                 return events
@@ -708,13 +709,34 @@ class Director:
                                 entity=cp.entity,
                             )
                         )
+                    slot_written_this_turn = any(
+                        isinstance(e, SlotWriteEvent) and e.key in cp.slots
+                        for e in events
+                    )
+                    corroborated = bool(rule.requires) or slot_written_this_turn
                     events.append(
                         AdvanceEvent(
                             from_checkpoint=cp_ref,
                             to_checkpoint=rule.to,
                             rule=rule.rule_id,
+                            corroborated=corroborated,
                         )
                     )
+                    if not corroborated and not self._pb.legacy_continuity:
+                        # Appended AFTER the AdvanceEvent so the fold's
+                        # advance-time steering reset doesn't clear it: the
+                        # steer belongs to the TARGET step.
+                        events.append(
+                            SteeringNoteEvent(
+                                text=(
+                                    "Entering this step without confirmed "
+                                    "input — address the caller's last "
+                                    "utterance first, then pursue this "
+                                    "step's goal."
+                                ),
+                                kind="steer",
+                            )
+                        )
                 else:
                     events.append(
                         SteeringNoteEvent(
