@@ -10,7 +10,7 @@ staying silent on frustration ('I already told you') and embedded byes.
 
 import textwrap
 
-from superdialog.playbook.director import _clear_goodbye
+from superdialog.playbook.director import _clear_goodbye, _false_goodbye
 from superdialog.playbook.events import SessionEndEvent
 from superdialog.playbook.models import Playbook
 from superdialog.playbook.runtime import PlaybookRuntime
@@ -78,6 +78,38 @@ def test_clear_goodbye_ignores_frustration_and_embedded_bye() -> None:
     )
 
 
+def test_false_goodbye_recognizes_bare_negation() -> None:
+    # The real production case: "any add-ons or special requests?" -> "No."
+    # routed straight to call_end mid-booking, before payment link or
+    # confirmation, because the Director LLM claimed the goodbye interrupt.
+    assert _false_goodbye("No.")
+    assert _false_goodbye("Nope.")
+    assert _false_goodbye("No thanks.")
+    assert _false_goodbye("Nothing, thanks.")
+    assert _false_goodbye("Nahi")
+    assert _false_goodbye("Bas")
+
+
+def test_false_goodbye_covers_phrasing_the_first_cut_missed() -> None:
+    # A second real production case: the first version of this guard only
+    # allowed a fixed set of trailing phrases (thanks/that's all/else) and
+    # missed this exact live call -- "No, I don't require." isn't on any
+    # enumerated list but is an ordinary decline of an in-flow offer, not a
+    # goodbye. The length+negation-start rewrite must catch it.
+    assert _false_goodbye("No, I don't require.")
+    assert _false_goodbye("No, I don't need that.")
+    assert _false_goodbye("Not needed.")
+    assert _false_goodbye("No, we're good.")
+
+
+def test_false_goodbye_ignores_actual_goodbyes_and_longer_replies() -> None:
+    assert not _false_goodbye("No, that's all, goodbye")  # has a bye token
+    assert not _false_goodbye("no, I also wanted to ask about pricing")
+    assert not _false_goodbye("Goodbye")
+    assert not _false_goodbye("")
+    assert not _false_goodbye("yes please")
+
+
 # -- integration: the backstop through the runtime -------------------------------
 
 
@@ -105,6 +137,25 @@ async def test_embedded_bye_in_a_continuing_utterance_does_not_close() -> None:
         "bye for now but first tell me all about the amenities and pricing please"
     )
     assert not rt.state.ended
+
+
+async def test_llm_claimed_goodbye_on_bare_negation_is_suppressed() -> None:
+    # The real production case, reproduced end-to-end: the Director LLM
+    # itself (not just the backstop) wrongly claims interrupt=global_goodbye
+    # on a bare "No." answering an in-flow question. The false-goodbye guard
+    # must drop the interrupt so the conversation continues instead of
+    # ending the call.
+    rt = PlaybookRuntime(
+        Playbook.from_yaml(_PB),
+        director_llm=CannedLLM(
+            {"slots": {}, "advance": None, "note": None, "interrupt": "global_goodbye"}
+        ),
+        http=FakeHttp([]),
+    )
+    await rt.start()
+    await rt.on_user_text("No.")
+    assert not rt.state.ended
+    assert rt.state.checkpoint_id == "main.collect"
     assert rt.state.checkpoint_id == "main.collect"
 
 

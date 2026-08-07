@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from datetime import datetime
@@ -103,6 +104,46 @@ def _clear_goodbye(text: str) -> bool:
     return len(t.split()) <= 8
 
 
+#: Deterministic false-goodbye guard -- the inverse of _clear_goodbye above.
+#: A short negation ("No.", "Nope.", "No, I don't require.") is an answer to
+#: whatever in-flow question was just asked (add-ons? anything else?), never
+#: a request to end the call -- no matter what the LLM verdict claims. Every
+#: playbook author who ships a goodbye interrupt ends up writing this exact
+#: ban in prose (a real playbook's global_goodbye.when lists "No." verbatim)
+#: because a bare negation is genuinely ambiguous for an LLM to classify
+#: without seeing the prior turn's question -- it keeps misfiring even at
+#: maximum prose explicitness (observed live: "any add-ons?" -> "No." routed
+#: to call_end mid-booking). Code-level here fixes it for every playbook at
+#: once instead of per-author prose.
+#:
+#: First cut enumerated allowed trailing phrases ("thanks"/"that's all"/
+#: "else") and still missed a live case: "No, I don't require." -- caller
+#: declining add-ons in an ordinary phrasing that just wasn't on the list.
+#: Enumeration can't keep up with real phrasing variety. Matches
+#: _clear_goodbye's own proven shape instead: negation-word start + SHORT
+#: (mirrors that function's own "bye counts only in a short utterance"
+#: length bound) + no goodbye token -- the same three signals, inverted.
+#: "no, I also wanted to ask about X" stays long enough to fall through to
+#: the LLM as before; "No, that's all, goodbye" has a bye token and is
+#: caught by the check in _false_goodbye before this regex is even reached.
+_NEGATION_START_RE = re.compile(r"^(no|nope|nah|nahi|bas|nothing|not)\b", re.IGNORECASE)
+_FALSE_GOODBYE_MAX_WORDS = 6
+
+
+def _false_goodbye(text: str) -> bool:
+    """True when text is a short negation with no goodbye token in it.
+
+    Guards an LLM-claimed goodbye interrupt, not a caller-initiated one --
+    see _clear_goodbye's docstring for the companion (missed-goodbye) case.
+    """
+    t = (text or "").strip()
+    if not t or _GOODBYE_RE.search(t):
+        return False
+    if not _NEGATION_START_RE.match(t):
+        return False
+    return len(t.split()) <= _FALSE_GOODBYE_MAX_WORDS
+
+
 def _last_user_text(state: ConversationState) -> str:
     for m in reversed(state.transcript):
         if m.role == "user":
@@ -187,6 +228,36 @@ def _coerce_slot(value: Any, spec: SlotSpec, now: datetime | None = None) -> Any
         return _INVALID
 
 
+def _resolve_candidate_ids(spec: SlotSpec, state: ConversationState) -> set[str]:
+    """Live candidate ids for a `resolve_from` slot this turn.
+
+    Empty when the source tool result isn't populated yet (candidate
+    resolution is impossible without a live list to match against) --
+    matches CANDIDATE RESOLUTION's own documented contract ("never invent
+    an id; omit the slot if no candidate clearly matches"). Used to REJECT
+    a verdict's slot write, not just to build the prompt's candidate list:
+    a `resolve_from` slot exists precisely because its value is an opaque
+    id the caller never speaks (e.g. course_id="course_ddfd8225") -- if the
+    candidate list was empty this turn, ANY value the LLM wrote for it is
+    by construction not a real id, most likely the caller's spoken name
+    copied straight through (observed live: course_id="DLF Golf Course",
+    404 on the booking API that expects a real id in that path segment).
+    """
+    rf = spec.resolve_from
+    if rf is None:
+        return set()
+    res = state.tool_results.get(rf.result)
+    data = getattr(res, "data", None) if res is not None else None
+    items = data.get(rf.list_field) if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return set()
+    return {
+        str(it.get(rf.id_field))
+        for it in items
+        if isinstance(it, dict) and it.get(rf.id_field)
+    }
+
+
 def _verdict_prompt(
     pb: Playbook,
     cp: Checkpoint,
@@ -199,10 +270,32 @@ def _verdict_prompt(
         "\n".join(f"- id={i.id!r}: {i.when}" for i in pb.interrupts if i.judge == "llm")
         or "(none)"
     )
+    def _slot_type_annotation(s: SlotSpec) -> str:
+        # Enum members are validated by _coerce_slot's strict membership
+        # check (value in spec.values), but were never actually shown to the
+        # extracting LLM here -- only the literal word "enum" was. The model
+        # had no way to know it must output the exact member string (e.g.
+        # "1") rather than a natural free-text form (e.g. "one"), so a
+        # perfectly correct-sounding extraction like "one player" -> "one"
+        # silently failed coercion and the slot was dropped with no error,
+        # no retry, and no signal anywhere in the logs. Listing the allowed
+        # values inline lets the model self-normalize to a member it can see.
+        if s.type == "enum" and s.values:
+            return f"enum values={'|'.join(s.values)}"
+        return s.type
+
     slot_lines = (
         "\n".join(
-            f"- {k} ({s.type}{', required' if s.required else ''}): {s.description}"
+            f"- {k} ({_slot_type_annotation(s)}{', required' if s.required else ''}): {s.description}"
             for k, s in cp.slots.items()
+            # resolve_from slots are settable ONLY via CANDIDATE RESOLUTION
+            # below, never by directly copying what the caller said -- see
+            # _resolve_candidate_ids' docstring for why listing them here
+            # too was a bug (a raw caller-spoken name landing straight in an
+            # opaque id field, e.g. course_id="DLF Golf Course" instead of
+            # "course_ddfd8225", whenever the candidate list happened to be
+            # unavailable yet).
+            if s.resolve_from is None
         )
         or "(none)"
     )
@@ -251,7 +344,15 @@ def _verdict_prompt(
         "never the id. Match what the caller said (tolerating speech-to-text "
         "drift and partial/approximate names) to ONE listed entry and output its "
         "id as that slot's value. Never invent an id; omit the slot if no "
-        "candidate clearly matches.\n" + "\n".join(resolve_lines) + "\n"
+        "candidate clearly matches. BARE AFFIRMATION: if the caller gives a bare "
+        "affirmation (\"yes\", \"sure\", \"okay\", \"go ahead\", \"hold that\", "
+        "\"book it\") with no name/time of their own in this turn, they are "
+        "accepting whatever the ASSISTANT's own immediately preceding transcript "
+        "turn offered -- match THAT value (e.g. the assistant said \"nine "
+        "o'clock\") against the candidates below and output its id, exactly as "
+        "if the caller had said it themselves. Still omit if neither the caller "
+        "nor the assistant's last turn names a candidate.\n"
+        + "\n".join(resolve_lines) + "\n"
         if resolve_lines
         else ""
     )
@@ -517,12 +618,26 @@ class Director:
         prompt = _verdict_prompt(
             self._pb, cp, state, request_confidence=self._fast_release
         )
+        # One retry on a transient call failure (timeout, rate limit, gateway
+        # blip): degrading straight to `degraded=True` on the first error left
+        # the Talker barrier-waiting on a Director that never speaks, then
+        # improvising a stray line once the barrier timed out -- observed in
+        # production as a hallucinated "(Wait for tool result)" turn. A
+        # single retry recovers the common transient case; a second failure
+        # still degrades as before.
         try:
             raw = await self._llm.complete(
                 prompt, **({"json_mode": True} if self._structured_output else {})
             )
         except Exception:
-            return DirectorDecision(degraded=True, detail="llm_error")
+            try:
+                await asyncio.sleep(0.3)
+                raw = await self._llm.complete(
+                    prompt,
+                    **({"json_mode": True} if self._structured_output else {}),
+                )
+            except Exception:
+                return DirectorDecision(degraded=True, detail="llm_error")
         # CompletesLLM promises str, but rich providers (LitellmProvider et al.)
         # return CompletionResult — accept both; .strip() on the object was a
         # per-turn AttributeError that silently killed every Director verdict.
@@ -572,6 +687,10 @@ class Director:
             coerced = _coerce_slot(value, slot_spec, state.now)
             if coerced is _INVALID:
                 continue  # bad cast / enum miss: treat as not extracted
+            if slot_spec.resolve_from is not None and str(
+                coerced
+            ) not in _resolve_candidate_ids(slot_spec, state):
+                continue  # not a live candidate id -- reject, never store raw caller text
             existing = state.slots.get(_ekey(cp.entity, key))
             if (
                 not self._pb.legacy_continuity
@@ -622,6 +741,15 @@ class Director:
             gb = self._goodbye_interrupt()
             if gb is not None and _clear_goodbye(_last_user_text(state)):
                 interrupt_id = gb.id
+        else:
+            # Deterministic false-goodbye guard: the LLM verdict claimed an
+            # interrupt, but if it's the goodbye one and the caller's reply
+            # was a bare negation with no bye token, that's an answer to the
+            # in-flow question, not a close -- drop back to normal advance
+            # handling instead of ending the call. See _false_goodbye.
+            gb = self._goodbye_interrupt()
+            if gb is not None and interrupt_id == gb.id and _false_goodbye(_last_user_text(state)):
+                interrupt_id = None
         if interrupt_id:
             spec = next((i for i in self._pb.interrupts if i.id == interrupt_id), None)
             if spec is None:

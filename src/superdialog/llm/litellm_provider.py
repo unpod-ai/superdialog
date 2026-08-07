@@ -110,6 +110,7 @@ class LitellmProvider:
             raise
         usage_meta: dict[str, int] = {}
         pending_done: StreamChunk | None = None
+        produced_output = False
         async for chunk in resp:
             chunk_choices = getattr(chunk, "choices", None)
             u = getattr(chunk, "usage", None)
@@ -132,10 +133,38 @@ class LitellmProvider:
                 done=is_done,
                 usage=None,
             )
+            if sc.text or sc.tool_call_delta:
+                produced_output = True
             if is_done:
                 pending_done = sc
             else:
                 yield sc
+        # Some gateway relays (seen in production) return a stream whose final
+        # usage is real (completion_tokens > 0 — the model demonstrably
+        # generated output server-side) but never send a single content delta.
+        # That text was never actually sent, so no amount of chunk-parsing can
+        # recover it from *this* stream. Retry once as a plain non-streaming
+        # call and surface that text instead of silently yielding nothing.
+        if not produced_output and usage_meta.get("completion_tokens"):
+            result = await self.complete(messages, tools, **opts)
+            if result.text or result.tool_calls:
+                yield StreamChunk(
+                    text=result.text or None,
+                    tool_call_delta=None,
+                    done=True,
+                    usage={
+                        k: v
+                        for k, v in result.metadata.items()
+                        if k
+                        in (
+                            "prompt_tokens",
+                            "completion_tokens",
+                            "cache_read_tokens",
+                            "cache_write_tokens",
+                        )
+                    },
+                )
+                return
         if pending_done is not None:
             yield StreamChunk(
                 text=pending_done.text,

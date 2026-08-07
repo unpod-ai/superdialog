@@ -136,3 +136,31 @@ def test_normalize_date_relative_and_absolute() -> None:
     assert normalize_date("1 July 2026", now) == "2026-07-01"
     assert normalize_date("sometime next quarter", now) == "sometime next quarter"
     assert normalize_date(None, now) is None
+
+
+def test_normalize_date_weekday_names() -> None:
+    # Real production case: caller says bare "Monday?" on a Friday and the
+    # Director LLM's own weekday arithmetic resolved it to Wednesday (three
+    # days off). now is Friday 2026-08-07; nearest Monday is 2026-08-10.
+    now = datetime(2026, 8, 7, tzinfo=timezone.utc)
+    assert normalize_date("Monday?", now) == "2026-08-10"
+    assert normalize_date("monday", now) == "2026-08-10"
+    assert normalize_date("this monday", now) == "2026-08-10"
+    assert normalize_date("next monday", now) == "2026-08-10"
+    # "this <today's weekday>" means today, not next week.
+    assert normalize_date("this friday", now) == "2026-08-07"
+    # "next <today's weekday>" skips today, lands the week after.
+    assert normalize_date("next friday", now) == "2026-08-14"
+    assert normalize_date("coming sunday", now) == "2026-08-09"
+
+
+def test_normalize_date_relative_counts() -> None:
+    now = datetime(2026, 8, 7, tzinfo=timezone.utc)
+    assert normalize_date("in 3 days", now) == "2026-08-10"
+    assert normalize_date("3 days from now", now) == "2026-08-10"
+    assert normalize_date("in 2 weeks", now) == "2026-08-21"
+    assert normalize_date("next week", now) == "2026-08-14"
+
+
+def test_normalize_date_ignores_weekday_names_without_anchor() -> None:
+    assert normalize_date("monday", None) == "monday"

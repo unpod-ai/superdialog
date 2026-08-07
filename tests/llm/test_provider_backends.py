@@ -109,6 +109,91 @@ def test_anyllm_provider_reuses_client_across_calls() -> None:
     assert fake_client.acompletion.await_count == 2  # ...reused for both turns
 
 
+def test_litellm_stream_falls_back_when_stream_has_usage_but_no_content() -> None:
+    """Regression: a gateway relay that streams a real usage summary
+    (completion_tokens > 0 — the model demonstrably generated output) but never
+    sends a single content delta must not surface as silent empty speech.
+    ``stream()`` retries once as a plain (non-streaming) call and yields that
+    text instead."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock, patch
+
+    # The only chunk in the stream: no content, finish_reason set, usage real.
+    finish_choice = MagicMock(finish_reason="stop")
+    finish_choice.delta = MagicMock(content=None, tool_calls=None)
+    stream_usage = SimpleNamespace(prompt_tokens=20, completion_tokens=82)
+    empty_chunk = MagicMock(choices=[finish_choice], usage=stream_usage)
+
+    async def _empty_stream():
+        yield empty_chunk
+
+    complete_msg = MagicMock(content="the real answer", tool_calls=None)
+    complete_usage = SimpleNamespace(prompt_tokens=20, completion_tokens=82)
+    complete_resp = MagicMock(
+        choices=[MagicMock(message=complete_msg)], usage=complete_usage
+    )
+
+    async def _fake_acompletion(*_a: object, **kw: object) -> object:
+        if kw.get("stream"):
+            return _empty_stream()
+        return complete_resp
+
+    p = LitellmProvider(_MODEL)
+
+    async def _run() -> list:
+        out = []
+        async for sc in p.stream([{"role": "user", "content": "hi"}]):
+            out.append(sc)
+        return out
+
+    with patch("litellm.acompletion", side_effect=_fake_acompletion):
+        chunks = anyio.run(_run)
+
+    assert len(chunks) == 1
+    assert chunks[0].text == "the real answer"
+    assert chunks[0].done is True
+    assert chunks[0].usage == {"prompt_tokens": 20, "completion_tokens": 82}
+
+
+def test_litellm_stream_does_not_fall_back_when_content_was_streamed() -> None:
+    """A normal stream (real content chunks + a trailing empty finish_reason
+    chunk) must not trigger the zero-content fallback."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock, patch
+
+    tok1 = MagicMock(finish_reason=None)
+    tok1.delta = MagicMock(content="Hel", tool_calls=None)
+    tok2 = MagicMock(finish_reason=None)
+    tok2.delta = MagicMock(content="lo", tool_calls=None)
+    done_choice = MagicMock(finish_reason="stop")
+    done_choice.delta = MagicMock(content=None, tool_calls=None)
+    stream_usage = SimpleNamespace(prompt_tokens=5, completion_tokens=2)
+
+    async def _real_stream():
+        yield MagicMock(choices=[tok1], usage=None)
+        yield MagicMock(choices=[tok2], usage=None)
+        yield MagicMock(choices=[done_choice], usage=stream_usage)
+
+    async def _fake_acompletion(*_a: object, **kw: object) -> object:
+        assert kw.get("stream") is True  # complete() must never be reached
+        return _real_stream()
+
+    p = LitellmProvider(_MODEL)
+
+    async def _run() -> list:
+        out = []
+        async for sc in p.stream([{"role": "user", "content": "hi"}]):
+            out.append(sc)
+        return out
+
+    with patch("litellm.acompletion", side_effect=_fake_acompletion):
+        chunks = anyio.run(_run)
+
+    assert "".join(c.text or "" for c in chunks) == "Hello"
+    assert chunks[-1].done is True
+    assert chunks[-1].usage == {"prompt_tokens": 5, "completion_tokens": 2}
+
+
 # ----------------------------------------------------------------------------
 # Live: cross-backend parity (task 1.5)
 # ----------------------------------------------------------------------------

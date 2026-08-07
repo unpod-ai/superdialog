@@ -181,6 +181,47 @@ async def test_degraded_detail_distinguishes_failure_modes() -> None:
     assert (await Director(pb, ListLLM()).evaluate(state)).detail == "non_dict_verdict"
 
 
+async def test_llm_error_recovers_on_retry() -> None:
+    # A single transient failure (timeout, rate limit, gateway blip) must not
+    # degrade the turn -- the Talker would barrier-wait on a Director that
+    # never speaks, then improvise once its own timeout fired (a hallucinated
+    # "(Wait for tool result)" turn was observed in production from exactly
+    # this path). One retry recovers the common transient case.
+    pb, state = _state()
+
+    class FailsOnceLLM:
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        async def complete(self, messages, **kwargs) -> str:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RuntimeError("transient")
+            return json.dumps({"slots": {}, "advance": None, "note": None})
+
+    llm = FailsOnceLLM()
+    decision = await Director(pb, llm).evaluate(state)
+    assert not decision.degraded
+    assert llm.attempts == 2
+
+
+async def test_llm_error_still_degrades_after_retry_fails() -> None:
+    pb, state = _state()
+
+    class AlwaysRaisingLLM:
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        async def complete(self, messages, **kwargs) -> str:
+            self.attempts += 1
+            raise RuntimeError("boom")
+
+    llm = AlwaysRaisingLLM()
+    decision = await Director(pb, llm).evaluate(state)
+    assert decision.degraded and decision.detail == "llm_error"
+    assert llm.attempts == 2
+
+
 HARD_GATE_YAML = textwrap.dedent("""
     persona: "You verify payments."
     journeys:
@@ -280,6 +321,106 @@ async def test_authoritative_slots_never_written_by_verdict() -> None:
     assert [e for e in writes if e.key == "city"]
 
 
+RESOLVE_FROM_YAML = textwrap.dedent("""
+    journeys:
+      main:
+        checkpoints:
+          - id: collect
+            goal: "collect a course"
+            slots:
+              course_name:
+                description: "Course name the caller said"
+              course_id:
+                resolve_from:
+                  result: city_courses_result
+                  list_field: courses
+                  name_field: name
+                  id_field: course_id
+                description: "Confirmed course_id if already identified"
+            advance_when:
+              - {when: "course confirmed", judge: llm, to: main.done}
+          - id: done
+            terminal: true
+            outcome: completed
+""")
+
+
+def _resolve_from_state(with_candidates: bool) -> tuple[Playbook, ConversationState]:
+    pb = Playbook.from_yaml(RESOLVE_FROM_YAML)
+    log = EventLog()
+    log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint="main.collect", rule="init"))
+    log.append(UtteranceEvent(role="user", text="Book for DLF Golf Course"))
+    if with_candidates:
+        log.append(
+            ToolResultEvent(
+                tool="courses_by_city",
+                store_as="city_courses_result",
+                ok=True,
+                data={"courses": [{"name": "DLF Golf and Country Club", "course_id": "course_ddfd8225"}]},
+            )
+        )
+    return pb, ConversationState.fold(log, playbook=pb)
+
+
+async def test_resolve_from_slot_rejects_raw_name_when_candidate_list_missing() -> None:
+    # The real production failure: city_courses_result was never fetched
+    # (caller went straight from greeting to booking collection), yet the
+    # Director verdict still tried to write the caller's spoken name
+    # straight into course_id -- an opaque id field, never something the
+    # caller utters verbatim. Must be rejected, not stored as a fake id.
+    pb, state = _resolve_from_state(with_candidates=False)
+    llm = CannedLLM(
+        {
+            "slots": {"course_id": "DLF Golf Course", "course_name": "DLF Golf Course"},
+            "advance": None,
+            "note": None,
+        }
+    )
+    decision = await Director(pb, llm).evaluate(state)
+    writes = {e.key: e.value for e in decision.events if isinstance(e, SlotWriteEvent)}
+    assert "course_id" not in writes  # rejected: not a live candidate id
+    assert writes.get("course_name") == "DLF Golf Course"  # plain slot: unaffected
+
+
+async def test_resolve_from_slot_accepts_a_real_candidate_id() -> None:
+    pb, state = _resolve_from_state(with_candidates=True)
+    llm = CannedLLM(
+        {"slots": {"course_id": "course_ddfd8225"}, "advance": None, "note": None}
+    )
+    decision = await Director(pb, llm).evaluate(state)
+    writes = {e.key: e.value for e in decision.events if isinstance(e, SlotWriteEvent)}
+    assert writes.get("course_id") == "course_ddfd8225"
+
+
+async def test_resolve_from_slot_rejects_non_candidate_even_when_list_present() -> None:
+    # A live candidate list existing this turn doesn't excuse a value that
+    # isn't actually one of the listed ids (model hallucination, stale id).
+    pb, state = _resolve_from_state(with_candidates=True)
+    llm = CannedLLM(
+        {"slots": {"course_id": "DLF Golf Course"}, "advance": None, "note": None}
+    )
+    decision = await Director(pb, llm).evaluate(state)
+    writes = {e.key: e.value for e in decision.events if isinstance(e, SlotWriteEvent)}
+    assert "course_id" not in writes
+
+
+async def test_resolve_block_instructs_bare_affirmation_uses_assistant_offer() -> None:
+    # A caller confirming ("yes", "hold that") never restates the name/time
+    # the assistant just offered -- CANDIDATE RESOLUTION must tell the
+    # Director to match the ASSISTANT's own preceding turn against the
+    # candidate list in that case, not just the caller's current utterance
+    # (which is empty of any matchable name). Prompt-content regression
+    # guard, mirrors test_verdict_prompt_lists_enum_members' pattern: the
+    # LLM's actual reasoning can't be unit tested, but the instruction it's
+    # given can be.
+    pb, state = _resolve_from_state(with_candidates=True)
+    llm = CannedLLM({"slots": {}, "advance": None, "note": None})
+    await Director(pb, llm).evaluate(state)
+    system = llm.calls[0][0]["content"]
+    assert "BARE AFFIRMATION" in system
+    assert "ASSISTANT" in system
+
+
 TYPED_SLOTS_YAML = textwrap.dedent("""
     journeys:
       j:
@@ -306,6 +447,26 @@ async def test_enum_and_type_validation() -> None:
     writes = {e.key: e for e in decision.events if isinstance(e, SlotWriteEvent)}
     assert "mode" not in writes  # "c" is not an enum member of [a, b]
     assert writes["count"].value == 7 and isinstance(writes["count"].value, int)
+
+
+async def test_verdict_prompt_lists_enum_members() -> None:
+    # Root cause of a production bug: _coerce_slot validates enum extractions
+    # by strict membership (value in spec.values), but the prompt previously
+    # showed only the literal word "enum" for an enum slot's type -- never
+    # the actual allowed member strings. A model extracting a perfectly
+    # sensible free-text form ("one" for a caller who said "one player")
+    # silently failed that membership check and the slot was dropped with
+    # no error anywhere. Asserting the members appear in the prompt is the
+    # regression guard for that gap.
+    pb = Playbook.from_yaml(TYPED_SLOTS_YAML)
+    log = EventLog()
+    log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint="j.c", rule="init"))
+    log.append(UtteranceEvent(role="user", text="mode a"))
+    state = ConversationState.fold(log, playbook=pb)
+    llm = CannedLLM({"slots": {}, "advance": None, "note": None})
+    await Director(pb, llm).evaluate(state)
+    system = llm.calls[0][0]["content"]
+    assert "values=a|b" in system
 
 
 async def test_verdict_prompt_warns_against_injection() -> None:
