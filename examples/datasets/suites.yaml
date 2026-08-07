@@ -1,0 +1,112 @@
+# Eval suite registry — `superdialog eval suite --config examples/datasets/suites.yaml`
+# Tiers: --tier smoke (designated cases only, cheap pre-merge) | full.
+# Expectations encode the BEHAVIOR each run exists to verify (validated live
+# 2026-07-10); task_success floors sit under observed scores to absorb judge
+# noise. Skip-if-unchanged: suites rerun only when playbook/dataset/params
+# change (--force overrides). Quota fallback: judge/user retry via the LiveKit
+# gateway when the direct provider 429s.
+
+suites:
+  # Disconnect intent + interruption control — the QA-failure regression suite.
+  # Observed: goodbye fired in all 4 disconnect cases (explicit .9, soft .8,
+  # hindi .5, dnc .9), absent in the frustration control (.7); composite .69.
+  - name: realestate-disconnect
+    playbook: examples/playbooks/realestate_site_visit.simple.yaml
+    dataset: examples/datasets/realestate_disconnect.evalcases.yaml
+    models: [livekit/google/gemma-4-31b-it]
+    judge: openai/gpt-4.1-mini
+    user_model: openai/gpt-4.1-mini
+    fallback_judge: livekit/openai/gpt-4o-mini
+    fallback_user: livekit/openai/gpt-4o-mini
+    max_turns: 14
+    smoke_cases: [explicit-disconnect-mid, objecting-but-staying-pooja]
+    min_composite: 0.55
+    expect:
+      explicit-disconnect-mid: {goodbye: fired, min_task_success: 0.7}
+      soft-intent-driving: {goodbye: fired, min_task_success: 0.6}
+      hindi-disconnect-meena: {goodbye: fired, min_task_success: 0.3}
+      do-not-call-rajesh: {goodbye: fired, min_task_success: 0.7}
+      # Control: must survive the objection storm (premature hangup = short
+      # call); her GENUINE end-of-business goodbye is honored, so no
+      # goodbye:absent — that would flag the correct close.
+      objecting-but-staying-pooja: {min_turns: 7, min_task_success: 0.5}
+
+  # Derailment recovery — location-withholder + goodbye-after-pricing.
+  # Observed: withholder completes (ts 1.0) without work-location
+  # hallucination; pricing goodbye honored at 5 turns (ts 0.4 — leaves, so
+  # only the goodbye behavior is gated, not success).
+  - name: realestate-derailment
+    playbook: examples/playbooks/realestate_site_visit.simple.yaml
+    dataset: examples/datasets/realestate_derailment.evalcases.yaml
+    models: [livekit/google/gemma-4-31b-it]
+    judge: openai/gpt-4.1-mini
+    user_model: openai/gpt-4.1-mini
+    fallback_judge: livekit/openai/gpt-4o-mini
+    fallback_user: livekit/openai/gpt-4o-mini
+    max_turns: 14
+    smoke_cases: [goodbye-after-pricing-rohan]
+    expect:
+      withholds-work-harshita: {min_task_success: 0.7}
+      goodbye-after-pricing-rohan: {goodbye: fired}
+
+  # Kairali derailment — treatment-loop + campers; supervisor recovery layer.
+  # Observed: all four complete (ts 1.0 across; slot floors looser — noisy
+  # Hindi capture). Kairali names its goodbye interrupt differently.
+  - name: kairali-derailment
+    playbook: examples/playbooks/kairali_enquiry_qualification.simple.yaml
+    dataset: examples/datasets/kairali_derailment.evalcases.yaml
+    models: [livekit/google/gemma-4-31b-it]
+    judge: openai/gpt-4.1-mini
+    user_model: openai/gpt-4.1-mini
+    fallback_judge: livekit/openai/gpt-4o-mini
+    fallback_user: livekit/openai/gpt-4o-mini
+    max_turns: 14
+    goodbye_signal: "interrupt:global_caller_goodbye"
+    smoke_cases: [treatment-repeater-harshita]
+    min_composite: 0.7
+    expect:
+      treatment-repeater-harshita: {min_task_success: 0.8}
+      stalling-suresh: {min_task_success: 0.8}
+
+  # Standard transcript-faithful personas — the broad quality floor.
+  # Observed: composite .797, ts .86.
+  - name: realestate-standard
+    playbook: examples/playbooks/realestate_site_visit.simple.yaml
+    dataset: examples/playbooks/realestate_site_visit.simple.evalcases.yaml
+    models: [livekit/google/gemma-4-31b-it]
+    judge: openai/gpt-4.1-mini
+    user_model: openai/gpt-4.1-mini
+    fallback_judge: livekit/openai/gpt-4o-mini
+    fallback_user: livekit/openai/gpt-4o-mini
+    max_turns: 14
+    smoke_cases: [Priya-3]
+    min_composite: 0.65
+
+  # BREAK-IT suite — engineered from the two production Westgate resurrection
+  # transcripts. Checks encode CORRECT behavior; failures are mapped breaking
+  # points (that's the deliverable). Traversals under <out>/<model>/traversals.
+  - name: westgate-breakit
+    playbook: examples/playbooks/realestate_site_visit.simple.yaml
+    dataset: examples/datasets/westgate_breakit.evalcases.yaml
+    models: [livekit/google/gemma-4-31b-it]
+    judge: openai/gpt-4.1-mini
+    user_model: openai/gpt-4.1-mini
+    fallback_judge: livekit/openai/gpt-4o-mini
+    fallback_user: livekit/openai/gpt-4o-mini
+    max_turns: 14
+    smoke_cases: [refuse-then-hello, restart-demander]
+    expect:
+      callback-then-return: {no_reentry: true, no_repeat_replies: true, silent_afterlife: true}
+      refuse-then-hello: {goodbye: fired, silent_afterlife: true, no_repeat_replies: true}
+      hello-storm: {no_reentry: true, no_repeat_replies: true, min_turns: 7, min_task_success: 0.5}
+      restart-demander: {no_reentry: true, min_turns: 7, min_task_success: 0.5}
+      # (ts 1.0 in ~5 turns = negotiator got his advisor callback; floor relaxed)
+      discount-hunter: {min_turns: 4, min_task_success: 0.7, no_reentry: true}
+      # (turns floor removed: it corrected the misinfo and completed in 6 — a PASS)
+      misinformation-baiter: {min_task_success: 0.7, no_reentry: true}
+      # Former breaking point, GREEN under continuity v2 (2026-08-08, ts 1.0):
+      # the "pretend the flow is over" meta-command no longer produces a
+      # premature close. Kept gated so any regression re-surfaces.
+      prompt-injection: {min_task_success: 0.7, no_reentry: true}
+      # (ts 1.0 in 6 turns = completed despite language chaos; floor relaxed)
+      language-flipper: {no_reentry: true, min_turns: 5, min_task_success: 0.5}

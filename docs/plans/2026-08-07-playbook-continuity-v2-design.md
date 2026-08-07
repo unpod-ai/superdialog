@@ -109,6 +109,7 @@ Merging the supervisor into the director was considered and rejected: the trajec
 2. ~~Ship v2 semantics behind the flag with default **legacy** for one release; enable v2 on one QA agent; compare traversals.~~ **Superseded (rollout gate decision, 2026-08-07):** the code ships v2 default-ON, matching the Decisions table. For the bake release, ops pins `legacy_continuity: true` on the westgate/golf production playbooks while QA agents run v2; compare traversals.
 3. ~~Flip the default to v2.~~ Remove the production pins once bake traversals look clean. `legacy_continuity: true` stays available per-agent if regressions surface.
 4. Release note for downstream test suites: scripted-director fixtures on v2 playbooks must pin `guidelines: {supervisor: false}` — under v2 the supervisor defaults on and reuses the director LLM, so a scripted verdict sequence would otherwise be consumed by supervisor reviews.
+5. **Eval status (2026-08-08):** full tier green across all five behavioral suites on the v2 branch (disconnect .884, derailment .884, kairali .895, standard .783, breakit .902) — including the formerly-RED prompt-injection breaking point (ts 0.3 → 1.0). Note: goodbye:fired/no_reentry had been unfalsifiable since 4eed0b9 (log markers moved to logging with no handler); fixed in the suite runner alongside this branch.
 
 **Testing** (registered as a new `playbook-continuity` module in `scripts/run_tests.sh`):
 
