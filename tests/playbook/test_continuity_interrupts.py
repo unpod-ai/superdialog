@@ -1,4 +1,4 @@
-from superdialog.playbook.events import AdvanceEvent
+from superdialog.playbook.events import AdvanceEvent, DegradedEvent
 from superdialog.playbook.models import Playbook
 from superdialog.playbook.runtime import PlaybookRuntime
 from tests.playbook.continuity_fixtures import CONTINUITY_YAML, SeqLLM
@@ -61,8 +61,6 @@ async def test_interrupt_can_refire_after_detour_completes() -> None:
 
 
 async def test_unknown_advance_target_is_logged_not_silent() -> None:
-    from superdialog.playbook.events import DegradedEvent
-
     rt = _rt([{"slots": {}, "advance": "main.nonexistent", "note": None}])
     await rt.start()
     await rt.on_user_text("hello")
@@ -72,3 +70,41 @@ async def test_unknown_advance_target_is_logged_not_silent() -> None:
         and e.detail == "unknown_advance_target:main.nonexistent"
         for e in rt.log.events
     )
+
+
+async def test_unknown_interrupt_id_is_logged_and_falls_through() -> None:
+    """Sibling of unknown_advance_target: a verdict naming an interrupt id no
+    spec declares must be auditable, and must NOT swallow the rest of the
+    verdict — a combined advance still lands."""
+    rt = _rt(
+        [
+            {"slots": {}, "advance": None, "note": None, "interrupt": "no_such_id"},
+            {
+                "slots": {"location": "Pune"},
+                "advance": "main.pitch",
+                "interrupt": "no_such_id",
+            },
+        ]
+    )
+    await rt.start()
+    await rt.on_user_text("hello")
+    assert rt.state.checkpoint_id == "main.ask_location"  # no phantom detour
+    degraded = [
+        e
+        for e in rt.log.events
+        if isinstance(e, DegradedEvent)
+        and e.detail == "unknown_interrupt_id:no_such_id"
+    ]
+    assert len(degraded) == 1
+
+    # Fall-through: same-verdict advance (corroborated by the location slot
+    # write) is still honored despite the bogus interrupt id.
+    await rt.on_user_text("I'm in Pune")
+    assert rt.state.checkpoint_id == "main.pitch"
+    degraded = [
+        e
+        for e in rt.log.events
+        if isinstance(e, DegradedEvent)
+        and e.detail == "unknown_interrupt_id:no_such_id"
+    ]
+    assert len(degraded) == 2

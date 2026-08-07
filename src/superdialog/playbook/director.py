@@ -624,6 +624,17 @@ class Director:
                 interrupt_id = gb.id
         if interrupt_id:
             spec = next((i for i in self._pb.interrupts if i.id == interrupt_id), None)
+            if spec is None:
+                # Sibling of unknown_advance_target: the verdict named an
+                # interrupt no spec declares. Log it, then fall through to the
+                # advance block — the goodbye backstop only ever supplies a
+                # real interrupt's id, so no false positives here.
+                events.append(
+                    DegradedEvent(
+                        component="director",
+                        detail=f"unknown_interrupt_id:{interrupt_id}",
+                    )
+                )
             if spec is not None and (
                 spec.to == cp_ref or spec.to in state.resume_stack
             ):
