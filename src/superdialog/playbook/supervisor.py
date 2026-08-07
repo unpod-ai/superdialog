@@ -92,9 +92,11 @@ def detect_triggers(
             triggers.append("turn_budget")
     # junk rejections have their own >=2 threshold below; a single benign
     # non-extraction must not spend a supervisor call.
+    # watermarked like the sticky triggers — a stale degraded event must
+    # not re-spend reviews.
     if any(
         isinstance(e, DegradedEvent)
-        and e.version > entered
+        and e.version > max(entered, since_version)
         and not e.detail.startswith("junk_rejected:")
         for e in log.events
     ):

@@ -126,6 +126,21 @@ def test_degraded_trigger() -> None:
     assert "degraded" in detect_triggers(rt.state, rt.log, _pb())
 
 
+def test_degraded_trigger_is_watermarked() -> None:
+    # A stale DegradedEvent (at or below the supervisor's last-reviewed
+    # watermark) must not re-spend a review every cooldown window.
+    rt = _runtime()
+    rt.log.append(DegradedEvent(component="director", detail="llm_error"))
+    stale = rt.log.version
+    assert "degraded" not in detect_triggers(
+        rt.state, rt.log, _pb(), since_version=stale
+    )
+    rt.log.append(DegradedEvent(component="director", detail="llm_error"))
+    assert "degraded" in detect_triggers(
+        rt.state, rt.log, _pb(), since_version=stale
+    )
+
+
 def test_slot_churn_trigger() -> None:
     rt = _runtime()
     for v in ("a", "b", "c"):

@@ -134,6 +134,7 @@ Deltas between this design (and the implementation plan's snippets) and what shi
    - The `slot_churn` trigger label is not entity-namespaced while `junk_rejected` is — align in a follow-up.
    - `expr_gated_advance_target` refinement: NOT implemented (YAGNI — the verdict prompt only advertises llm-rule targets, so the mislabel window is negligible).
    - Release-note item: scripted-director fixtures on v2 playbooks must pin `guidelines: {supervisor: false}` (see Rollout step 4).
+   - Resume-target existence validation (§3 "validates its target exists") not implemented — stack entries are fold-derived from checkpoints that existed at push; only a mid-session playbook swap could dangle one. Deferred.
 
 ## Appendix — audit findings referenced above
 

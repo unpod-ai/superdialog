@@ -306,6 +306,33 @@ def test_scripted_user_replays_each_turn_once() -> None:
     assert user._messages == ["hello", "Pune 2026-06-12"]
 
 
+def test_steps_carry_corroborated() -> None:
+    # Advance steps surface AdvanceEvent.corroborated (design §5: prose-share
+    # per step); dwell and init/turn-0 steps carry None.
+    log = _log(
+        AdvanceEvent(from_checkpoint=None, to_checkpoint="booking.collect", rule="init"),
+        UtteranceEvent(role="user", text="hello"),  # turn 1: dwell
+        UtteranceEvent(role="assistant", text="hi"),
+        UtteranceEvent(role="user", text="Pune 2026-06-12"),  # turn 2: evidence
+        AdvanceEvent(
+            from_checkpoint="booking.collect",
+            to_checkpoint="booking.confirm",
+            rule="llm:r1",
+            corroborated=True,
+        ),
+        UtteranceEvent(role="user", text="yes book it"),  # turn 3: prose only
+        AdvanceEvent(
+            from_checkpoint="booking.confirm",
+            to_checkpoint="booking.close",
+            rule="llm:r2",
+            corroborated=False,
+        ),
+    )
+    t = build_playbook_traversal(log, Playbook.from_yaml(MINIMAL_YAML))
+    by_rule = {s["advance_rule"]: s["corroborated"] for s in t["traversal"]}
+    assert by_rule == {"init": None, "dwell": None, "llm:r1": True, "llm:r2": False}
+
+
 def test_dwell_does_not_touch_visits_or_graph_edges() -> None:
     log = _log(
         AdvanceEvent(from_checkpoint=None, to_checkpoint="booking.collect", rule="init"),
