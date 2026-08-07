@@ -185,3 +185,33 @@ async def test_corroborated_advance_defers_to_resume_under_legacy() -> None:
     await rt.on_user_text("it's for Pune by the way")
     # legacy: forced return still wins
     assert rt.state.checkpoint_id == "main.ask_location"
+
+
+async def test_uncorroborated_advance_defers_to_resume_under_v2() -> None:
+    """The resume-override is EVIDENCE-gated: a prose-only advance proposed
+    inside a detour must still be dropped in favor of the forced return.
+
+    pricing_faq's rule is stripped of its requires so the director genuinely
+    EMITS an AdvanceEvent (corroborated=False). With requires intact and no
+    location written, _requires_met fails and no advance is emitted at all —
+    the resume branch would then run because advance is None, leaving the
+    corroborated gate unpinned (an always-fall-through mutant survives).
+    """
+    yaml = CONTINUITY_YAML.replace(
+        '- {when: "caller names location", judge: llm, to: main.pitch,\n'
+        "             requires: [location]}",
+        '- {when: "caller names location", judge: llm, to: main.pitch}',
+    )
+    assert yaml != CONTINUITY_YAML
+    rt = _rt(
+        [
+            {"slots": {}, "interrupt": "price_guardrail"},
+            {"slots": {}, "advance": "main.pitch"},  # prose-only, no evidence
+        ],
+        pb=Playbook.from_yaml(yaml),
+    )
+    await rt.start()
+    await rt.on_user_text("price?")
+    assert rt.state.checkpoint_id == "main.pricing_faq"
+    await rt.on_user_text("hmm okay")
+    assert rt.state.checkpoint_id == "main.ask_location"  # forced resume wins
