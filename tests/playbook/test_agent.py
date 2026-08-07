@@ -565,3 +565,29 @@ async def test_llm_timer_stats_without_streams_have_no_ttft_keys() -> None:
     assert stats["calls"] == 1
     assert "ttft_mean_ms" not in stats
     assert "ttft_p95_ms" not in stats
+
+
+# --- Traversal source: real playbook file wins over host label ----------------
+
+
+def test_traversal_source_prefers_playbook_file_over_host_label() -> None:
+    pb = Playbook.from_yaml(MINIMAL_YAML)
+    with_path = pb.model_copy(update={"source_path": "/x/westgate.yaml"})
+
+    def _agent(playbook: Playbook, **kwargs) -> PlaybookAgent:
+        return PlaybookAgent(
+            playbook=playbook,
+            talker_llm=StreamLLM(["hi"]),
+            director_llm=CannedLLM(_IDLE_VERDICT),
+            http=FakeHttp([]),
+            **kwargs,
+        )
+
+    assert (
+        _agent(with_path, traversal_source="static-label")._traversal_source
+        == "westgate.yaml"
+    )
+    assert _agent(pb, traversal_source="static-label")._traversal_source == (
+        "static-label"
+    )
+    assert _agent(pb)._traversal_source == ""

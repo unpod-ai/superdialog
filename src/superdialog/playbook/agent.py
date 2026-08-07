@@ -182,8 +182,13 @@ class PlaybookAgent:
         self._traversal_dir: Path | None = (
             Path(traversal_dir) if traversal_dir else None
         )
-        self._traversal_source = traversal_source or (
-            playbook.source_path and Path(playbook.source_path).name or ""
+        # The playbook's real file name wins over the host's static label:
+        # production traversals from different agents all claimed the same
+        # source because hosts pass one fixed traversal_source string.
+        self._traversal_source = (
+            (playbook.source_path and Path(playbook.source_path).name)
+            or traversal_source
+            or ""
         )
         self._traversal_model = traversal_model or getattr(director_llm, "model_id", "")
         self._traversal_saved: bool = False
