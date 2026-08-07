@@ -3,6 +3,7 @@
 import json
 import textwrap
 
+from superdialog.llm.prompt_cache import CACHE_PREFIX_KEY
 from superdialog.playbook.agent import PlaybookAgent
 from superdialog.playbook.events import (
     AdvanceEvent,
@@ -246,6 +247,65 @@ def test_junk_rejected_does_not_fire_generic_degraded() -> None:
     assert "degraded" in detect_triggers(rt.state, rt.log, _pb())
 
 
+def test_watermark_silences_stale_streak() -> None:
+    # Sticky triggers need NEW qualifying evidence past since_version.
+    rt = _runtime()
+    for rule in ("llm:x", "llm:y"):
+        rt.log.append(
+            AdvanceEvent(
+                from_checkpoint="flow.ask",
+                to_checkpoint="flow.book",
+                rule=rule,
+                corroborated=False,
+            )
+        )
+    last = rt.log.events[-1].version
+    assert "uncorroborated_streak" in detect_triggers(rt.state, rt.log, _pb())
+    assert "uncorroborated_streak" not in detect_triggers(
+        rt.state, rt.log, _pb(), since_version=last
+    )
+
+
+def test_watermark_junk_needs_new_event() -> None:
+    rt = _runtime()
+    rt.log.append(DegradedEvent(component="director", detail="junk_rejected:city"))
+    first = rt.log.events[-1].version
+    rt.log.append(DegradedEvent(component="director", detail="junk_rejected:city"))
+    second = rt.log.events[-1].version
+    # Threshold counts the whole log (2 total); the second event is new
+    # evidence past a watermark set before it...
+    assert "junk_rejected:city" in detect_triggers(
+        rt.state, rt.log, _pb(), since_version=first
+    )
+    # ...but a watermark past both means stale: silent.
+    assert "junk_rejected:city" not in detect_triggers(
+        rt.state, rt.log, _pb(), since_version=second
+    )
+
+
+def test_watermark_applies_to_slot_churn_and_repeated_interrupt() -> None:
+    rt = _runtime()
+    for v in ("a", "b", "c"):
+        rt.log.append(
+            SlotWriteEvent(key="city", value=v, status="provisional", by="director")
+        )
+    for _ in range(2):
+        rt.log.append(
+            AdvanceEvent(
+                from_checkpoint="flow.ask",
+                to_checkpoint="flow.book",
+                rule="interrupt:goodbye",
+            )
+        )
+    last = rt.log.events[-1].version
+    fresh = detect_triggers(rt.state, rt.log, _pb())
+    assert "slot_churn:city" in fresh
+    assert "repeated_interrupt:goodbye" in fresh
+    stale = detect_triggers(rt.state, rt.log, _pb(), since_version=last)
+    assert "slot_churn:city" not in stale
+    assert "repeated_interrupt:goodbye" not in stale
+
+
 # -- review ---------------------------------------------------------------------
 
 
@@ -288,6 +348,57 @@ async def test_review_fires_on_trigger_and_respects_cooldown() -> None:
     _user_turn(rt)
     assert await sup.review(rt) is not None  # cooldown elapsed
     assert llm.calls == 2
+
+
+async def test_review_does_not_respend_on_stale_sticky_triggers() -> None:
+    # An all-conveyor call must not spend a verdict every cooldown window on
+    # the same stale trajectory: after a review, sticky triggers stay silent
+    # until new qualifying evidence lands.
+    llm = _VerdictLLM({"action": "none"})
+    sup = Supervisor(llm, _pb(), cooldown_turns=0)
+    rt = _runtime()
+    rt.log.append(
+        AdvanceEvent(
+            from_checkpoint="flow.ask",
+            to_checkpoint="flow.book",
+            rule="llm:x",
+            corroborated=False,
+        )
+    )
+    rt.log.append(
+        AdvanceEvent(
+            from_checkpoint="flow.book",
+            to_checkpoint="flow.ask",
+            rule="llm:y",
+            corroborated=False,
+        )
+    )
+    _user_turn(rt)
+    assert await sup.review(rt) is not None
+    assert llm.calls == 1
+    # Unchanged log, cooldown elapsed: no re-review of the stale trajectory.
+    assert await sup.review(rt) is None
+    assert llm.calls == 1
+
+
+def test_prompt_glosses_v2_triggers_and_marks_uncorroborated() -> None:
+    sup = Supervisor(_VerdictLLM({"action": "none"}), _pb())
+    rt = _runtime()
+    rt.log.append(
+        AdvanceEvent(
+            from_checkpoint="flow.ask",
+            to_checkpoint="flow.book",
+            rule="llm:x",
+            corroborated=False,
+        )
+    )
+    messages = sup._prompt(rt.state, rt.log, ["uncorroborated_streak"])
+    prefix = messages[0][CACHE_PREFIX_KEY]  # glossary is session-constant
+    assert "Trigger uncorroborated_streak:" in prefix
+    assert "Trigger junk_rejected:<slot>:" in prefix
+    system = messages[0]["content"]
+    assert "(llm:x, uncorroborated)" in system
+    assert "(init)" in system  # corroborated=None advances stay unmarked
 
 
 async def test_turn_budget_camp_forces_forward_inject_when_verdict_none() -> None:
