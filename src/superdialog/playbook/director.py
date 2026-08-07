@@ -12,7 +12,13 @@ from pydantic import BaseModel, Field
 from ..llm.prompt_cache import CACHE_PREFIX_KEY
 from ._canon import canonical_json
 from ._guidelines import DATE_DISCIPLINE, datetime_anchor_line, normalize_date
-from .events import AdvanceEvent, Event, SlotWriteEvent, SteeringNoteEvent
+from .events import (
+    AdvanceEvent,
+    DegradedEvent,
+    Event,
+    SlotWriteEvent,
+    SteeringNoteEvent,
+)
 from .expr import ExprError, evaluate
 from .models import Checkpoint, Playbook, SlotSpec
 from .state import ConversationState, SlotValue, _ekey
@@ -677,6 +683,16 @@ class Director:
                             text=self._steer_text(rule.requires, cp, peek), kind="steer"
                         )
                     )
+            else:
+                # The verdict named a target no llm rule declares. Silent
+                # no-ops here looked like caller-visible stalls with zero log
+                # evidence — make them auditable.
+                events.append(
+                    DegradedEvent(
+                        component="director",
+                        detail=f"unknown_advance_target:{target}",
+                    )
+                )
         note = verdict.get("note")
         if note and not any(isinstance(e, SteeringNoteEvent) for e in events):
             # The note renders into the Talker's SYSTEM prompt as a supervisor

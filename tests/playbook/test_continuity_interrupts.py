@@ -58,3 +58,17 @@ async def test_interrupt_can_refire_after_detour_completes() -> None:
 
     await rt.on_user_text("wait, price again?")          # must fire AGAIN
     assert rt.state.checkpoint_id == "main.pricing_faq"
+
+
+async def test_unknown_advance_target_is_logged_not_silent() -> None:
+    from superdialog.playbook.events import DegradedEvent
+
+    rt = _rt([{"slots": {}, "advance": "main.nonexistent", "note": None}])
+    await rt.start()
+    await rt.on_user_text("hello")
+    assert rt.state.checkpoint_id == "main.ask_location"  # no advance
+    assert any(
+        isinstance(e, DegradedEvent)
+        and e.detail == "unknown_advance_target:main.nonexistent"
+        for e in rt.log.events
+    )
