@@ -428,7 +428,9 @@ class PlaybookAgent:
                     await director
                 except (asyncio.CancelledError, anyio.get_cancelled_exc_class()):
                     pass
-                talker_text = "".join(c.text for c in talker_chunks).strip()
+                talker_text = "".join(
+                    c.text for c in talker_chunks if not c.filler
+                ).strip()
                 # If the Director advanced the checkpoint this turn AND there
                 # is pass-through, the Talker spoke from the PRE-advance state:
                 # its reply is stale (e.g. re-asking for a slot just filled).

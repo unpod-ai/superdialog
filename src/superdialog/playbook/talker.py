@@ -79,6 +79,10 @@ class SpeechChunk(BaseModel):
     text: str
     final: bool = False
     spoke_from_version: int = 0
+    # Canned barrier line (filler/hold), not conversational content: streamed
+    # to the caller but excluded from the logged utterance so the transcript
+    # the Director reasons over stays clean (audit finding E9).
+    filler: bool = False
 
 
 class Talker:
@@ -171,6 +175,7 @@ class Talker:
                     yield SpeechChunk(
                         text=filler_text + " ",
                         spoke_from_version=state.version,
+                        filler=True,
                     )
                 with anyio.move_on_after(self._hold_timeout):
                     fresh = await director_done()
@@ -179,6 +184,7 @@ class Talker:
                     text=self._resolve_line(self._hold_line, state, HOLD_LINE),
                     final=True,
                     spoke_from_version=state.version,
+                    filler=True,
                 )
                 return
             state = fresh

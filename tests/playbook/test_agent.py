@@ -359,6 +359,42 @@ def test_agent_uses_playbook_policies_filler_when_no_explicit_arg() -> None:
     assert explicit._talker._hold_line == "थोड़ा समय लग रहा है…"
 
 
+class SlowDirectorLLM(CannedLLM):
+    """Director stub that outlasts the barrier so the filler is spoken."""
+
+    async def complete(self, messages, **kwargs) -> str:
+        await anyio.sleep(0.3)
+        return await super().complete(messages, **kwargs)
+
+
+async def test_barrier_filler_streamed_but_never_logged() -> None:
+    """E9b: the filler reaches the caller but not the logged transcript."""
+    from superdialog.playbook.talker import FILLER
+
+    # Make the entry checkpoint hard so the barrier engages on turn one.
+    hard_yaml = MINIMAL_YAML.replace("gate: soft", "gate: hard", 1)
+    agent = PlaybookAgent(
+        playbook=Playbook.from_yaml(hard_yaml),
+        talker_llm=StreamLLM(["Which", " city?"]),
+        director_llm=SlowDirectorLLM(_IDLE_VERDICT),
+        http=FakeHttp([]),
+        barrier_timeout=0.05,  # director (0.3s) outlives the barrier → filler
+        hold_timeout=2.0,  # a CI stall cannot route to the hold line
+    )
+    streamed = ""
+    async for chunk in agent.stream_turn("hello"):
+        streamed += chunk.text or ""
+    assert FILLER in streamed  # the caller heard the filler
+    assistant = [
+        e
+        for e in agent.runtime.log.events
+        if isinstance(e, UtteranceEvent) and e.role == "assistant"
+    ]
+    assert assistant, "assistant utterance was not logged"
+    assert FILLER not in assistant[-1].text  # transcript stays clean
+    assert assistant[-1].text == "Which city?"
+
+
 def test_apply_memory_seeds_summary_event() -> None:
     from superdialog.playbook.events import SummaryEvent
 
