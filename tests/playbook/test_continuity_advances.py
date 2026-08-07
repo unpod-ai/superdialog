@@ -1,4 +1,5 @@
-"""Task 8: corroboration classification for advances + uncorroborated steer."""
+"""Continuity-advance semantics: corroboration classification, uncorroborated
+steer, and corroborated advances beating a forced detour resume."""
 
 from superdialog.playbook.events import AdvanceEvent
 from superdialog.playbook.models import Playbook

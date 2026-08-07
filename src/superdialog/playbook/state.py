@@ -27,6 +27,12 @@ from .events import (
 from .models import Playbook, SlotSpec
 
 
+#: A resume-stack entry older than this many subsequent advances is stale:
+#: "resuming" to it would teleport the caller minutes backward. Reaped by the
+#: fold (pure — no event needed; the non-resume is visible in traversals).
+_RESUME_STACK_MAX_AGE = 6
+
+
 def _superseded_versions(log: EventLog) -> set[int]:
     """Versions whose STATE effects were rewound by an active ``RevertEvent``.
 
@@ -90,6 +96,10 @@ class ConversationState(BaseModel):
     # (LIFO). Pushed with the step we left when such an interrupt fires; popped
     # by the synthesized "resume" advance. Derived purely from the log.
     resume_stack: list[str] = Field(default_factory=list)
+    # Advance ordinal at push, parallel to resume_stack (same length, same
+    # order); entries whose ordinal falls >_RESUME_STACK_MAX_AGE advances
+    # behind are expired by the fold.
+    resume_stack_seq: list[int] = Field(default_factory=list)
     # True when the CURRENT checkpoint was entered by a resume=True interrupt —
     # the runtime uses this to know it should return once the detour is done.
     entered_via_resume: bool = False
@@ -132,6 +142,10 @@ class ConversationState(BaseModel):
                 interrupt_resume[itr.id] = itr.resume
         s = cls()
         dead = _superseded_versions(log)
+        # Advance ordinal for resume-stack aging. Superseded (rewound)
+        # advances `continue` above before reaching the AdvanceEvent branch,
+        # so they never bump it — dead detours don't age live ones.
+        adv_seq = 0
         for e in log.replay():
             s.version = e.version
             if e.version in dead and not isinstance(e, SessionStartEvent):
@@ -194,15 +208,27 @@ class ConversationState(BaseModel):
                 # are leaving so the detour can return to it; the synthesized
                 # "resume" advance pops that entry. entered_via_resume tracks
                 # whether the checkpoint we just entered is such a detour target.
+                adv_seq += 1
                 entered_via_resume = False
                 if e.rule.startswith("interrupt:") and e.from_checkpoint:
                     _iid = e.rule.split(":", 1)[1]
                     if interrupt_resume.get(_iid):
                         s.resume_stack = s.resume_stack + [e.from_checkpoint]
+                        s.resume_stack_seq = s.resume_stack_seq + [adv_seq]
                         entered_via_resume = True
                 elif e.rule == "resume" and s.resume_stack:
                     s.resume_stack = s.resume_stack[:-1]
+                    s.resume_stack_seq = s.resume_stack_seq[:-1]
                 s.entered_via_resume = entered_via_resume
+                # Expire stale entries oldest-first: an entry stranded for
+                # more than _RESUME_STACK_MAX_AGE advances would teleport the
+                # caller backward if ever "resumed".
+                while (
+                    s.resume_stack
+                    and adv_seq - s.resume_stack_seq[0] > _RESUME_STACK_MAX_AGE
+                ):
+                    s.resume_stack = s.resume_stack[1:]
+                    s.resume_stack_seq = s.resume_stack_seq[1:]
                 s.checkpoint_id = e.to_checkpoint
                 s.checkpoint_entered_version = e.version
                 s.user_turns_in_checkpoint = 0

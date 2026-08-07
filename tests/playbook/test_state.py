@@ -15,6 +15,7 @@ from superdialog.playbook.events import (
 )
 from superdialog.playbook.models import Playbook
 from superdialog.playbook.state import ConversationState
+from tests.playbook.continuity_fixtures import CONTINUITY_YAML
 from tests.playbook.test_models import MINIMAL_YAML
 
 
@@ -345,3 +346,75 @@ def test_caller_storage_is_bare_key_backward_compatible() -> None:
     assert "date_of_birth" in s.slots  # bare key, exactly as today
     assert "caller:date_of_birth" not in s.slots
     assert s.slot_value("date_of_birth") == "1986-06-04"  # default entity=caller
+
+
+# --- resume-stack expiry (Task 10) ----------------------------------------
+
+
+def _adv(frm: str | None, to: str, rule: str) -> AdvanceEvent:
+    return AdvanceEvent(from_checkpoint=frm, to_checkpoint=to, rule=rule)
+
+
+def _detour_log(subsequent: int) -> EventLog:
+    """init -> resume-push interrupt, then N ping-pong llm advances."""
+    log = EventLog()
+    log.append(_adv(None, "main.ask_location", "init"))
+    log.append(
+        _adv("main.ask_location", "main.pricing_faq", "interrupt:price_guardrail")
+    )
+    frm = "main.pricing_faq"
+    for i in range(subsequent):
+        to = "main.pitch" if i % 2 == 0 else "main.ask_budget"
+        log.append(_adv(frm, to, "llm: caller responded"))
+        frm = to
+    return log
+
+
+def test_resume_stack_entry_expires_after_max_age_advances() -> None:
+    pb = Playbook.from_yaml(CONTINUITY_YAML)
+    state = ConversationState.fold(_detour_log(7), playbook=pb)
+    assert state.resume_stack == []
+    assert state.resume_stack_seq == []
+
+
+def test_resume_stack_entry_survives_within_max_age() -> None:
+    pb = Playbook.from_yaml(CONTINUITY_YAML)
+    state = ConversationState.fold(_detour_log(5), playbook=pb)
+    assert state.resume_stack == ["main.ask_location"]
+    assert state.resume_stack_seq == [2]
+
+
+def test_resume_pop_still_works_before_expiry() -> None:
+    pb = Playbook.from_yaml(CONTINUITY_YAML)
+    log = EventLog()
+    log.append(_adv(None, "main.ask_location", "init"))
+    log.append(
+        _adv("main.ask_location", "main.pricing_faq", "interrupt:price_guardrail")
+    )
+    log.append(_adv("main.pricing_faq", "main.ask_location", "resume"))
+    state = ConversationState.fold(log, playbook=pb)
+    assert state.resume_stack == []
+    assert state.resume_stack_seq == []
+    assert state.checkpoint_id == "main.ask_location"
+
+
+def test_nested_entries_expire_oldest_first() -> None:
+    pb = Playbook.from_yaml(CONTINUITY_YAML)
+    log = EventLog()
+    log.append(_adv(None, "main.ask_location", "init"))  # seq 1
+    log.append(  # seq 2: push "main.ask_location"
+        _adv("main.ask_location", "main.pricing_faq", "interrupt:price_guardrail")
+    )
+    log.append(_adv("main.pricing_faq", "main.pitch", "llm: r"))  # seq 3
+    log.append(_adv("main.pitch", "main.ask_budget", "llm: r"))  # seq 4
+    log.append(  # seq 5: nested push "main.ask_budget" (caller asks again)
+        _adv("main.ask_budget", "main.pricing_faq", "interrupt:price_guardrail")
+    )
+    frm = "main.pricing_faq"
+    for i in range(4):  # seq 6-9: age of older entry 9-2=7 > 6; newer 9-5=4
+        to = "main.pitch" if i % 2 == 0 else "main.ask_budget"
+        log.append(_adv(frm, to, "llm: r"))
+        frm = to
+    state = ConversationState.fold(log, playbook=pb)
+    assert state.resume_stack == ["main.ask_budget"]
+    assert state.resume_stack_seq == [5]
