@@ -909,3 +909,12 @@ def test_westgate_fixture_compiles_and_routes() -> None:
     assert set(nie) == {"main.ask_for_reference"}
     # The connectivity pitch rides the advance as exit_say.
     assert "connectivity" in pb.checkpoint("main.qualify_location").exit_say
+
+
+def test_legacy_continuity_defaults_off_and_passes_through() -> None:
+    import yaml
+
+    assert simple_to_playbook(yaml.safe_load(SIMPLE)).legacy_continuity is False
+    doc = yaml.safe_load(SIMPLE)
+    doc["legacy_continuity"] = True
+    assert simple_to_playbook(doc).legacy_continuity is True

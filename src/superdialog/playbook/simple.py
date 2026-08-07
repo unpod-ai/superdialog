@@ -138,6 +138,10 @@ class SimplePlaybook(BaseModel):
     # Opt-in: enable the trajectory-level Supervisor (loop 2 — recovery/redirect
     # meta-agent). Off ⇒ unchanged. See GuidelineConfig.supervisor.
     supervisor: bool = False
+    # Continuity v2 escape hatch: true restores pre-v2 semantics (no junk-slot
+    # rejection, no churn dampener, no uncorroborated-advance steer, supervisor
+    # stays opt-in). New playbooks get v2 by default. See Playbook.legacy_continuity.
+    legacy_continuity: bool = False
 
 
 def is_simple_playbook(doc: Any) -> bool:
@@ -495,6 +499,7 @@ def simple_to_playbook(doc: dict[str, Any], strict: bool = True) -> Playbook:
     return Playbook(
         persona=_build_persona(sp),
         multi_entity=sp.multi_entity,
+        legacy_continuity=sp.legacy_continuity,
         journeys={"main": Journey(checkpoints=checkpoints)},
         interrupts=interrupts,
         guidelines=guidelines,

@@ -344,6 +344,10 @@ class Playbook(BaseModel):
     persona: str = ""
     # Opt-in: scope slot storage/lookups per checkpoint entity. Off ⇒ today.
     multi_entity: bool = False
+    # Continuity v2 escape hatch: true restores pre-v2 semantics (no junk-slot
+    # rejection, no churn dampener, no uncorroborated-advance steer, supervisor
+    # stays opt-in). New playbooks get v2 by default.
+    legacy_continuity: bool = False
     guidelines: GuidelineConfig = Field(default_factory=GuidelineConfig)
     # The model a host should actually run this playbook on. ``None`` (the
     # default) preserves today's behavior byte-for-byte: the host's caller-

@@ -481,3 +481,10 @@ def test_trailing_newline_entity_rejected() -> None:
     # so "caller\n" must be rejected (regression for the `\Z` anchor fix).
     with pytest.raises(ValidationError):
         Checkpoint(id="a", entity="caller\n")
+
+
+def test_legacy_continuity_flag_defaults_off() -> None:
+    pb = Playbook.from_yaml(MINIMAL_YAML)
+    assert pb.legacy_continuity is False
+    legacy = Playbook.from_yaml(MINIMAL_YAML + "\nlegacy_continuity: true\n")
+    assert legacy.legacy_continuity is True
