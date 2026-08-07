@@ -560,8 +560,13 @@ class Director:
                 # supervisor trigger (junk_rejected:<key>, Task 12).
                 # JSON null is junk too: str coercion would mint the literal
                 # 'None' string (the production configuration='None' origin).
+                # Entity-namespaced off-caller via _ekey (caller stays bare,
+                # backward compat) — matches slot_churn's {entity}:{key} keying.
+                junk_key = _ekey(cp.entity, key)
                 events.append(
-                    DegradedEvent(component="director", detail=f"junk_rejected:{key}")
+                    DegradedEvent(
+                        component="director", detail=f"junk_rejected:{junk_key}"
+                    )
                 )
                 continue
             coerced = _coerce_slot(value, slot_spec, state.now)

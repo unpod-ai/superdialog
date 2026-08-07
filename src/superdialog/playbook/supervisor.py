@@ -80,7 +80,14 @@ def detect_triggers(
             budget = None
         if budget and state.user_turns_in_checkpoint > budget:
             triggers.append("turn_budget")
-    if any(isinstance(e, DegradedEvent) and e.version > entered for e in log.events):
+    # junk rejections have their own >=2 threshold below; a single benign
+    # non-extraction must not spend a supervisor call.
+    if any(
+        isinstance(e, DegradedEvent)
+        and e.version > entered
+        and not e.detail.startswith("junk_rejected:")
+        for e in log.events
+    ):
         triggers.append("degraded")
     seen_values: dict[str, set[str]] = {}
     for e in log.events:
@@ -97,6 +104,25 @@ def detect_triggers(
     for iid, n in interrupt_counts.items():
         if n >= 2:
             triggers.append(f"repeated_interrupt:{iid}")
+    # v2: two consecutive uncorroborated DIRECTED advances = flying on prose.
+    # Directed = the rules a director verdict/expr chose (llm:/expr: prefixes);
+    # interrupts, resume, policy, and init are detours/plumbing, filtered out
+    # so they neither break nor extend a streak.
+    directed = [
+        e
+        for e in log.events
+        if isinstance(e, AdvanceEvent) and e.rule.startswith(("llm:", "expr:"))
+    ]
+    if len(directed) >= 2 and all(e.corroborated is False for e in directed[-2:]):
+        triggers.append("uncorroborated_streak")
+    junk_counts: dict[str, int] = {}
+    for e in log.events:
+        if isinstance(e, DegradedEvent) and e.detail.startswith("junk_rejected:"):
+            key = e.detail.split(":", 1)[1]
+            junk_counts[key] = junk_counts.get(key, 0) + 1
+    for key, n in junk_counts.items():
+        if n >= 2:
+            triggers.append(f"junk_rejected:{key}")
     if (state.steering_note or "").startswith(COMPENSATE_MARKER):
         triggers.append("compensation_pending")
     return triggers

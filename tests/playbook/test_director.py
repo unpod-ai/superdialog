@@ -580,6 +580,17 @@ async def test_junk_slot_values_are_rejected_under_v2() -> None:
     assert not [e for e in decision.events if isinstance(e, DegradedEvent)]
 
 
+async def test_junk_rejected_detail_is_entity_namespaced_off_caller() -> None:
+    # Off-caller checkpoints namespace the junk detail as
+    # junk_rejected:<entity>:<key>, mirroring slot_churn's {entity}:{key}
+    # keying (caller stays bare for backward compat).
+    pb, _log, state = _partner_state("umm")
+    llm = CannedLLM({"slots": {"date_of_birth": "None"}, "advance": None, "note": None})
+    decision = await Director(pb, llm).evaluate(state)
+    degraded = [e for e in decision.events if isinstance(e, DegradedEvent)]
+    assert any(e.detail == "junk_rejected:partner:date_of_birth" for e in degraded)
+
+
 async def test_junk_slot_values_pass_under_legacy() -> None:
     # legacy_continuity: true preserves the old accept-anything behavior
     # byte-for-byte: 'None' is written, no junk_rejected audit event.

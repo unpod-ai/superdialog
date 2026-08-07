@@ -160,6 +160,92 @@ def test_compensation_pending_trigger() -> None:
     assert "compensation_pending" in detect_triggers(rt.state, rt.log, _pb())
 
 
+def test_uncorroborated_streak_trigger() -> None:
+    rt = _runtime()
+    rt.log.append(
+        AdvanceEvent(
+            from_checkpoint="flow.ask",
+            to_checkpoint="flow.book",
+            rule="llm:x",
+            corroborated=False,
+        )
+    )
+    rt.log.append(
+        AdvanceEvent(
+            from_checkpoint="flow.book",
+            to_checkpoint="flow.ask",
+            rule="llm:y",
+            corroborated=False,
+        )
+    )
+    assert "uncorroborated_streak" in detect_triggers(rt.state, rt.log, _pb())
+
+
+def test_no_streak_on_single_uncorroborated() -> None:
+    rt = _runtime()
+    for corr in (True, False, True):
+        rt.log.append(
+            AdvanceEvent(
+                from_checkpoint="flow.ask",
+                to_checkpoint="flow.book",
+                rule="llm:x",
+                corroborated=corr,
+            )
+        )
+    assert "uncorroborated_streak" not in detect_triggers(rt.state, rt.log, _pb())
+
+
+def test_streak_ignores_interrupt_and_resume_advances() -> None:
+    # The streak is over DIRECTED rule advances only (llm:/expr:): an
+    # interrupt detour between two uncorroborated llm advances neither
+    # breaks nor extends the streak — llm(F), interrupt(None), llm(F)
+    # IS a streak of 2.
+    rt = _runtime()
+    rt.log.append(
+        AdvanceEvent(
+            from_checkpoint="flow.ask",
+            to_checkpoint="flow.book",
+            rule="llm:x",
+            corroborated=False,
+        )
+    )
+    rt.log.append(
+        AdvanceEvent(
+            from_checkpoint="flow.book",
+            to_checkpoint="flow.ask",
+            rule="interrupt:faq",
+        )
+    )
+    rt.log.append(
+        AdvanceEvent(
+            from_checkpoint="flow.ask",
+            to_checkpoint="flow.book",
+            rule="llm:y",
+            corroborated=False,
+        )
+    )
+    assert "uncorroborated_streak" in detect_triggers(rt.state, rt.log, _pb())
+
+
+def test_junk_rejected_trigger_at_two() -> None:
+    rt = _runtime()
+    rt.log.append(DegradedEvent(component="director", detail="junk_rejected:city"))
+    assert "junk_rejected:city" not in detect_triggers(rt.state, rt.log, _pb())
+    rt.log.append(DegradedEvent(component="director", detail="junk_rejected:city"))
+    assert "junk_rejected:city" in detect_triggers(rt.state, rt.log, _pb())
+
+
+def test_junk_rejected_does_not_fire_generic_degraded() -> None:
+    # A single benign non-extraction must not spend a supervisor call: the
+    # generic degraded trigger excludes junk_rejected events (they have
+    # their own >=2-per-slot threshold).
+    rt = _runtime()
+    rt.log.append(DegradedEvent(component="director", detail="junk_rejected:city"))
+    assert "degraded" not in detect_triggers(rt.state, rt.log, _pb())
+    rt.log.append(DegradedEvent(component="director", detail="llm_error"))
+    assert "degraded" in detect_triggers(rt.state, rt.log, _pb())
+
+
 # -- review ---------------------------------------------------------------------
 
 
