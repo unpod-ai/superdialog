@@ -546,7 +546,17 @@ def test_verdict_prompt_flat_when_not_multi_entity() -> None:
     assert "Already known: " in system  # today's flat shape
 
 
-_JUNK_TABLE = ["None", "", "none", "NULL", "n/a", "Not Specified", "unknown", " none "]
+_JUNK_TABLE = [
+    "None",
+    "",
+    "none",
+    "NULL",
+    "n/a",
+    "Not Specified",
+    "unknown",
+    " none ",
+    None,  # JSON null: str coercion would mint the literal 'None' string
+]
 
 
 async def test_junk_slot_values_are_rejected_under_v2() -> None:
@@ -582,8 +592,9 @@ async def test_junk_slot_values_pass_under_legacy() -> None:
     )
     log.append(UtteranceEvent(role="user", text="Pune tomorrow please"))
     state = ConversationState.fold(log, playbook=pb)
-    llm = CannedLLM({"slots": {"city": "None"}, "advance": None, "note": None})
-    decision = await Director(pb, llm).evaluate(state)
-    writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
-    assert [e for e in writes if e.key == "city" and e.value == "None"]
-    assert not [e for e in decision.events if isinstance(e, DegradedEvent)]
+    for raw in ["None", None]:  # legacy also keeps null -> str-coerced "None"
+        llm = CannedLLM({"slots": {"city": raw}, "advance": None, "note": None})
+        decision = await Director(pb, llm).evaluate(state)
+        writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
+        assert [e for e in writes if e.key == "city" and e.value == "None"], repr(raw)
+        assert not [e for e in decision.events if isinstance(e, DegradedEvent)]

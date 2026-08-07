@@ -544,9 +544,11 @@ class Director:
             slot_spec = cp.slots.get(key)
             if slot_spec is None or slot_spec.authoritative:
                 continue  # reject slots not defined in current checkpoint, or authoritative
-            if not self._pb.legacy_continuity and _is_junk(value):
+            if not self._pb.legacy_continuity and (value is None or _is_junk(value)):
                 # Auditable rejection: repeated junk on one key is a
                 # supervisor trigger (junk_rejected:<key>, Task 12).
+                # JSON null is junk too: str coercion would mint the literal
+                # 'None' string (the production configuration='None' origin).
                 events.append(
                     DegradedEvent(
                         component="director", detail=f"junk_rejected:{key}"
