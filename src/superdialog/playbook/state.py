@@ -18,6 +18,7 @@ from .events import (
     SessionEndEvent,
     SessionStartEvent,
     SlotWriteEvent,
+    SpeechCorrectionEvent,
     SteeringNoteEvent,
     SummaryEvent,
     ToolCallEvent,
@@ -148,6 +149,19 @@ class ConversationState(BaseModel):
         adv_seq = 0
         for e in log.replay():
             s.version = e.version
+            if isinstance(e, SpeechCorrectionEvent):
+                # Speech-record fact, like utterances: applies even when its
+                # version is superseded — a revert must not un-hear what the
+                # caller heard, so this runs BEFORE the dead-version check.
+                for i in range(len(s.transcript) - 1, -1, -1):
+                    if s.transcript[i].version == e.utterance_version:
+                        s.transcript[i] = TranscriptEntry(
+                            role=s.transcript[i].role,
+                            text=e.heard_text,
+                            version=s.transcript[i].version,
+                        )
+                        break
+                continue
             if e.version in dead and not isinstance(e, SessionStartEvent):
                 # Rewound: the event's STATE effect is superseded. Speech is
                 # irreversible — utterances stay in the transcript (and keep

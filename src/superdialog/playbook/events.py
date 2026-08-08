@@ -123,6 +123,20 @@ class RevertEvent(_Base):
     by: Literal["director", "supervisor", "runtime"] = "runtime"
 
 
+class SpeechCorrectionEvent(_Base):
+    """Correct an assistant utterance to what the caller actually heard.
+
+    Append-only barge-in truncation: the original UtteranceEvent stays
+    in the log (what was GENERATED); the fold's transcript shows this
+    text (what was DELIVERED). Its presence is the completed=False
+    marker for the corrected utterance.
+    """
+
+    type: Literal["speech_correction"] = "speech_correction"
+    utterance_version: int
+    heard_text: str
+
+
 class SessionEndEvent(_Base):
     type: Literal["session_end"] = "session_end"
     outcome: str | None = None
@@ -144,6 +158,7 @@ Event = Annotated[
         DegradedEvent,
         SessionEndEvent,
         RevertEvent,
+        SpeechCorrectionEvent,
     ],
     Field(discriminator="type"),
 ]

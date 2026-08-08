@@ -423,27 +423,53 @@ async def test_mark_interrupted_truncates_and_refolds():
 
     agent.mark_interrupted("Which")
 
+    # Mechanism update (G38): append-only — the logged UtteranceEvent keeps
+    # what was GENERATED; the fold's transcript shows what was DELIVERED.
     last = (await _assistant_events(agent))[-1]
-    assert last.text == "Which [interrupted by caller]"
-    # The fold refreshed (frozen event replaced at same version → explicit
-    # _state_cache reset), so the Director's next-turn transcript sees the cut.
+    assert last.text == "Which city?"
+    # The append bumped log.version, so runtime.state refolds naturally and
+    # the Director's next-turn transcript sees the cut.
     tx = [m for m in agent.runtime.state.transcript if m.role == "assistant"]
     assert tx[-1].text == "Which [interrupted by caller]"
+
+
+async def test_mark_interrupted_appends_not_rewrites():
+    from superdialog.playbook.events import SpeechCorrectionEvent
+
+    agent = _agent()
+    await agent.turn("hi")
+    original = (await _assistant_events(agent))[-1]
+
+    agent.mark_interrupted("heard prefix")
+
+    correction = agent.runtime.log.events[-1]
+    assert isinstance(correction, SpeechCorrectionEvent)
+    assert correction.utterance_version == original.version
+    # Original event object untouched — the log is append-only.
+    assert (await _assistant_events(agent))[-1].text == original.text
+    tx = [m for m in agent.runtime.state.transcript if m.role == "assistant"]
+    assert tx[-1].text == "heard prefix [interrupted by caller]"
 
 
 async def test_mark_interrupted_without_heard_text_tags_existing():
     agent = _agent()
     await agent.turn("hi")
     agent.mark_interrupted()  # no prefix → keep text, just tag it
-    last = (await _assistant_events(agent))[-1]
-    assert last.text.startswith("Which city?")
-    assert last.text.endswith("[interrupted by caller]")
+    # Behavioral surface is the transcript, not the logged event (G38).
+    tx = [m for m in agent.runtime.state.transcript if m.role == "assistant"]
+    assert tx[-1].text.startswith("Which city?")
+    assert tx[-1].text.endswith("[interrupted by caller]")
 
 
 async def test_mark_interrupted_noop_without_assistant_utterance():
+    from superdialog.playbook.events import SpeechCorrectionEvent
+
     agent = _agent()
-    agent.mark_interrupted("x")  # no turn yet → nothing to rewrite, must not raise
+    agent.mark_interrupted("x")  # no turn yet → nothing to correct, must not raise
     assert not await _assistant_events(agent)
+    assert not any(
+        isinstance(e, SpeechCorrectionEvent) for e in agent.runtime.log.events
+    )
 
 
 async def test_mark_interrupted_noop_when_turn_logged_no_utterance():
@@ -458,11 +484,15 @@ async def test_mark_interrupted_noop_when_turn_logged_no_utterance():
     agent.mark_interrupted("One mo")
     last = (await _assistant_events(agent))[-1]
     assert last.text == "Which city?"  # previous turn untouched
+    # No correction appended (G38): the scan stops at this turn's user
+    # utterance before reaching the previous turn's assistant record.
+    from superdialog.playbook.events import SpeechCorrectionEvent
+
     assert not any(
-        "[interrupted by caller]" in e.text
-        for e in agent.runtime.log.events
-        if isinstance(e, UtteranceEvent)
+        isinstance(e, SpeechCorrectionEvent) for e in agent.runtime.log.events
     )
+    tx = [m for m in agent.runtime.state.transcript if m.role == "assistant"]
+    assert tx[-1].text == "Which city?"
 
 
 async def test_hold_line_only_turn_streams_but_logs_nothing():

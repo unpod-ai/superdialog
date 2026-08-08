@@ -130,3 +130,20 @@ def test_slot_write_event_carries_entity() -> None:
         SlotWriteEvent(key="dob", value="x", status="confirmed", by="director").entity
         == "caller"
     )  # default
+
+
+def test_speech_correction_event_round_trips() -> None:
+    from superdialog.playbook.events import SpeechCorrectionEvent
+
+    log = EventLog()
+    log.append(UtteranceEvent(role="assistant", text="full generated reply"))
+    log.append(
+        SpeechCorrectionEvent(
+            utterance_version=1, heard_text="full gen [interrupted by caller]"
+        )
+    )
+    restored = EventLog.from_jsonl(log.to_jsonl())
+    correction = restored.events[1]
+    assert isinstance(correction, SpeechCorrectionEvent)
+    assert correction.utterance_version == 1
+    assert correction.heard_text == "full gen [interrupted by caller]"

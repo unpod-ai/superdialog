@@ -132,7 +132,8 @@ def test_same_value_reconfirmation_keeps_dependents() -> None:
 
 def test_self_invalidation_guard() -> None:
     pb = Playbook.from_yaml(
-        textwrap.dedent("""
+        textwrap.dedent(
+            """
             journeys:
               j:
                 checkpoints:
@@ -140,7 +141,8 @@ def test_self_invalidation_guard() -> None:
                     slots:
                       x: {type: str, invalidates: [x]}
                     terminal: true
-        """)
+        """
+        )
     )
     log = EventLog()
     log.append(SlotWriteEvent(key="x", value="v1", status="confirmed", by="director"))
@@ -443,3 +445,56 @@ def test_nested_entries_expire_oldest_first() -> None:
     state = ConversationState.fold(log, playbook=pb)
     assert state.resume_stack == ["main.ask_budget"]
     assert state.resume_stack_seq == [5]
+
+
+# --- speech corrections: append-only barge-in truncation (G38) ----------------
+
+
+def test_speech_correction_truncates_transcript() -> None:
+    from superdialog.playbook.events import SpeechCorrectionEvent
+
+    log = EventLog()
+    log.append(UtteranceEvent(role="user", text="hi"))
+    log.append(UtteranceEvent(role="assistant", text="full generated reply"))
+    log.append(
+        SpeechCorrectionEvent(
+            utterance_version=2, heard_text="full gen [interrupted by caller]"
+        )
+    )
+    state = ConversationState.fold(log)
+    assistant = [m for m in state.transcript if m.role == "assistant"]
+    assert assistant[-1].text == "full gen [interrupted by caller]"
+    assert assistant[-1].version == 2
+    # Append-only: the stored UtteranceEvent keeps what was GENERATED.
+    assert log.events[1].text == "full generated reply"
+
+
+def test_speech_correction_survives_revert() -> None:
+    from superdialog.playbook.events import SpeechCorrectionEvent
+
+    log = EventLog()
+    log.append(UtteranceEvent(role="user", text="hi"))
+    log.append(UtteranceEvent(role="assistant", text="full generated reply"))
+    log.append(
+        SpeechCorrectionEvent(
+            utterance_version=2, heard_text="full gen [interrupted by caller]"
+        )
+    )
+    # Revert covering the correction's own version: speech is irreversible,
+    # so the transcript must STILL show what the caller actually heard.
+    log.append(
+        RevertEvent(superseded_from=2, superseded_to=3, reason="undo", by="supervisor")
+    )
+    state = ConversationState.fold(log)
+    assistant = [m for m in state.transcript if m.role == "assistant"]
+    assert assistant[-1].text == "full gen [interrupted by caller]"
+
+
+def test_speech_correction_unknown_version_is_noop() -> None:
+    from superdialog.playbook.events import SpeechCorrectionEvent
+
+    log = EventLog()
+    log.append(UtteranceEvent(role="assistant", text="hello"))
+    log.append(SpeechCorrectionEvent(utterance_version=99, heard_text="nope"))
+    state = ConversationState.fold(log)  # must not crash
+    assert [m.text for m in state.transcript] == ["hello"]

@@ -23,7 +23,7 @@ from ..agent import TurnResult
 from ..chat_context import ChatContext, ChatMessage, Role
 from ..stream import StreamChunk, Turn
 from .director import AnchorMode, CompletesLLM
-from .events import EventLog, SummaryEvent, UtteranceEvent
+from .events import EventLog, SpeechCorrectionEvent, SummaryEvent, UtteranceEvent
 from .models import Playbook
 from .runtime import PlaybookRuntime
 from .state import ConversationState
@@ -240,35 +240,38 @@ class PlaybookAgent:
         self.runtime.log.append(UtteranceEvent(role="system", text=text))
 
     def mark_interrupted(self, heard_text: str | None = None) -> None:
-        """Rewrite the last assistant utterance to what the caller actually heard.
+        """Correct the last assistant utterance to what the caller actually heard.
 
         A barge-in cancels the Talker's SPEECH, but the shielded finally still
-        logs the FULL generated reply as if spoken (agent.py:403-409). That
-        leaves the Director reasoning next turn against words the caller never
-        heard — the root of "you already told me X" re-asks. The host calls this
-        (from the SDK Session on a mid-stream ``UserInterruptEvent``) to truncate
-        that record to the heard prefix and tag it ``[interrupted by caller]``.
+        logs the FULL generated reply as if spoken. That leaves the Director
+        reasoning next turn against words the caller never heard — the root of
+        "you already told me X" re-asks. The host calls this (from the SDK
+        Session on a mid-stream ``UserInterruptEvent``) to append a
+        ``SpeechCorrectionEvent`` truncating the transcript record to the heard
+        prefix, tagged ``[interrupted by caller]``. Append-only: the original
+        event keeps what was GENERATED; the fold's transcript shows what was
+        DELIVERED.
 
         ``heard_text=None`` → keep the logged text, just tag it interrupted
         (best-effort when the worker sent no prefix). No-op when there is no
-        assistant utterance to rewrite. Inert until a caller invokes it.
+        assistant utterance to correct. Inert until a caller invokes it.
         """
-        events = self.runtime.log.events
-        for i in range(len(events) - 1, -1, -1):
-            event = events[i]
+        for event in reversed(self.runtime.log.events):
             if isinstance(event, UtteranceEvent) and event.role == "user":
                 # Nothing logged this turn (all-filler barge-in, or post-
                 # terminal user turn): there is no utterance of THIS turn to
-                # truncate — rewriting an older one would corrupt history.
+                # correct — correcting an older one would corrupt history.
                 return
             if isinstance(event, UtteranceEvent) and event.role == "assistant":
                 base = heard_text if heard_text else event.text
-                # UtteranceEvent is frozen; replace in place (same version, so
-                # log.version is unchanged) and force a refold explicitly.
-                events[i] = event.model_copy(
-                    update={"text": f"{base} [interrupted by caller]"}
+                # The append bumps log.version, so runtime.state refolds
+                # naturally — no explicit cache invalidation needed.
+                self.runtime.log.append(
+                    SpeechCorrectionEvent(
+                        utterance_version=event.version,
+                        heard_text=f"{base} [interrupted by caller]",
+                    )
                 )
-                self.runtime._state_cache = None
                 return
 
     def apply_memory(self, summary: str) -> None:
