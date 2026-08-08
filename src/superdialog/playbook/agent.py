@@ -15,7 +15,7 @@ import logging
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, cast
+from typing import Any, AsyncIterator, Literal, cast
 
 import anyio
 
@@ -126,6 +126,7 @@ class PlaybookAgent:
         filler: SpokenLine | None = None,
         hold_line: SpokenLine | None = None,
         allow_private_hosts: bool = False,
+        anchor: Literal["off", "shadow", "enforce"] = "shadow",
     ) -> None:
         # Offline-eval knob: when True the Talker waits for the Director to
         # settle before speaking on EVERY turn (not just the greeting), so a
@@ -142,6 +143,7 @@ class PlaybookAgent:
             python_tools=python_tools,
             intercept_llm=intercept_llm,
             allow_private_hosts=allow_private_hosts,
+            anchor=anchor,
         )
         # Loop 2 (off the speech path): reviews the trajectory after a turn
         # completes, only when a trigger fires. An explicit ``supervisor_llm``
@@ -150,9 +152,7 @@ class PlaybookAgent:
         # model (raw, untimed — the call is off the speech path, so it must not
         # smear the Director's latency stats).
         _sup_flag = playbook.guidelines.supervisor
-        _sup_on = (
-            _sup_flag if _sup_flag is not None else not playbook.legacy_continuity
-        )
+        _sup_on = _sup_flag if _sup_flag is not None else not playbook.legacy_continuity
         sup_llm = supervisor_llm or (director_llm if _sup_on else None)
         self._supervisor = Supervisor(sup_llm, playbook) if sup_llm else None
         # Barrier lines: None keeps the Talker's built-in defaults. A host may

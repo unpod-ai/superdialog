@@ -222,7 +222,8 @@ async def test_llm_error_still_degrades_after_retry_fails() -> None:
     assert llm.attempts == 2
 
 
-HARD_GATE_YAML = textwrap.dedent("""
+HARD_GATE_YAML = textwrap.dedent(
+    """
     persona: "You verify payments."
     journeys:
       pay:
@@ -237,7 +238,8 @@ HARD_GATE_YAML = textwrap.dedent("""
                  requires: [otp]}
           - id: done
             terminal: true
-""")
+"""
+)
 
 
 def _hard_state(pb: Playbook) -> ConversationState:
@@ -321,7 +323,8 @@ async def test_authoritative_slots_never_written_by_verdict() -> None:
     assert [e for e in writes if e.key == "city"]
 
 
-RESOLVE_FROM_YAML = textwrap.dedent("""
+RESOLVE_FROM_YAML = textwrap.dedent(
+    """
     journeys:
       main:
         checkpoints:
@@ -342,21 +345,33 @@ RESOLVE_FROM_YAML = textwrap.dedent("""
           - id: done
             terminal: true
             outcome: completed
-""")
+"""
+)
 
 
-def _resolve_from_state(with_candidates: bool) -> tuple[Playbook, ConversationState]:
+def _resolve_from_state(
+    with_candidates: bool, text: str = "Book for DLF Golf Course"
+) -> tuple[Playbook, ConversationState]:
     pb = Playbook.from_yaml(RESOLVE_FROM_YAML)
     log = EventLog()
-    log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint="main.collect", rule="init"))
-    log.append(UtteranceEvent(role="user", text="Book for DLF Golf Course"))
+    log.append(
+        AdvanceEvent(from_checkpoint=None, to_checkpoint="main.collect", rule="init")
+    )
+    log.append(UtteranceEvent(role="user", text=text))
     if with_candidates:
         log.append(
             ToolResultEvent(
                 tool="courses_by_city",
                 store_as="city_courses_result",
                 ok=True,
-                data={"courses": [{"name": "DLF Golf and Country Club", "course_id": "course_ddfd8225"}]},
+                data={
+                    "courses": [
+                        {
+                            "name": "DLF Golf and Country Club",
+                            "course_id": "course_ddfd8225",
+                        }
+                    ]
+                },
             )
         )
     return pb, ConversationState.fold(log, playbook=pb)
@@ -421,7 +436,8 @@ async def test_resolve_block_instructs_bare_affirmation_uses_assistant_offer() -
     assert "ASSISTANT" in system
 
 
-TYPED_SLOTS_YAML = textwrap.dedent("""
+TYPED_SLOTS_YAML = textwrap.dedent(
+    """
     journeys:
       j:
         checkpoints:
@@ -431,7 +447,8 @@ TYPED_SLOTS_YAML = textwrap.dedent("""
               count: {type: int}
           - id: end
             terminal: true
-""")
+"""
+)
 
 
 async def test_enum_and_type_validation() -> None:
@@ -575,7 +592,8 @@ def test_verdict_prompt_no_date_block_when_no_date_slot() -> None:
     from superdialog.playbook.state import ConversationState
 
     pb = Playbook.from_yaml(
-        textwrap.dedent("""
+        textwrap.dedent(
+            """
         persona: "A."
         journeys:
           j:
@@ -584,7 +602,8 @@ def test_verdict_prompt_no_date_block_when_no_date_slot() -> None:
                 slots: {name: {type: str}}
               - id: done
                 terminal: true
-    """)
+    """
+        )
     )
     log = EventLog()
     log.append(
@@ -598,7 +617,8 @@ def test_verdict_prompt_no_date_block_when_no_date_slot() -> None:
     assert msg["content"].startswith(_VERDICT_PREAMBLE)  # cache prefix intact
 
 
-_PARTNER_YAML = textwrap.dedent("""
+_PARTNER_YAML = textwrap.dedent(
+    """
     multi_entity: true
     persona: "You collect details."
     journeys:
@@ -615,7 +635,8 @@ _PARTNER_YAML = textwrap.dedent("""
           - id: done
             terminal: true
             outcome: confirmed
-""")
+"""
+)
 
 
 def _partner_state(text: str) -> tuple[Playbook, EventLog, ConversationState]:
@@ -743,7 +764,14 @@ async def test_semantic_values_trusted_to_the_llm_under_v2() -> None:
         decision = await Director(pb, llm).evaluate(state)
         writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
         assert [e for e in writes if e.key == "city"], f"filtered {value!r}"
-        assert not [e for e in decision.events if isinstance(e, DegradedEvent)]
+        # G37: these canned values never appear in the fixture's utterance, so
+        # the shadow anchor correctly logs anchor_miss — only assert the junk
+        # guard stays silent (a real decline carries a span vouching for it).
+        assert not [
+            e
+            for e in decision.events
+            if isinstance(e, DegradedEvent) and not e.detail.startswith("anchor_miss:")
+        ]
 
 
 async def test_junk_rejected_detail_is_entity_namespaced_off_caller() -> None:
@@ -764,7 +792,8 @@ async def test_allow_empty_slot_accepts_empty_string_as_a_real_answer() -> None:
     # fired -- the caller repeated "no" three times and the flow eventually
     # narrated a fabricated success with no real hold ever placed.
     # allow_empty: true declares "" as THIS slot's own legitimate value.
-    yaml_text = textwrap.dedent("""
+    yaml_text = textwrap.dedent(
+        """
         persona: "Assistant."
         journeys:
           j:
@@ -778,15 +807,14 @@ async def test_allow_empty_slot_accepts_empty_string_as_a_real_answer() -> None:
                   - {when: "done", judge: llm, to: j.done}
               - id: done
                 terminal: true
-    """)
+    """
+    )
     pb = Playbook.from_yaml(yaml_text)
     log = EventLog()
     log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint="j.ask", rule="init"))
     log.append(UtteranceEvent(role="user", text="no add-ons"))
     state = ConversationState.fold(log, playbook=pb)
-    llm = CannedLLM(
-        {"slots": {"special_requests": ""}, "advance": None, "note": None}
-    )
+    llm = CannedLLM({"slots": {"special_requests": ""}, "advance": None, "note": None})
     decision = await Director(pb, llm).evaluate(state)
     writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
     assert any(e.key == "special_requests" and e.value == "" for e in writes)
@@ -814,9 +842,7 @@ async def test_allow_empty_slot_accepts_empty_string_as_a_real_answer() -> None:
 async def test_junk_slot_values_pass_under_legacy() -> None:
     # legacy_continuity: true preserves the old accept-anything behavior
     # byte-for-byte: 'None' is written, no junk_rejected audit event.
-    pb = Playbook.from_yaml(MINIMAL_YAML).model_copy(
-        update={"legacy_continuity": True}
-    )
+    pb = Playbook.from_yaml(MINIMAL_YAML).model_copy(update={"legacy_continuity": True})
     log = EventLog()
     log.append(
         AdvanceEvent(from_checkpoint=None, to_checkpoint="booking.collect", rule="init")
@@ -828,10 +854,18 @@ async def test_junk_slot_values_pass_under_legacy() -> None:
         decision = await Director(pb, llm).evaluate(state)
         writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
         assert [e for e in writes if e.key == "city" and e.value == "None"], repr(raw)
-        assert not [e for e in decision.events if isinstance(e, DegradedEvent)]
+        # G37: the shadow anchor audit is Director-level, not playbook-gated;
+        # legacy keeps the WRITE behavior byte-for-byte (asserted above) but
+        # a fabricated 'None' still gets its anchor_miss audit event.
+        assert not [
+            e
+            for e in decision.events
+            if isinstance(e, DegradedEvent) and not e.detail.startswith("anchor_miss:")
+        ]
 
 
-ENUM_JUNK_MEMBER_YAML = textwrap.dedent("""
+ENUM_JUNK_MEMBER_YAML = textwrap.dedent(
+    """
     journeys:
       j:
         checkpoints:
@@ -840,7 +874,8 @@ ENUM_JUNK_MEMBER_YAML = textwrap.dedent("""
               tier: {type: enum, values: ["unknown", "basic"]}
           - id: end
             terminal: true
-""")
+"""
+)
 
 
 async def test_declared_enum_member_is_never_junk_under_v2() -> None:
@@ -896,9 +931,7 @@ async def test_changed_value_rewrite_still_written_under_v2() -> None:
     # A correction must flow: confirmed "Pune" -> verdict "Mumbai" is written.
     pb, state = _state(
         extra_events=[
-            SlotWriteEvent(
-                key="city", value="Pune", status="confirmed", by="director"
-            )
+            SlotWriteEvent(key="city", value="Pune", status="confirmed", by="director")
         ]
     )
     llm = CannedLLM({"slots": {"city": "Mumbai"}, "advance": None, "note": None})
@@ -907,11 +940,129 @@ async def test_changed_value_rewrite_still_written_under_v2() -> None:
     assert [e for e in writes if e.key == "city" and e.value == "Mumbai"]
 
 
+# --- G37: substring-anchored slot writes (anchor_miss audit) ----------------
+
+ANCHOR_YAML = textwrap.dedent(
+    """
+    journeys:
+      j:
+        checkpoints:
+          - id: ask
+            goal: "collect appointment details"
+            slots:
+              appointment_date: {type: date}
+              tier: {type: enum, values: [basic, premium]}
+          - id: done
+            terminal: true
+"""
+)
+
+
+def _anchor_state(text: str) -> tuple[Playbook, ConversationState]:
+    pb = Playbook.from_yaml(ANCHOR_YAML)
+    log = EventLog()
+    log.append(
+        SessionStartEvent(started_at="2026-08-08T00:00:00+00:00", timezone="UTC")
+    )
+    log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint="j.ask", rule="init"))
+    log.append(UtteranceEvent(role="user", text=text))
+    return pb, ConversationState.fold(log, playbook=pb)
+
+
+def _anchor_misses(decision) -> list[DegradedEvent]:
+    return [
+        e
+        for e in decision.events
+        if isinstance(e, DegradedEvent) and e.detail.startswith("anchor_miss:")
+    ]
+
+
+async def test_anchor_shadow_logs_fabricated_date_but_writes() -> None:
+    # Default (shadow): a date the caller never uttered is audited but the
+    # write still lands — observability before enforcement.
+    pb, state = _anchor_state("any time later in the week is fine")
+    llm = CannedLLM(
+        {"slots": {"appointment_date": "2026-08-14"}, "advance": None, "note": None}
+    )
+    decision = await Director(pb, llm).evaluate(state)
+    writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
+    assert any(e.key == "appointment_date" for e in writes)
+    assert any(
+        e.detail == "anchor_miss:appointment_date" for e in _anchor_misses(decision)
+    )
+
+
+async def test_anchor_enforce_rejects_fabricated_date() -> None:
+    pb, state = _anchor_state("any time later in the week is fine")
+    llm = CannedLLM(
+        {"slots": {"appointment_date": "2026-08-14"}, "advance": None, "note": None}
+    )
+    decision = await Director(pb, llm, anchor="enforce").evaluate(state)
+    writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
+    assert not [e for e in writes if e.key == "appointment_date"]
+    assert any(
+        e.detail == "anchor_miss:appointment_date" for e in _anchor_misses(decision)
+    )
+
+
+async def test_anchor_enforce_accepts_spanned_date() -> None:
+    # A span anchored in the utterance vouches for a date iff re-deriving the
+    # value from the span reproduces it (normalized ISO differs from spoken).
+    from superdialog.playbook._guidelines import normalize_date
+
+    pb, state = _anchor_state("next friday works")
+    expected = normalize_date("next friday", state.now)
+    llm = CannedLLM(
+        {
+            "slots": {"appointment_date": expected},
+            "spans": {"appointment_date": "next friday"},
+            "advance": None,
+            "note": None,
+        }
+    )
+    decision = await Director(pb, llm, anchor="enforce").evaluate(state)
+    writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
+    assert any(e.key == "appointment_date" and e.value == expected for e in writes)
+    assert not _anchor_misses(decision)
+
+
+async def test_anchor_value_fallback_without_span() -> None:
+    # No span, but the value itself appears verbatim in the utterance: clean.
+    pb, state = _anchor_state("make it premium")
+    llm = CannedLLM({"slots": {"tier": "premium"}, "advance": None, "note": None})
+    decision = await Director(pb, llm, anchor="enforce").evaluate(state)
+    writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
+    assert any(e.key == "tier" and e.value == "premium" for e in writes)
+    assert not _anchor_misses(decision)
+
+
+async def test_anchor_exempts_resolve_from_slots() -> None:
+    # A bare affirmation resolves a candidate id the caller never spoke; the
+    # live-candidate check is that slot's guard, not the anchor.
+    pb, state = _resolve_from_state(with_candidates=True, text="yes, hold that one")
+    llm = CannedLLM(
+        {"slots": {"course_id": "course_ddfd8225"}, "advance": None, "note": None}
+    )
+    decision = await Director(pb, llm, anchor="enforce").evaluate(state)
+    writes = {e.key: e.value for e in decision.events if isinstance(e, SlotWriteEvent)}
+    assert writes.get("course_id") == "course_ddfd8225"
+    assert not _anchor_misses(decision)
+
+
+async def test_anchor_off_disables_check() -> None:
+    pb, state = _anchor_state("any time later in the week is fine")
+    llm = CannedLLM(
+        {"slots": {"appointment_date": "2026-08-14"}, "advance": None, "note": None}
+    )
+    decision = await Director(pb, llm, anchor="off").evaluate(state)
+    writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
+    assert any(e.key == "appointment_date" for e in writes)
+    assert not _anchor_misses(decision)
+
+
 async def test_identical_confirmed_rewrite_kept_under_legacy() -> None:
     # legacy_continuity: true preserves the old rewrite-everything behavior.
-    pb = Playbook.from_yaml(MINIMAL_YAML).model_copy(
-        update={"legacy_continuity": True}
-    )
+    pb = Playbook.from_yaml(MINIMAL_YAML).model_copy(update={"legacy_continuity": True})
     log = EventLog()
     log.append(
         AdvanceEvent(from_checkpoint=None, to_checkpoint="booking.collect", rule="init")

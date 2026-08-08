@@ -81,10 +81,11 @@ class PlaybookRuntime:
         max_hops: int = 8,
         intercept_llm: CompletesLLM | None = None,
         allow_private_hosts: bool = False,
+        anchor: Literal["off", "shadow", "enforce"] = "shadow",
     ) -> None:
         self.log = EventLog()
         self._pb = playbook
-        self._director = Director(playbook, director_llm)
+        self._director = Director(playbook, director_llm, anchor=anchor)
         self._executor = ToolExecutor(
             http=http,
             python_tools=python_tools,

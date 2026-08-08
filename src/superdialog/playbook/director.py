@@ -38,7 +38,8 @@ _VERDICT_PREAMBLE = (
 class CompletesLLM(Protocol):
     """Minimal structured-completion surface the Director depends on."""
 
-    async def complete(self, messages: list[dict[str, str]], **kwargs: Any) -> str: ...
+    async def complete(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
+        ...
 
 
 class DirectorDecision(BaseModel):
@@ -149,6 +150,10 @@ def _false_goodbye(text: str) -> bool:
     if not _NEGATION_START_RE.match(t):
         return False
     return len(t.split()) <= _FALSE_GOODBYE_MAX_WORDS
+
+
+def _norm(text: Any) -> str:
+    return " ".join(str(text).split()).casefold()
 
 
 def _last_user_text(state: ConversationState) -> str:
@@ -293,6 +298,7 @@ def _verdict_prompt(
         "\n".join(f"- id={i.id!r}: {i.when}" for i in pb.interrupts if i.judge == "llm")
         or "(none)"
     )
+
     def _slot_type_annotation(s: SlotSpec) -> str:
         # Enum members are validated by _coerce_slot's strict membership
         # check (value in spec.values), but were never actually shown to the
@@ -368,14 +374,15 @@ def _verdict_prompt(
         "drift and partial/approximate names) to ONE listed entry and output its "
         "id as that slot's value. Never invent an id; omit the slot if no "
         "candidate clearly matches. BARE AFFIRMATION: if the caller gives a bare "
-        "affirmation (\"yes\", \"sure\", \"okay\", \"go ahead\", \"hold that\", "
-        "\"book it\") with no name/time of their own in this turn, they are "
+        'affirmation ("yes", "sure", "okay", "go ahead", "hold that", '
+        '"book it") with no name/time of their own in this turn, they are '
         "accepting whatever the ASSISTANT's own immediately preceding transcript "
-        "turn offered -- match THAT value (e.g. the assistant said \"nine "
+        'turn offered -- match THAT value (e.g. the assistant said "nine '
         "o'clock\") against the candidates below and output its id, exactly as "
         "if the caller had said it themselves. Still omit if neither the caller "
         "nor the assistant's last turn names a candidate.\n"
-        + "\n".join(resolve_lines) + "\n"
+        + "\n".join(resolve_lines)
+        + "\n"
         if resolve_lines
         else ""
     )
@@ -419,7 +426,10 @@ def _verdict_prompt(
         "did NOT address, OMIT the key entirely; never fill it with null or a "
         "placeholder. Exception: "
         "slots listed under CANDIDATE RESOLUTION "
-        "below — set those by matching the caller's spoken name to a candidate id.\n\n"
+        "below — set those by matching the caller's spoken name to a candidate id.\n"
+        "For every slot you extract, also copy the exact words of THIS user turn "
+        'you heard the value in into "spans": {<key>: "<words>"}. Omit a key you '
+        "have no words for.\n\n"
         f"Interrupts:\n{interrupt_lines}\n"
     )
     system = (
@@ -427,9 +437,7 @@ def _verdict_prompt(
         + (f"You are collecting details for: {cp.entity}\n" if pb.multi_entity else "")
         + f"Current step: {cp.id} — goal: {cp.goal}\n"
         f"Slots to extract:\n{slot_lines}\n"
-        f"Advance rules:\n{rule_lines}\n"
-        + date_block
-        + resolve_block
+        f"Advance rules:\n{rule_lines}\n" + date_block + resolve_block
         # Canonical bytes: same known-slots ⇒ same prompt bytes, so provider
         # prompt caching survives dict-iteration-order accidents.
         + f"Already known: {canonical_json(known)}\n"
@@ -502,9 +510,14 @@ class Director:
         fast_release_allow: set[str] | None = None,
         fast_release_deny: set[str] | None = None,
         structured_output: bool = True,
+        anchor: Literal["off", "shadow", "enforce"] = "shadow",
     ) -> None:
         self._pb = playbook
         self._llm = llm
+        # G37: substring anchor for verdict slot writes. shadow ⇒ a mismatch
+        # logs anchor_miss:<key> but the write lands; enforce ⇒ same event and
+        # the write is skipped; off ⇒ no check.
+        self._anchor = anchor
         # Request provider-native JSON-object output for the verdict (json_mode),
         # so the returned text is reliably parseable and the json_parse_error
         # degrade path is essentially eliminated on schema-capable backends. The
@@ -528,6 +541,38 @@ class Director:
         if key in self._fast_release_allow:
             return False
         return _is_known_hard_gate(key)
+
+    def _anchor_ok(
+        self,
+        span: Any,
+        value: Any,
+        coerced: Any,
+        spec: SlotSpec,
+        state: ConversationState,
+    ) -> bool:
+        """Evidence check: the write must be anchored in the caller's turn.
+
+        resolve_from slots are exempt (their evidence may be the assistant's
+        own prior offer; the live-candidate check is their guard). Spanless
+        writes fall back to the value itself appearing in the utterance —
+        dates/times can't (normalized form differs from spoken form), so
+        they effectively require a span. str values legitimately differ
+        from their span (decline convention: "No" → "none"), so a
+        present-and-anchored span suffices for them; only date/time
+        re-derive the value from the span.
+        """
+        if self._anchor == "off" or spec.resolve_from is not None:
+            return True
+        utterance = _norm(_last_user_text(state))
+        if not utterance:
+            return True  # no user turn this round (silence policy etc.)
+        if span:
+            if _norm(span) not in utterance:
+                return False
+            if spec.type in ("date", "time"):
+                return _coerce_slot(span, spec, state.now) == coerced
+            return True
+        return _norm(value) in utterance or _norm(coerced) in utterance
 
     def quick_verdict(
         self, key: str, cp: Checkpoint, confidence: dict[str, Any]
@@ -685,6 +730,9 @@ class Director:
         # soft-checkpoint extraction, or — when enabled — a high-confidence
         # fast verdict (see `_write_status`). The gate is resolved per slot.
         confidence = verdict.get("confidence") or {}
+        spans = verdict.get("spans") or {}
+        if not isinstance(spans, dict):
+            spans = {}
         events: list[Event] = []
         for key, value in (verdict.get("slots") or {}).items():
             slot_spec = cp.slots.get(key)
@@ -739,6 +787,17 @@ class Director:
                 coerced
             ) not in _resolve_candidate_ids(slot_spec, state):
                 continue  # not a live candidate id -- reject, never store raw caller text
+            # G37 anchor check: the Director points at evidence ("spans"),
+            # the engine verifies it against the caller's actual turn.
+            if not self._anchor_ok(spans.get(key), value, coerced, slot_spec, state):
+                events.append(
+                    DegradedEvent(
+                        component="director",
+                        detail=f"anchor_miss:{_ekey(cp.entity, key)}",
+                    )
+                )
+                if self._anchor == "enforce":
+                    continue
             existing = state.slots.get(_ekey(cp.entity, key))
             if (
                 not self._pb.legacy_continuity
@@ -774,8 +833,7 @@ class Director:
                 if spec is None or spec.authoritative:
                     continue
                 already = state.filled([lang_key], entity=cp.entity) or any(
-                    isinstance(e, SlotWriteEvent) and e.key == lang_key
-                    for e in events
+                    isinstance(e, SlotWriteEvent) and e.key == lang_key for e in events
                 )
                 if already:
                     continue
@@ -829,7 +887,11 @@ class Director:
             # in-flow question, not a close -- drop back to normal advance
             # handling instead of ending the call. See _false_goodbye.
             gb = self._goodbye_interrupt()
-            if gb is not None and interrupt_id == gb.id and _false_goodbye(_last_user_text(state)):
+            if (
+                gb is not None
+                and interrupt_id == gb.id
+                and _false_goodbye(_last_user_text(state))
+            ):
                 interrupt_id = None
         if interrupt_id:
             spec = next((i for i in self._pb.interrupts if i.id == interrupt_id), None)

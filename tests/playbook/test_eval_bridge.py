@@ -71,8 +71,12 @@ async def test_session_completes_and_measures() -> None:
     assert metrics.turns >= 1
     assert metrics.turns_per_checkpoint["booking.collect"] >= 1
     assert metrics.repair_count == 0
-    assert metrics.degraded_count == 0
+    # G37: the canned verdict fabricates city/date against the session's
+    # opening "Hello" turn, so the shadow anchor correctly audits them as
+    # anchor_miss; only non-anchor degradation is a real failure here.
     restored = EventLog.from_jsonl(metrics.event_log_jsonl)
+    degraded = [e for e in restored.events if isinstance(e, DegradedEvent)]
+    assert degraded and all(e.detail.startswith("anchor_miss:") for e in degraded)
     assert restored.version == agent.runtime.log.version
 
 
@@ -187,7 +191,8 @@ async def test_session_ending_during_start_takes_zero_turns() -> None:
     import textwrap
 
     pb = Playbook.from_yaml(
-        textwrap.dedent("""
+        textwrap.dedent(
+            """
             persona: x
             journeys:
               j:
@@ -196,7 +201,8 @@ async def test_session_ending_during_start_takes_zero_turns() -> None:
                     say_verbatim: "Goodbye."
                     terminal: true
                     outcome: closed
-        """)
+        """
+        )
     )
     agent = PlaybookAgent(
         playbook=pb,
