@@ -158,14 +158,18 @@ def _last_user_text(state: ConversationState) -> str:
     return ""
 
 
-def _capture_nearly_complete(pb: Playbook, state: ConversationState) -> bool:
-    """True when >= 2/3 of the playbook's required slots are already filled.
+def _wrap_would_complete(
+    pb: Playbook, cp: Checkpoint, state: ConversationState
+) -> bool:
+    """One wrap question would finish the playbook's required capture.
 
-    The investment signal for the terminal-interrupt slot guard: near-complete
-    capture is worth ONE wrap question before honoring a goodbye; anything
-    less closes immediately. Counts unique required slot keys across every
-    checkpoint against the default (caller) entity — the common case; a
-    multi-entity playbook errs toward closing, never toward deflecting.
+    The terminal-interrupt investment signal, constant-free: wrap only
+    when (a) the caller has already given something required (early
+    goodbyes close immediately — a deflected close is a lost close) and
+    (b) the current checkpoint's missing required slots are the ONLY
+    ones missing playbook-wide, so the wrap can actually finish the job.
+    Default (caller) entity throughout — a multi-entity playbook errs
+    toward closing, never toward deflecting.
     """
     required = {
         k
@@ -176,9 +180,12 @@ def _capture_nearly_complete(pb: Playbook, state: ConversationState) -> bool:
     }
     if not required:
         return False
-    filled = sum(1 for k in required if state.filled([k]))
-    # ponytail: integer 2/3 threshold; make it configurable if a playbook needs it
-    return filled * 3 >= len(required) * 2
+    missing_all = {k for k in required if not state.filled([k])}
+    missing_here = {
+        k for k, s in cp.slots.items() if s.required and not state.filled([k])
+    }
+    captured_some = len(missing_all) < len(required)
+    return bool(missing_here) and captured_some and missing_all <= missing_here
 
 
 _TIME_RE = re.compile(r"^\s*(\d{1,2})(?::(\d{2}))?\s*([ap]\.?m\.?)?\s*$", re.IGNORECASE)
@@ -848,13 +855,15 @@ class Director:
                 return DirectorDecision(events=events, detour_continues=True)
             if spec is not None:
                 # Terminal-interrupt slot guard: a goodbye should not silently
-                # drop required capture — but ONLY when the capture is nearly
-                # complete (>=2/3 of the playbook's required slots filled): at
-                # that point one quick wrap is proportionate and the marker
-                # lets the next goodbye through. Early in the call the guard
-                # must NOT fire: a caller who says goodbye once and hangs up
-                # never repeats it, so a deflected close is a lost close
-                # (observed on live QA calls and in the disconnect eval suite).
+                # drop required capture — but ONLY when one wrap question
+                # would finish it: the caller has already given something
+                # required AND this step's missing slots are the only ones
+                # missing playbook-wide. Otherwise honor the goodbye: a
+                # caller who says goodbye once and hangs up never repeats
+                # it, so a deflected close is a lost close (observed on live
+                # QA calls and in the disconnect eval suite), and a wrap
+                # aimed at slots this step can't ask for finishes nothing.
+                # The one-shot marker lets the next goodbye through.
                 missing = [
                     k
                     for k, s in cp.slots.items()
@@ -865,7 +874,7 @@ class Director:
                     missing
                     and not wrap_pending
                     and self._pb.checkpoint(spec.to).terminal
-                    and _capture_nearly_complete(self._pb, peek)
+                    and _wrap_would_complete(self._pb, cp, peek)
                 ):
                     events.append(
                         SteeringNoteEvent(

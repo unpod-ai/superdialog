@@ -2,10 +2,11 @@
 
 import textwrap
 
-from superdialog.playbook.director import _WRAP_MARKER, Director
+from superdialog.playbook.director import _WRAP_MARKER, Director, _wrap_would_complete
 from superdialog.playbook.events import (
     AdvanceEvent,
     EventLog,
+    SlotWriteEvent,
     SteeringNoteEvent,
     UtteranceEvent,
 )
@@ -150,11 +151,9 @@ _INVESTED_YAML = textwrap.dedent("""
 """)
 
 
-async def test_goodbye_wraps_once_when_capture_nearly_complete():
-    # 2 of 3 required filled (>=2/3): losing the last slot is genuinely
-    # costly -> ONE wrap steer for the missing slot, no advance yet.
-    from superdialog.playbook.events import SlotWriteEvent
-
+async def test_goodbye_wraps_once_when_last_slot_missing():
+    # city+date captured, only phone missing playbook-wide: ONE wrap
+    # question finishes the required capture -> wrap steer, no advance yet.
     pb = Playbook.from_yaml(_INVESTED_YAML)
     log = EventLog()
     log.append(
@@ -176,6 +175,105 @@ async def test_goodbye_wraps_once_when_capture_nearly_complete():
     notes = [e for e in decision.events if isinstance(e, SteeringNoteEvent)]
     assert notes and notes[0].text.startswith(_WRAP_MARKER)
     assert "phone" in notes[0].text
+
+
+# --- _wrap_would_complete: the constant-free investment predicate --------------
+
+
+def _folded(pb: Playbook, cp_id: str, filled: dict[str, str]) -> ConversationState:
+    log = EventLog()
+    log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint=cp_id, rule="init"))
+    for k, v in filled.items():
+        log.append(SlotWriteEvent(key=k, value=v, status="confirmed", by="director"))
+    return ConversationState.fold(log, playbook=pb)
+
+
+def test_wrap_fires_when_one_question_completes_capture():
+    # Every required slot except the current checkpoint's is captured:
+    # one wrap question finishes the playbook-wide capture -> wrap.
+    pb = Playbook.from_yaml(_INVESTED_YAML)
+    state = _folded(pb, "booking.collect", {"city": "Pune", "date": "2026-07-12"})
+    assert _wrap_would_complete(pb, pb.checkpoint("booking.collect"), state)
+
+
+_SPLIT_YAML = textwrap.dedent("""
+    persona: "You are a booking assistant."
+    journeys:
+      booking:
+        checkpoints:
+          - id: collect
+            gate: soft
+            slots:
+              city: {type: str, required: true}
+              date: {type: date, required: true}
+            advance_when:
+              - {when: "details complete", judge: llm, to: booking.contact,
+                 requires: [city, date]}
+          - id: contact
+            gate: soft
+            slots:
+              phone: {type: str, required: true}
+              email: {type: str, required: true}
+            advance_when:
+              - {when: "contact complete", judge: llm, to: booking.close,
+                 requires: [phone, email]}
+          - id: close
+            terminal: true
+            outcome: closed
+""")
+
+
+def test_no_wrap_when_other_checkpoints_still_missing_slots():
+    # Current cp misses date, but a LATER checkpoint still misses phone and
+    # email: one wrap question cannot finish the capture -> close instead.
+    pb = Playbook.from_yaml(_SPLIT_YAML)
+    state = _folded(pb, "booking.collect", {"city": "Pune"})
+    assert not _wrap_would_complete(pb, pb.checkpoint("booking.collect"), state)
+
+
+def test_no_wrap_when_only_gap_is_on_a_different_checkpoint():
+    # BEHAVIOR FLIP vs the old 2/3 rule: 3 of 4 required filled used to
+    # wrap, but the one missing slot (email) lives on booking.contact, not
+    # the current step — a wrap aimed at slots this step can't even ask
+    # for was theater. New rule: close.
+    pb = Playbook.from_yaml(_SPLIT_YAML)
+    state = _folded(
+        pb,
+        "booking.collect",
+        {"city": "Pune", "date": "2026-07-12", "phone": "123"},
+    )
+    assert not _wrap_would_complete(pb, pb.checkpoint("booking.collect"), state)
+
+
+_ONE_SLOT_YAML = textwrap.dedent("""
+    persona: "You are a booking assistant."
+    journeys:
+      booking:
+        checkpoints:
+          - id: collect
+            gate: soft
+            slots:
+              city: {type: str, required: true}
+            advance_when:
+              - {when: "done", judge: llm, to: booking.close, requires: [city]}
+          - id: close
+            terminal: true
+            outcome: closed
+""")
+
+
+def test_no_wrap_when_nothing_captured_yet():
+    # First ask, nothing filled: honor the goodbye immediately. Same result
+    # as the old 2/3 rule for a 1-slot playbook (0*3 >= 1*2 is false) —
+    # this pins that the "caller has invested" conjunct keeps it that way.
+    pb = Playbook.from_yaml(_ONE_SLOT_YAML)
+    state = _folded(pb, "booking.collect", {})
+    assert not _wrap_would_complete(pb, pb.checkpoint("booking.collect"), state)
+
+
+def test_no_wrap_when_playbook_has_no_required_slots():
+    pb, state = _kb_state("main.legacy")
+    assert not _wrap_would_complete(pb, pb.checkpoint("main.legacy"), state)
 
 
 async def test_goodbye_interrupt_passes_on_second_ask():
