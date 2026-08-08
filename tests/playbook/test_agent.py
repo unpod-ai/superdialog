@@ -518,7 +518,7 @@ async def test_hold_line_only_turn_streams_but_logs_nothing():
     assert done is not None and done.turn.text == ""
 
 
-# --- Supervisor resolution: default-on under v2, opt-in under legacy ---------
+# --- Supervisor resolution: default-on; guidelines.supervisor overrides ------
 
 
 def _agent_for(yaml_text: str, **kwargs) -> PlaybookAgent:

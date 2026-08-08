@@ -50,10 +50,10 @@ class GuidelineConfig(BaseModel):
     director_model: str | None = None
     talker_model: str | None = None
     # Loop 2: the trajectory-level Supervisor (recovery/redirect meta-agent).
-    # None = resolved from the playbook's continuity mode (v2 → on, legacy →
-    # off); an explicit true/false always wins. When on, PlaybookAgent runs it
-    # off the speech path, reusing the Director model unless the host passes
-    # an explicit ``supervisor_llm``. See PlaybookAgent.__init__.
+    # None = on (explicit false turns the supervisor off). When on,
+    # PlaybookAgent runs it off the speech path, reusing the Director model
+    # unless the host passes an explicit ``supervisor_llm``. See
+    # PlaybookAgent.__init__.
     supervisor: bool | None = None
 
 
@@ -506,6 +506,8 @@ class Playbook(BaseModel):
     @model_validator(mode="after")
     def _warn_deprecated_llm_fields(self) -> "Playbook":
         if self.legacy_continuity:
+            # logging (not warnings.warn): survives default warning filters on
+            # server hosts, so operators actually see it in production logs.
             logging.getLogger(__name__).warning(
                 "legacy_continuity is deprecated and ignored; v3 semantics apply"
             )
