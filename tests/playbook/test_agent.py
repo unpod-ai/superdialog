@@ -6,7 +6,11 @@ import anyio
 
 from superdialog.agent import Agent, TurnResult
 from superdialog.playbook import EventLog, PlaybookAgent
-from superdialog.playbook.events import EnvWriteEvent, UtteranceEvent
+from superdialog.playbook.events import (
+    EnvWriteEvent,
+    SpeechCorrectionEvent,
+    UtteranceEvent,
+)
 from superdialog.playbook.models import Playbook
 from superdialog.playbook.talker import StreamsLLM
 from tests.playbook.test_director import CannedLLM
@@ -434,8 +438,6 @@ async def test_mark_interrupted_truncates_and_refolds():
 
 
 async def test_mark_interrupted_appends_not_rewrites():
-    from superdialog.playbook.events import SpeechCorrectionEvent
-
     agent = _agent()
     await agent.turn("hi")
     original = (await _assistant_events(agent))[-1]
@@ -462,8 +464,6 @@ async def test_mark_interrupted_without_heard_text_tags_existing():
 
 
 async def test_mark_interrupted_noop_without_assistant_utterance():
-    from superdialog.playbook.events import SpeechCorrectionEvent
-
     agent = _agent()
     agent.mark_interrupted("x")  # no turn yet → nothing to correct, must not raise
     assert not await _assistant_events(agent)
@@ -486,8 +486,6 @@ async def test_mark_interrupted_noop_when_turn_logged_no_utterance():
     assert last.text == "Which city?"  # previous turn untouched
     # No correction appended (G38): the scan stops at this turn's user
     # utterance before reaching the previous turn's assistant record.
-    from superdialog.playbook.events import SpeechCorrectionEvent
-
     assert not any(
         isinstance(e, SpeechCorrectionEvent) for e in agent.runtime.log.events
     )

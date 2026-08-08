@@ -128,8 +128,8 @@ class SpeechCorrectionEvent(_Base):
 
     Append-only barge-in truncation: the original UtteranceEvent stays
     in the log (what was GENERATED); the fold's transcript shows this
-    text (what was DELIVERED). Its presence is the completed=False
-    marker for the corrected utterance.
+    text (what was DELIVERED). Its presence marks the corrected
+    utterance as not fully delivered.
     """
 
     type: Literal["speech_correction"] = "speech_correction"

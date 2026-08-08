@@ -6,6 +6,7 @@ from superdialog.playbook.events import (
     EventLog,
     ExternalEvent,
     SlotWriteEvent,
+    SpeechCorrectionEvent,
     UtteranceEvent,
 )
 
@@ -133,8 +134,6 @@ def test_slot_write_event_carries_entity() -> None:
 
 
 def test_speech_correction_event_round_trips() -> None:
-    from superdialog.playbook.events import SpeechCorrectionEvent
-
     log = EventLog()
     log.append(UtteranceEvent(role="assistant", text="full generated reply"))
     log.append(

@@ -255,6 +255,10 @@ class PlaybookAgent:
         ``heard_text=None`` → keep the logged text, just tag it interrupted
         (best-effort when the worker sent no prefix). No-op when there is no
         assistant utterance to correct. Inert until a caller invokes it.
+        Degenerate case: a second ``mark_interrupted(None)`` on the same
+        utterance resets the record to full-text-plus-tag (the reverse scan
+        reads the original event, not the prior correction) — acceptable
+        because the SDK fires one interrupt per utterance.
         """
         for event in reversed(self.runtime.log.events):
             if isinstance(event, UtteranceEvent) and event.role == "user":

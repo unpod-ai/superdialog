@@ -8,6 +8,7 @@ from superdialog.playbook.events import (
     RevertEvent,
     SessionEndEvent,
     SlotWriteEvent,
+    SpeechCorrectionEvent,
     SteeringNoteEvent,
     SummaryEvent,
     ToolCallEvent,
@@ -451,8 +452,6 @@ def test_nested_entries_expire_oldest_first() -> None:
 
 
 def test_speech_correction_truncates_transcript() -> None:
-    from superdialog.playbook.events import SpeechCorrectionEvent
-
     log = EventLog()
     log.append(UtteranceEvent(role="user", text="hi"))
     log.append(UtteranceEvent(role="assistant", text="full generated reply"))
@@ -470,8 +469,6 @@ def test_speech_correction_truncates_transcript() -> None:
 
 
 def test_speech_correction_survives_revert() -> None:
-    from superdialog.playbook.events import SpeechCorrectionEvent
-
     log = EventLog()
     log.append(UtteranceEvent(role="user", text="hi"))
     log.append(UtteranceEvent(role="assistant", text="full generated reply"))
@@ -491,8 +488,6 @@ def test_speech_correction_survives_revert() -> None:
 
 
 def test_speech_correction_unknown_version_is_noop() -> None:
-    from superdialog.playbook.events import SpeechCorrectionEvent
-
     log = EventLog()
     log.append(UtteranceEvent(role="assistant", text="hello"))
     log.append(SpeechCorrectionEvent(utterance_version=99, heard_text="nope"))
