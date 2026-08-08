@@ -276,8 +276,12 @@ boundaries:
 interrupts:
 - id: global_goodbye
   when: >-
-    Caller says goodbye, bye, ok thanks, no thanks, take care, or otherwise
-    signals they want to end the call — and the call is not already closing.
+    Caller EXPLICITLY closes the call: goodbye, bye, alvida, take care,
+    "ok thanks, I'm done", "not interested, please end the call", or a clear
+    statement they are leaving/hanging up — and the call is not already
+    closing. A frustrated objection, a repeated preference ("I only want
+    Thane"), or pushing back on the pitch is NOT a goodbye: stay in the flow
+    and address it.
   to: main.deliver_closing
 fallback_actions:
   advisor_callback: >-

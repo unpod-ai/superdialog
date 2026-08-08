@@ -700,3 +700,40 @@ async def test_guidelines_flag_wires_supervisor_without_explicit_llm() -> None:
     async for _chunk in agent.stream_turn("uh, hmm"):
         pass
     assert agent.runtime.state.steering_note == "Re-confirm the city."
+
+
+async def test_redirect_into_completed_checkpoint_is_blocked() -> None:
+    """A supervisor redirect must never RE-ENTER a completed checkpoint: the
+    restart-demander eval showed the supervisor honoring a caller's restart
+    demand the Director had deflected twice, re-running the pitch (no_reentry
+    FAIL). Backward state correction is rewind's job; redirect routes forward."""
+    import json as _json
+
+    from superdialog.playbook.models import Playbook
+    from superdialog.playbook.runtime import PlaybookRuntime
+    from tests.playbook.continuity_fixtures import CONTINUITY_YAML, SeqLLM
+    from tests.playbook.test_toolexec import FakeHttp
+
+    rt = PlaybookRuntime(
+        Playbook.from_yaml(CONTINUITY_YAML),
+        director_llm=SeqLLM([
+            {"slots": {"location": "Pune"}, "advance": "main.pitch"},
+            {"slots": {}, "advance": "main.ask_budget"},
+        ]),
+        http=FakeHttp([]),
+    )
+    await rt.start()
+    await rt.on_user_text("Pune")
+    await rt.on_user_text("ok")           # now at ask_budget; pitch completed
+    assert "main.pitch" in rt.state.completed
+
+    sup = Supervisor(_VerdictLLM('{"action": "none"}'), rt._pb)
+    decision = SupervisorDecision(action="redirect", to_checkpoint="main.pitch",
+                                  reason="caller demanded restart")
+    out = await sup.apply(rt, decision)
+    assert out == []
+    assert rt.state.checkpoint_id == "main.ask_budget"  # NOT rewound
+    assert any(
+        e.type == "degraded" and e.detail == "redirect_reentry_blocked:main.pitch"
+        for e in rt.log.events
+    )

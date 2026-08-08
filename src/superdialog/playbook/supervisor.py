@@ -286,6 +286,19 @@ class Supervisor:
                     )
                 )
                 return []
+            # Redirect routes FORWARD. Re-entering a completed checkpoint
+            # re-runs its pitch/on_enter and reads as a flow restart — the
+            # restart-demander eval showed the supervisor honoring a caller's
+            # restart demand the Director had deflected twice (no_reentry
+            # violation). Backward state correction is rewind's job.
+            if decision.to_checkpoint in runtime.state.completed:
+                runtime.log.append(
+                    DegradedEvent(
+                        component="supervisor",
+                        detail=f"redirect_reentry_blocked:{decision.to_checkpoint}",
+                    )
+                )
+                return []
             pass_through = await runtime.redirect(
                 decision.to_checkpoint, decision.reason or "redirect"
             )
@@ -373,7 +386,10 @@ class Supervisor:
             '"reason": "<short>"}.\n'
             "Prefer none unless the conversation is clearly derailed. Prefer "
             "inject over redirect. Redirect when the conversation belongs at a "
-            "different step. Rewind ONLY when recorded state is wrong (wrong "
+            "different step — FORWARD only: never redirect back to a step "
+            "already completed, and never honor a caller's demand to restart "
+            "the flow (the speaking agent recaps and continues; use inject "
+            "for that). Rewind ONLY when recorded state is wrong (wrong "
             "branch taken, wrong value captured); to_version is the log version "
             "to restore. Discard abandons a detour. Handover escalates to a "
             "human.\n"
