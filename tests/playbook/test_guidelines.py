@@ -164,3 +164,55 @@ def test_normalize_date_relative_counts() -> None:
 
 def test_normalize_date_ignores_weekday_names_without_anchor() -> None:
     assert normalize_date("monday", None) == "monday"
+
+
+def test_normalize_date_bare_day_of_month() -> None:
+    # Real production case: caller answered "Just 11" (meaning the 11th of
+    # the current month) to "which date would you like to play?". Unresolved
+    # this fell through to the literal string "11", which then flowed
+    # straight into an availability API URL as `date=11` and 500'd.
+    now = datetime(2026, 8, 8, tzinfo=timezone.utc)  # today is the 8th
+    assert normalize_date("11", now) == "2026-08-11"
+    assert normalize_date("Just 11", now) == "2026-08-11"
+    assert normalize_date("the 11th", now) == "2026-08-11"
+    assert normalize_date("11th", now) == "2026-08-11"
+    # A day already passed this month rolls to next month.
+    now_late = datetime(2026, 8, 20, tzinfo=timezone.utc)
+    assert normalize_date("11", now_late) == "2026-09-11"
+    # A day that doesn't exist in the immediate next month (Jan 31 -> no Feb
+    # 31) skips ahead to the next month that has it.
+    now_month_end = datetime(2026, 1, 31, tzinfo=timezone.utc)
+    assert normalize_date("31", now_month_end) == "2026-01-31"
+
+
+def test_normalize_date_month_and_day_without_year() -> None:
+    # Same failure shape as bare day-of-month: "August 12" has no pattern to
+    # match against (_ABS_FORMATS all require a year), so it fell through
+    # unresolved straight into the availability API URL.
+    now = datetime(2026, 8, 8, tzinfo=timezone.utc)
+    assert normalize_date("August 12", now) == "2026-08-12"
+    assert normalize_date("august 12", now) == "2026-08-12"
+    assert normalize_date("12 August", now) == "2026-08-12"
+    assert normalize_date("15th August", now) == "2026-08-15"
+    assert normalize_date("the 15th of August", now) == "2026-08-15"
+    assert normalize_date("Aug 15", now) == "2026-08-15"
+    assert normalize_date("15 Aug", now) == "2026-08-15"
+    # A month+day already passed this year rolls to next year.
+    now_late = datetime(2026, 12, 1, tzinfo=timezone.utc)
+    assert normalize_date("January 5", now_late) == "2027-01-05"
+
+
+def test_normalize_date_strips_leading_filler_word() -> None:
+    # A caller frames a date with "on"/"for"/"at" more often than bare
+    # ("on August 15", "for the 11th") -- every existing pattern must match
+    # either form the same way.
+    now = datetime(2026, 8, 8, tzinfo=timezone.utc)
+    assert normalize_date("on August 15", now) == "2026-08-15"
+    assert normalize_date("on the 15th of August", now) == "2026-08-15"
+    assert normalize_date("for the 11th", now) == "2026-08-11"
+    assert normalize_date("on monday", now) == normalize_date("monday", now)
+    assert normalize_date("for tomorrow", now) == normalize_date("tomorrow", now)
+
+
+def test_normalize_date_month_name_with_comma_year() -> None:
+    assert normalize_date("August 15, 2026", None) == "2026-08-15"

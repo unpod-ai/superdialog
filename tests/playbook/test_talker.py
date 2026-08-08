@@ -92,11 +92,13 @@ async def test_suppresses_json_tool_call_dump() -> None:
     )
     chunks = [c async for c in Talker(pb, llm).speak(state)]
     text = "".join(c.text for c in chunks)
-    # Suppressed entirely -> accepted as silence, no forced retry-into-speech
-    # (a forced "say something" retry previously produced confident but
-    # false commitments in production; silence is strictly safer).
+    # Suppressed entirely -> filtered-empty triggers the same-prompt retry
+    # (StreamLLM replays the identical dump on both calls, so it's filtered
+    # to empty again) -> accepted as silence. Never a forced "say something"
+    # override retry -- that previously produced confident but false
+    # commitments in production; silence is strictly safer.
     assert text == ""
-    assert llm.calls == 1
+    assert llm.calls == 2
 
 
 async def test_does_not_suppress_normal_speech_with_braces_midsentence() -> None:
@@ -265,22 +267,27 @@ async def test_failure_retries_once_then_recovers() -> None:
 async def test_clean_but_empty_stream_is_accepted_as_silence() -> None:
     # The LLM stream completes with no exception but yields nothing at all --
     # e.g. checkpoint guidance told it to say nothing / defer to a tool call,
-    # or a leak got filtered to empty. This is accepted as silence: forcing a
-    # retry into speech previously produced a confident but FALSE commitment
-    # in production ("Certainly, I will hold that slot for you" while
-    # nothing had actually been held) -- silence is strictly safer than an
-    # invented claim for a transactional voice agent. No retry, no recovery
-    # line, single LLM call.
+    # or a leak got filtered to empty, or the model sampled an immediate stop
+    # token on both tries. One retry with the SAME prompt is allowed (see
+    # test_empty_stream_retries_same_prompt_and_speaks_if_nonempty below) --
+    # but if it's still empty on the second attempt, that's accepted as
+    # silence: a FORCED-OVERRIDE retry into speech previously produced a
+    # confident but FALSE commitment in production ("Certainly, I will hold
+    # that slot for you" while nothing had actually been held) -- silence is
+    # strictly safer than an invented claim for a transactional voice agent.
+    # No recovery line, no fabricated text, ever.
     pb, state = _state("booking.collect")
     empty = Talker(pb, StreamLLM([]))
     chunks = [c async for c in empty.speak(state)]
     assert "".join(c.text for c in chunks) == ""
-    assert empty._llm.calls == 1
+    assert empty._llm.calls == 2
 
 
 class EmptyThenRespondsLLM:
     """Empty on call 1 (mimics a checkpoint's own "say nothing" guidance
-    being followed literally); would speak on call 2 if ever called."""
+    being followed literally, or a one-off sampling glitch); speaks on the
+    retry (call 2) -- and records the messages sent each time, so a test can
+    confirm the retry reused the exact same prompt with no forced override."""
 
     def __init__(self, second_call_text: str) -> None:
         self.second_call_text = second_call_text
@@ -293,21 +300,29 @@ class EmptyThenRespondsLLM:
         yield self.second_call_text
 
 
-async def test_empty_stream_never_retries_into_forced_speech() -> None:
+async def test_empty_stream_retries_same_prompt_and_speaks_if_nonempty() -> None:
     # Root cause seen in production: checkpoint guidance instructs "say
     # NOTHING / zero words" once all slots are set, trusting a tool-calling
-    # channel the Talker doesn't have. The model complies literally -> a
-    # clean empty stream on attempt 1. A prior version of this code forced a
-    # second LLM call with a "you must speak" override, which improvised a
-    # false commitment ("I will hold that slot for you") on a turn nothing
-    # had actually been held. There must be no second call and no invented
-    # speech -- silence only.
+    # channel the Talker doesn't have -- but the SAME small model also just
+    # sampled a stray immediate stop token on plenty of ordinary turns that
+    # DID want real speech (e.g. a caller answering "one player" got dead
+    # air), indistinguishable from the intentional-silence case from here. A
+    # prior version of this code retried with a "you must speak" override
+    # injected into the prompt, which improvised a false commitment ("I will
+    # hold that slot for you") on a turn nothing had actually been held --
+    # that forced override is still banned. But retrying the IDENTICAL
+    # prompt (no override, no injected instruction) is safe: on a genuinely
+    # say-nothing checkpoint the retry just reproduces empty again (see
+    # test_clean_but_empty_stream_is_accepted_as_silence); on a one-off
+    # sampling glitch it recovers real, correctly-grounded speech instead of
+    # leaving the caller in dead air.
     pb, state = _state("booking.collect")
     llm = EmptyThenRespondsLLM("Got it, one player -- let me check that for you.")
     chunks = [c async for c in Talker(pb, llm).speak(state)]
     text = "".join(c.text for c in chunks)
-    assert text == ""
-    assert len(llm.calls_messages) == 1
+    assert text == "Got it, one player -- let me check that for you."
+    assert len(llm.calls_messages) == 2
+    assert llm.calls_messages[0] == llm.calls_messages[1]
 
 
 async def test_hard_gate_filler_then_speech() -> None:

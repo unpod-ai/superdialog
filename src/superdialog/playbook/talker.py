@@ -503,18 +503,33 @@ class Talker:
                     # A filter (or the LLM itself) suppressed/emitted nothing
                     # for this turn — e.g. checkpoint guidance told the
                     # Talker to say nothing / defer to a tool call, or a
-                    # leaked JSON/tag dump got excised outright. This used to
-                    # retry into a forced "say something" override, but that
-                    # produced a confident, FALSE commitment in production
-                    # ("Certainly, I will hold that slot for you" on a turn
-                    # the Director had NOT actually advanced or held
-                    # anything) — a wrong, specific claim is strictly worse
-                    # than true silence for a transactional voice agent.
-                    # Silence is accepted as-is here, never papered over with
-                    # invented words.
+                    # leaked JSON/tag dump got excised outright, or the model
+                    # just sampled an immediate stop token (observed on the
+                    # small custom Talker model under a long, repetitive
+                    # per-turn prompt). Re-running the SAME prompt (no
+                    # sampling is temperature=0 here) has a real chance of
+                    # landing on a different, non-empty completion, so retry
+                    # once before accepting silence — cheap insurance against
+                    # a one-off sampling glitch. This is NOT the old forced
+                    # "say something" override (that fabricated a confident,
+                    # FALSE commitment in production, e.g. "Certainly, I will
+                    # hold that slot for you" on a turn nothing had actually
+                    # happened) — retrying just asks the model to genuinely
+                    # try again with the same real state, never invents text.
+                    # On a checkpoint that deliberately wants zero words
+                    # (tool-call-only turn), the retry harmlessly reproduces
+                    # the same empty result at the cost of one extra call.
+                    if attempt == 1:
+                        _log.info(
+                            "[talker] LLM stream produced no output "
+                            "(suppressed by a filter or genuinely empty) -- "
+                            "retrying once before accepting silence",
+                        )
+                        continue
                     _log.info(
-                        "[talker] LLM stream produced no output (suppressed "
-                        "by a filter or genuinely empty) -- accepting silence",
+                        "[talker] LLM stream produced no output on retry "
+                        "(suppressed by a filter or genuinely empty) -- "
+                        "accepting silence",
                     )
                 yield SpeechChunk(
                     text="", final=True, spoke_from_version=view.spoke_from_version

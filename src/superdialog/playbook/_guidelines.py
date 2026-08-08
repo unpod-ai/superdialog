@@ -7,6 +7,7 @@ stays independent of the legacy machine path.
 
 from __future__ import annotations
 
+import calendar
 import re
 from datetime import date, datetime, timedelta
 
@@ -274,7 +275,15 @@ def datetime_anchor_line(now: datetime) -> str:
 
 
 # Indian convention: DD/MM/YYYY (the "%d/%m/%Y" entry). MM/DD ambiguity is caller-side.
-_ABS_FORMATS = ("%Y-%m-%d", "%d %B %Y", "%d %b %Y", "%B %d %Y", "%b %d, %Y", "%d/%m/%Y")
+_ABS_FORMATS = (
+    "%Y-%m-%d",
+    "%d %B %Y",
+    "%d %b %Y",
+    "%B %d %Y",
+    "%B %d, %Y",
+    "%b %d, %Y",
+    "%d/%m/%Y",
+)
 
 _REL_DAYS = {"today": 0, "tomorrow": 1, "yesterday": -1}
 
@@ -293,6 +302,60 @@ _N_WEEKS_RE = re.compile(r"^(?:in\s+)?(\d+)\s+weeks?(?:\s+from\s+now)?$")
 _WEEKDAY_RE = re.compile(
     r"^(?:(this|next|coming|upcoming)\s+)?(" + "|".join(_WEEKDAYS) + r")$"
 )
+# Bare day-of-month, no month named: "11", "just 11", "the 11th", "11th".
+# Real production case: caller said "Just 11" meaning the 11th of the current
+# month; unresolved this fell through to the literal string "11", which then
+# flowed straight into an availability API URL as `date=11` and 500'd.
+_DAY_OF_MONTH_RE = re.compile(r"^(?:just\s+)?(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?$")
+
+# Month name + day, no year: "August 12", "12 August", "August 11th". Same
+# failure shape as bare day-of-month -- _ABS_FORMATS all require a year, so
+# without this a caller stating month+day alone fell through unresolved.
+_MONTH_NAMES = {
+    "jan": 1, "january": 1,
+    "feb": 2, "february": 2,
+    "mar": 3, "march": 3,
+    "apr": 4, "april": 4,
+    "may": 5,
+    "jun": 6, "june": 6,
+    "jul": 7, "july": 7,
+    "aug": 8, "august": 8,
+    "sep": 9, "sept": 9, "september": 9,
+    "oct": 10, "october": 10,
+    "nov": 11, "november": 11,
+    "dec": 12, "december": 12,
+}
+_MONTH_ALT = "|".join(sorted(_MONTH_NAMES, key=len, reverse=True))
+_MONTH_DAY_RE = re.compile(
+    r"^(?:(?:the\s+)?(" + _MONTH_ALT + r")\s+(\d{1,2})(?:st|nd|rd|th)?"
+    r"|(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?(" + _MONTH_ALT + r"))$"
+)
+
+# Spelled-out ordinal day words ("ninth", "twenty-first"): STT renders a
+# spoken date as a WORD, not a digit, often enough that it hit production
+# (a caller's "ninth" flowed straight into an availability API URL as
+# `date=ninth` and 500'd). Substituted to digits before every pattern above
+# runs, so "ninth" / "the ninth" / "august ninth" / "ninth of august" all
+# resolve through the same digit-based regexes.
+_ORDINAL_WORDS = {
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+    "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10,
+    "eleventh": 11, "twelfth": 12, "thirteenth": 13, "fourteenth": 14,
+    "fifteenth": 15, "sixteenth": 16, "seventeenth": 17, "eighteenth": 18,
+    "nineteenth": 19, "twentieth": 20, "thirtieth": 30,
+}
+for _tens_word, _tens_val in (("twenty", 20), ("thirty", 30)):
+    for _ones_word, _ones_val in list(_ORDINAL_WORDS.items()):
+        if _ones_val < 10 and _tens_val + _ones_val <= 31:
+            _ORDINAL_WORDS[f"{_tens_word}-{_ones_word}"] = _tens_val + _ones_val
+            _ORDINAL_WORDS[f"{_tens_word} {_ones_word}"] = _tens_val + _ones_val
+_ORDINAL_WORD_RE = re.compile(
+    r"\b(" + "|".join(re.escape(w) for w in sorted(_ORDINAL_WORDS, key=len, reverse=True)) + r")\b"
+)
+
+
+def _sub_ordinal_words(text: str) -> str:
+    return _ORDINAL_WORD_RE.sub(lambda m: str(_ORDINAL_WORDS[m.group(1)]), text)
 
 
 def _next_weekday(today: date, target: int, *, strictly_after: bool) -> date:
@@ -301,6 +364,45 @@ def _next_weekday(today: date, target: int, *, strictly_after: bool) -> date:
     if delta == 0 and strictly_after:
         delta = 7
     return today + timedelta(days=delta)
+
+
+def _next_day_of_month(today: date, day: int) -> date | None:
+    """Nearest date on/after ``today`` whose day-of-month is ``day``.
+
+    Skips months where ``day`` doesn't exist (e.g. day=31 in a 30-day
+    month) and months where that day has already passed this cycle.
+    ``None`` for an impossible day (0, or >31) rather than looping forever.
+    """
+    if not 1 <= day <= 31:
+        return None
+    year, month = today.year, today.month
+    for _ in range(24):  # a valid month is always found within a year
+        days_in_month = calendar.monthrange(year, month)[1]
+        if day <= days_in_month:
+            candidate = date(year, month, day)
+            if candidate >= today:
+                return candidate
+        month += 1
+        if month > 12:
+            month, year = 1, year + 1
+    return None
+
+
+def _resolve_month_day(today: date, month: int, day: int) -> date | None:
+    """Nearest date on/after ``today`` for a stated month+day, no year given.
+
+    Tries the current year first; a date already passed this year rolls to
+    the same month+day next year. ``None`` for an impossible day (e.g. day
+    30 in February) in either candidate year.
+    """
+    for year in (today.year, today.year + 1):
+        days_in_month = calendar.monthrange(year, month)[1]
+        if day > days_in_month:
+            continue
+        candidate = date(year, month, day)
+        if candidate >= today:
+            return candidate
+    return None
 
 
 def normalize_date(value: object, now: datetime | None):
@@ -318,6 +420,12 @@ def normalize_date(value: object, now: datetime | None):
     if not isinstance(value, str):
         return value
     v = re.sub(r"[?!.,]+$", "", value.strip().lower()).strip()
+    # A caller frames a date with a leading filler word ("on August 15",
+    # "for the 15th") more often than bare -- strip it once so every pattern
+    # below (weekday, day-of-month, month-day) matches either form the same.
+    v = re.sub(r"^(?:on|for|at)\s+", "", v)
+    # "ninth" -> "9" before every digit-based pattern below runs.
+    v = _sub_ordinal_words(v)
     if now is not None:
         if v in _REL_DAYS:
             return (now.date() + timedelta(days=_REL_DAYS[v])).isoformat()
@@ -336,6 +444,19 @@ def normalize_date(value: object, now: datetime | None):
                 now.date(), _WEEKDAYS[day_name], strictly_after=qualifier == "next"
             )
             return target.isoformat()
+        m = _MONTH_DAY_RE.match(v)
+        if m:
+            month_name, day1, day2, month_name2 = m.groups()
+            month = _MONTH_NAMES[month_name or month_name2]
+            day = int(day1 or day2)
+            target = _resolve_month_day(now.date(), month, day)
+            if target is not None:
+                return target.isoformat()
+        m = _DAY_OF_MONTH_RE.match(v)
+        if m:
+            target = _next_day_of_month(now.date(), int(m.group(1)))
+            if target is not None:
+                return target.isoformat()
     for fmt in _ABS_FORMATS:
         try:
             return datetime.strptime(value.strip(), fmt).date().isoformat()
