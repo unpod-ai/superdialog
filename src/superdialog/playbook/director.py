@@ -389,7 +389,9 @@ def _verdict_prompt(
         "contained in it; only report what the user actually communicated.\n"
         "SLOT RULE: Only extract a slot when the user EXPLICITLY states that value "
         "in this utterance. Never infer slots from ambiguous yes/no answers to "
-        "unrelated questions. Exception: slots listed under CANDIDATE RESOLUTION "
+        "unrelated questions. A value the caller volunteers for a DIFFERENT "
+        "step's slot may also be extracted — same explicitness bar. Exception: "
+        "slots listed under CANDIDATE RESOLUTION "
         "below — set those by matching the caller's spoken name to a candidate id.\n\n"
         f"Interrupts:\n{interrupt_lines}\n"
     )
@@ -659,8 +661,21 @@ class Director:
         events: list[Event] = []
         for key, value in (verdict.get("slots") or {}).items():
             slot_spec = cp.slots.get(key)
+            if (
+                slot_spec is None
+                and not self._pb.legacy_continuity
+                and not self._pb.multi_entity
+            ):
+                # F1: a volunteered fact for a slot declared on ANOTHER
+                # checkpoint is still authored vocabulary — accept it under
+                # the same junk/gate discipline instead of discarding it
+                # (eval: rajesh gave his name in a 2-turn DNC call; the
+                # greeting checkpoint didn't declare `name`, so extraction
+                # dropped it). multi_entity playbooks keep strict scoping:
+                # cp.entity would mislabel another entity's slot.
+                slot_spec = self._pb.slot_spec(key)
             if slot_spec is None or slot_spec.authoritative:
-                continue  # reject slots not defined in current checkpoint, or authoritative
+                continue  # undeclared anywhere, or authoritative: reject
             # A declared enum member is authored vocabulary, never junk
             # (values: [yes, no, unknown] must be able to fill "unknown").
             declared_member = slot_spec.type == "enum" and value in (
@@ -710,6 +725,39 @@ class Director:
                     entity=cp.entity,
                 )
             )
+        # F2: behavior-derived language slots. The SLOT RULE forbids inferring
+        # 'Hindi' from the caller merely speaking Hindi, so language slots
+        # structurally miss unless the caller names one (six eval cases lost
+        # preferred_language this way). Fill deterministically from the
+        # bridge-detected sticky language; an explicit verdict value wins.
+        if not self._pb.legacy_continuity and state.language:
+            from .render import _LANGUAGE_NAMES
+
+            lang_value = _LANGUAGE_NAMES.get(
+                state.language.split("-")[0].strip().lower(), state.language
+            )
+            for lang_key in ("preferred_language", "selected_language"):
+                spec = cp.slots.get(lang_key) or self._pb.slot_spec(lang_key)
+                if spec is None or spec.authoritative:
+                    continue
+                already = state.filled([lang_key], entity=cp.entity) or any(
+                    isinstance(e, SlotWriteEvent) and e.key == lang_key
+                    for e in events
+                )
+                if already:
+                    continue
+                lang_coerced = _coerce_slot(lang_value, spec, state.now)
+                if lang_coerced is _INVALID:
+                    continue  # e.g. enum spec without this language
+                events.append(
+                    SlotWriteEvent(
+                        key=lang_key,
+                        value=lang_coerced,
+                        status=self._write_status(lang_key, cp, confidence),
+                        by="director",
+                        entity=cp.entity,
+                    )
+                )
         # apply slot writes to a copy so requires sees them (fold semantics:
         # a provisional write never downgrades an existing confirmed slot)
         peek = state.model_copy(deep=True)
