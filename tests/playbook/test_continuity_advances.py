@@ -208,3 +208,75 @@ async def test_uncorroborated_advance_defers_to_resume_under_v2() -> None:
     assert rt.state.checkpoint_id == "main.pricing_faq"
     await rt.on_user_text("hmm okay")
     assert rt.state.checkpoint_id == "main.ask_location"  # forced resume wins
+
+
+# -- F1/F2: volunteered-fact recall (extraction sub-algorithm) ---------------------
+
+
+async def test_volunteered_slot_from_other_checkpoint_is_written_under_v2() -> None:
+    """F1: rajesh gave his name in a 2-turn DNC call; the current checkpoint
+    didn't declare the slot, extraction dropped it. A slot declared on ANY
+    checkpoint is authored vocabulary — accept it under the same discipline."""
+    rt = _rt([{"slots": {"budget": "50L"}, "advance": None, "note": None}])
+    await rt.start()  # at ask_location; `budget` is declared on ask_budget
+    await rt.on_user_text("my budget is 50L by the way")
+    assert rt.state.slot_value("budget") == "50L"
+
+
+async def test_volunteered_slot_rejected_under_legacy_and_when_undeclared() -> None:
+    from superdialog.playbook.models import Playbook
+    from tests.playbook.continuity_fixtures import CONTINUITY_YAML
+
+    pb = Playbook.from_yaml(CONTINUITY_YAML).model_copy(
+        update={"legacy_continuity": True}
+    )
+    rt = _rt([{"slots": {"budget": "50L"}, "advance": None, "note": None}], pb=pb)
+    await rt.start()
+    await rt.on_user_text("my budget is 50L")
+    assert rt.state.slot_value("budget") is None  # legacy: strict cp scoping
+    # undeclared-anywhere keys stay rejected under v2
+    rt2 = _rt([{"slots": {"favourite_color": "red"}, "advance": None}])
+    await rt2.start()
+    await rt2.on_user_text("i like red")
+    assert rt2.state.slot_value("favourite_color") is None
+
+
+async def test_volunteered_junk_still_rejected_and_multi_entity_stays_strict() -> None:
+    from superdialog.playbook.models import Playbook
+    from tests.playbook.continuity_fixtures import CONTINUITY_YAML
+
+    rt = _rt([{"slots": {"budget": "None"}, "advance": None}])
+    await rt.start()
+    await rt.on_user_text("hmm")
+    assert rt.state.slot_value("budget") is None  # junk guard still applies
+    pb = Playbook.from_yaml(CONTINUITY_YAML).model_copy(update={"multi_entity": True})
+    rt2 = _rt([{"slots": {"budget": "50L"}, "advance": None}], pb=pb)
+    await rt2.start()
+    await rt2.on_user_text("my budget is 50L")
+    assert rt2.state.slot_value("budget") is None  # entity ambiguity: strict
+
+
+async def test_language_slot_filled_from_bridge_signal_under_v2() -> None:
+    """F2: callers SPEAK Hindi but rarely SAY 'Hindi'; the SLOT RULE forbids
+    inference, so language slots structurally miss. The engine fills them
+    deterministically from the bridge-detected sticky language."""
+    from superdialog.playbook.models import Playbook
+    from tests.playbook.continuity_fixtures import CONTINUITY_YAML
+
+    yaml = CONTINUITY_YAML.replace(
+        "          location: {type: str}",
+        "          location: {type: str}\n"
+        "          preferred_language: {type: str}",
+        1,  # ask_location's declaration only (pricing_faq shares the line)
+    )
+    assert yaml != CONTINUITY_YAML
+    rt = _rt([{"slots": {}, "advance": None}], pb=Playbook.from_yaml(yaml))
+    await rt.start()
+    await rt.on_user_text("haan bataiye", language="hi")
+    assert rt.state.slot_value("preferred_language") == "Hindi"
+    # legacy: inert
+    pb = Playbook.from_yaml(yaml).model_copy(update={"legacy_continuity": True})
+    rt2 = _rt([{"slots": {}, "advance": None}], pb=pb)
+    await rt2.start()
+    await rt2.on_user_text("haan bataiye", language="hi")
+    assert rt2.state.slot_value("preferred_language") is None
