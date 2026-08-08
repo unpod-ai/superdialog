@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import warnings
 from typing import Any, Literal, Union
@@ -351,9 +352,9 @@ class Playbook(BaseModel):
     persona: str = ""
     # Opt-in: scope slot storage/lookups per checkpoint entity. Off ⇒ today.
     multi_entity: bool = False
-    # Continuity v2 escape hatch: true restores pre-v2 semantics (no junk-slot
-    # rejection, no churn dampener, no uncorroborated-advance steer, supervisor
-    # stays opt-in). New playbooks get v2 by default.
+    # DEPRECATED and ignored: v3 semantics are the only semantics. The field
+    # stays declared so existing playbook YAML still parses; setting it True
+    # logs a deprecation warning (see _warn_deprecated_llm_fields).
     legacy_continuity: bool = False
     guidelines: GuidelineConfig = Field(default_factory=GuidelineConfig)
     # The model a host should actually run this playbook on. ``None`` (the
@@ -504,6 +505,10 @@ class Playbook(BaseModel):
     # -- validation ----------------------------------------------------------
     @model_validator(mode="after")
     def _warn_deprecated_llm_fields(self) -> "Playbook":
+        if self.legacy_continuity:
+            logging.getLogger(__name__).warning(
+                "legacy_continuity is deprecated and ignored; v3 semantics apply"
+            )
         deprecated = [
             name
             for name in ("director_model", "talker_model")

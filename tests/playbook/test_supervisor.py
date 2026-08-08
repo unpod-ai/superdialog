@@ -677,17 +677,6 @@ async def test_agent_runs_supervisor_after_a_derailed_turn() -> None:
     assert agent.runtime.state.steering_note == "Slow down; re-confirm the city."
 
 
-def test_supervisor_is_off_by_default_under_legacy() -> None:
-    """No flag, no explicit llm, legacy mode -> no loop 2 (byte-compatible)."""
-    agent = PlaybookAgent(
-        playbook=Playbook.from_yaml(MINIMAL_YAML + "\nlegacy_continuity: true\n"),
-        talker_llm=StreamLLM(["hi"]),
-        director_llm=SequencedLLM([_IDLE]),
-        http=FakeHttp([]),
-    )
-    assert agent._supervisor is None
-
-
 async def test_supervisor_fires_through_dialogmachine_eval_path() -> None:
     """End-to-end through DialogMachine -> PlaybookAgent — the SAME path the
     eval harness (InProcessPlaybook) and production LiteV2 handler take.

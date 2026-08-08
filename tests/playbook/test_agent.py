@@ -535,8 +535,11 @@ def test_supervisor_default_on_under_v2() -> None:
     assert _agent_for(MINIMAL_YAML)._supervisor is not None
 
 
-def test_supervisor_off_under_legacy() -> None:
-    assert _agent_for(MINIMAL_YAML + "\nlegacy_continuity: true\n")._supervisor is None
+def test_supervisor_on_despite_legacy_flag() -> None:
+    # Intended breaking change: legacy_continuity no longer keeps the
+    # supervisor off — only an explicit guidelines.supervisor: false does.
+    agent = _agent_for(MINIMAL_YAML + "\nlegacy_continuity: true\n")
+    assert agent._supervisor is not None
 
 
 def test_explicit_supervisor_false_wins_under_v2() -> None:
@@ -544,15 +547,8 @@ def test_explicit_supervisor_false_wins_under_v2() -> None:
     assert _agent_for(yaml_text)._supervisor is None
 
 
-def test_explicit_supervisor_true_wins_under_legacy() -> None:
-    yaml_text = (
-        MINIMAL_YAML + "\nlegacy_continuity: true\nguidelines:\n  supervisor: true\n"
-    )
-    assert _agent_for(yaml_text)._supervisor is not None
-
-
 def test_explicit_supervisor_llm_always_wins() -> None:
-    yaml_text = MINIMAL_YAML + "\nlegacy_continuity: true\n"
+    yaml_text = MINIMAL_YAML + "\nguidelines:\n  supervisor: false\n"
     agent = _agent_for(yaml_text, supervisor_llm=CannedLLM(_IDLE_VERDICT))
     assert agent._supervisor is not None
 

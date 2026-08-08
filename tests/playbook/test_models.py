@@ -483,8 +483,14 @@ def test_trailing_newline_entity_rejected() -> None:
         Checkpoint(id="a", entity="caller\n")
 
 
-def test_legacy_continuity_flag_defaults_off() -> None:
-    pb = Playbook.from_yaml(MINIMAL_YAML)
+def test_legacy_continuity_flag_is_inert_and_warns_on_parse(caplog) -> None:
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        pb = Playbook.from_yaml(MINIMAL_YAML)
     assert pb.legacy_continuity is False
-    legacy = Playbook.from_yaml(MINIMAL_YAML + "\nlegacy_continuity: true\n")
-    assert legacy.legacy_continuity is True
+    assert "legacy_continuity" not in caplog.text  # default: silent
+    with caplog.at_level(logging.WARNING):
+        legacy = Playbook.from_yaml(MINIMAL_YAML + "\nlegacy_continuity: true\n")
+    assert legacy.legacy_continuity is True  # still parses (declared but inert)
+    assert "legacy_continuity is deprecated and ignored" in caplog.text

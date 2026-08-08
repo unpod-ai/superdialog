@@ -914,10 +914,17 @@ def test_westgate_fixture_compiles_and_routes() -> None:
     assert "connectivity" in pb.checkpoint("main.qualify_location").exit_say
 
 
-def test_legacy_continuity_defaults_off_and_passes_through() -> None:
+def test_legacy_continuity_is_inert_and_warns(caplog) -> None:
+    import logging
+
     import yaml
 
-    assert simple_to_playbook(yaml.safe_load(SIMPLE)).legacy_continuity is False
+    with caplog.at_level(logging.WARNING):
+        assert simple_to_playbook(yaml.safe_load(SIMPLE)).legacy_continuity is False
+    assert "legacy_continuity" not in caplog.text  # default: silent
     doc = yaml.safe_load(SIMPLE)
     doc["legacy_continuity"] = True
-    assert simple_to_playbook(doc).legacy_continuity is True
+    with caplog.at_level(logging.WARNING):
+        pb = simple_to_playbook(doc)
+    assert pb.legacy_continuity is False  # deprecated: no longer propagated
+    assert "legacy_continuity is deprecated and ignored" in caplog.text

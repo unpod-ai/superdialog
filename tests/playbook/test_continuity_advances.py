@@ -127,31 +127,6 @@ async def test_expr_advance_is_corroborated() -> None:
     assert adv[-1].corroborated is True
 
 
-async def test_prose_only_advance_not_steered_under_legacy() -> None:
-    pb = Playbook.from_yaml(CONTINUITY_YAML).model_copy(
-        update={"legacy_continuity": True}
-    )
-    rt = _rt(
-        [
-            {"slots": {"location": "Pune"}, "advance": "main.pitch"},
-            {"slots": {}, "advance": "main.ask_budget"},
-        ],
-        pb=pb,
-    )
-    await rt.start()
-    await rt.on_user_text("Pune")
-    await rt.on_user_text("hmm what?")
-    assert rt.state.steering_note is None
-    # corroborated is still STAMPED under legacy (harmless metadata);
-    # only the steer is gated.
-    adv = [
-        e
-        for e in rt.log.events
-        if isinstance(e, AdvanceEvent) and e.to_checkpoint == "main.ask_budget"
-    ]
-    assert adv and adv[-1].corroborated is False
-
-
 async def test_corroborated_advance_beats_forced_resume() -> None:
     rt = _rt([
         {"slots": {}, "interrupt": "price_guardrail"},
@@ -163,21 +138,6 @@ async def test_corroborated_advance_beats_forced_resume() -> None:
     await rt.on_user_text("it's for Pune by the way")
     # v2: the evidence-backed advance is honored, NOT the forced return
     assert rt.state.checkpoint_id == "main.pitch"
-
-
-async def test_corroborated_advance_defers_to_resume_under_legacy() -> None:
-    pb = Playbook.from_yaml(CONTINUITY_YAML).model_copy(
-        update={"legacy_continuity": True}
-    )
-    rt = _rt([
-        {"slots": {}, "interrupt": "price_guardrail"},
-        {"slots": {"location": "Pune"}, "advance": "main.pitch"},
-    ], pb=pb)
-    await rt.start()
-    await rt.on_user_text("price?")
-    await rt.on_user_text("it's for Pune by the way")
-    # legacy: forced return still wins
-    assert rt.state.checkpoint_id == "main.ask_location"
 
 
 async def test_uncorroborated_advance_defers_to_resume_under_v2() -> None:
@@ -223,22 +183,12 @@ async def test_volunteered_slot_from_other_checkpoint_is_written_under_v2() -> N
     assert rt.state.slot_value("budget") == "50L"
 
 
-async def test_volunteered_slot_rejected_under_legacy_and_when_undeclared() -> None:
-    from superdialog.playbook.models import Playbook
-    from tests.playbook.continuity_fixtures import CONTINUITY_YAML
-
-    pb = Playbook.from_yaml(CONTINUITY_YAML).model_copy(
-        update={"legacy_continuity": True}
-    )
-    rt = _rt([{"slots": {"budget": "50L"}, "advance": None, "note": None}], pb=pb)
+async def test_volunteered_slot_rejected_when_undeclared() -> None:
+    # undeclared-anywhere keys stay rejected under v3
+    rt = _rt([{"slots": {"favourite_color": "red"}, "advance": None}])
     await rt.start()
-    await rt.on_user_text("my budget is 50L")
-    assert rt.state.slot_value("budget") is None  # legacy: strict cp scoping
-    # undeclared-anywhere keys stay rejected under v2
-    rt2 = _rt([{"slots": {"favourite_color": "red"}, "advance": None}])
-    await rt2.start()
-    await rt2.on_user_text("i like red")
-    assert rt2.state.slot_value("favourite_color") is None
+    await rt.on_user_text("i like red")
+    assert rt.state.slot_value("favourite_color") is None
 
 
 async def test_volunteered_junk_still_rejected_and_multi_entity_stays_strict() -> None:
@@ -274,12 +224,6 @@ async def test_language_slot_filled_from_bridge_signal_under_v2() -> None:
     await rt.start()
     await rt.on_user_text("haan bataiye", language="hi")
     assert rt.state.slot_value("preferred_language") == "Hindi"
-    # legacy: inert
-    pb = Playbook.from_yaml(yaml).model_copy(update={"legacy_continuity": True})
-    rt2 = _rt([{"slots": {}, "advance": None}], pb=pb)
-    await rt2.start()
-    await rt2.on_user_text("haan bataiye", language="hi")
-    assert rt2.state.slot_value("preferred_language") is None
 
 
 async def test_semantic_none_is_trusted_regardless_of_utterance() -> None:

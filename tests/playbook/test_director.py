@@ -1,4 +1,5 @@
 import json
+import logging
 import textwrap
 
 from superdialog.playbook.director import Director
@@ -839,29 +840,29 @@ async def test_allow_empty_slot_accepts_empty_string_as_a_real_answer() -> None:
     assert any(e.detail == "junk_rejected:special_requests" for e in degraded3)
 
 
-async def test_junk_slot_values_pass_under_legacy() -> None:
-    # legacy_continuity: true preserves the old accept-anything behavior
-    # byte-for-byte: 'None' is written, no junk_rejected audit event.
-    pb = Playbook.from_yaml(MINIMAL_YAML).model_copy(update={"legacy_continuity": True})
+async def test_legacy_continuity_flag_is_inert_and_warns(caplog) -> None:
+    # The pre-v3 escape hatch is gone: the flag still parses (existing YAML
+    # must not explode), logs a deprecation warning, and v3 semantics apply
+    # anyway — structural junk (the literal "null") is rejected regardless.
+    with caplog.at_level(logging.WARNING):
+        pb = Playbook.from_yaml(MINIMAL_YAML + "\nlegacy_continuity: true\n")
+    assert "legacy_continuity" in caplog.text
     log = EventLog()
     log.append(
         AdvanceEvent(from_checkpoint=None, to_checkpoint="booking.collect", rule="init")
     )
     log.append(UtteranceEvent(role="user", text="Pune tomorrow please"))
     state = ConversationState.fold(log, playbook=pb)
-    for raw in ["None", None]:  # legacy also keeps null -> str-coerced "None"
-        llm = CannedLLM({"slots": {"city": raw}, "advance": None, "note": None})
-        decision = await Director(pb, llm).evaluate(state)
-        writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
-        assert [e for e in writes if e.key == "city" and e.value == "None"], repr(raw)
-        # G37: the shadow anchor audit is Director-level, not playbook-gated;
-        # legacy keeps the WRITE behavior byte-for-byte (asserted above) but
-        # a fabricated 'None' still gets its anchor_miss audit event.
-        assert not [
-            e
-            for e in decision.events
-            if isinstance(e, DegradedEvent) and not e.detail.startswith("anchor_miss:")
-        ]
+    llm = CannedLLM({"slots": {"city": "null"}, "advance": None, "note": None})
+    decision = await Director(pb, llm).evaluate(state)
+    assert not [
+        e for e in decision.events if isinstance(e, SlotWriteEvent) and e.key == "city"
+    ]
+    assert any(
+        e.detail == "junk_rejected:city"
+        for e in decision.events
+        if isinstance(e, DegradedEvent)
+    )
 
 
 ENUM_JUNK_MEMBER_YAML = textwrap.dedent(
@@ -1129,21 +1130,3 @@ async def test_anchor_off_disables_check() -> None:
     writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
     assert any(e.key == "appointment_date" for e in writes)
     assert not _anchor_misses(decision)
-
-
-async def test_identical_confirmed_rewrite_kept_under_legacy() -> None:
-    # legacy_continuity: true preserves the old rewrite-everything behavior.
-    pb = Playbook.from_yaml(MINIMAL_YAML).model_copy(update={"legacy_continuity": True})
-    log = EventLog()
-    log.append(
-        AdvanceEvent(from_checkpoint=None, to_checkpoint="booking.collect", rule="init")
-    )
-    log.append(UtteranceEvent(role="user", text="Pune tomorrow please"))
-    log.append(
-        SlotWriteEvent(key="city", value="Pune", status="confirmed", by="director")
-    )
-    state = ConversationState.fold(log, playbook=pb)
-    llm = CannedLLM({"slots": {"city": "Pune"}, "advance": None, "note": None})
-    decision = await Director(pb, llm).evaluate(state)
-    writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
-    assert [e for e in writes if e.key == "city" and e.value == "Pune"]

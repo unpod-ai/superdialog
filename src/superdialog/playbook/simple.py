@@ -14,6 +14,7 @@ NOT env — to stay visible during speech.
 from __future__ import annotations
 
 import json
+import logging
 import warnings
 from typing import Any, Literal
 
@@ -136,12 +137,11 @@ class SimplePlaybook(BaseModel):
     # Opt-in: scope slot storage/lookups per step entity. Off ⇒ unchanged.
     multi_entity: bool = False
     # Trajectory-level Supervisor (loop 2 — recovery/redirect meta-agent).
-    # None ⇒ resolved from the continuity mode; explicit true/false wins.
-    # See GuidelineConfig.supervisor.
+    # None ⇒ on; explicit true/false wins. See GuidelineConfig.supervisor.
     supervisor: bool | None = None
-    # Continuity v2 escape hatch: true restores pre-v2 semantics (no junk-slot
-    # rejection, no churn dampener, no uncorroborated-advance steer, supervisor
-    # stays opt-in). New playbooks get v2 by default. See Playbook.legacy_continuity.
+    # DEPRECATED and ignored: v3 semantics are the only semantics. Declared so
+    # existing simple docs still parse; True logs a deprecation warning at
+    # compile time (see simple_to_playbook) and is NOT propagated.
     legacy_continuity: bool = False
 
 
@@ -497,10 +497,13 @@ def simple_to_playbook(doc: dict[str, Any], strict: bool = True) -> Playbook:
     knowledge_base = (
         yaml.safe_dump(kb, sort_keys=False, allow_unicode=True).strip() if kb else ""
     )
+    if sp.legacy_continuity:
+        logging.getLogger(__name__).warning(
+            "legacy_continuity is deprecated and ignored; v3 semantics apply"
+        )
     return Playbook(
         persona=_build_persona(sp),
         multi_entity=sp.multi_entity,
-        legacy_continuity=sp.legacy_continuity,
         journeys={"main": Journey(checkpoints=checkpoints)},
         interrupts=interrupts,
         guidelines=guidelines,

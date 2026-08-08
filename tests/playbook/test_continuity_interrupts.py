@@ -113,19 +113,3 @@ async def test_goodbye_interrupt_to_terminal_carries_closing_steer() -> None:
     assert rt.state.ended
     assert rt.state.steering_note is not None
     assert "no questions, no offers" in rt.state.steering_note
-
-
-async def test_goodbye_terminal_closing_steer_gated_by_legacy() -> None:
-    from superdialog.playbook.models import Playbook as _PB
-    from tests.playbook.continuity_fixtures import CONTINUITY_YAML as _Y
-
-    pb = _PB.from_yaml(_Y).model_copy(update={"legacy_continuity": True})
-    rt = _rt(
-        [{"slots": {}, "advance": None, "note": None,
-          "interrupt": "global_goodbye"}],
-        pb=pb,
-    )
-    await rt.start()
-    await rt.on_user_text("Goodbye.")
-    assert rt.state.ended
-    assert rt.state.steering_note is None  # legacy: no closing steer

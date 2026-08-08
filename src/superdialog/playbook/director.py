@@ -746,11 +746,7 @@ class Director:
         events: list[Event] = []
         for key, value in (verdict.get("slots") or {}).items():
             slot_spec = cp.slots.get(key)
-            if (
-                slot_spec is None
-                and not self._pb.legacy_continuity
-                and not self._pb.multi_entity
-            ):
+            if slot_spec is None and not self._pb.multi_entity:
                 # F1: a volunteered fact for a slot declared on ANOTHER
                 # checkpoint is still authored vocabulary — accept it under
                 # the same junk/gate discipline instead of discarding it
@@ -772,8 +768,7 @@ class Director:
             # still mean "nothing extracted" even on an allow_empty slot.
             declared_empty = slot_spec.allow_empty and value == ""
             if (
-                not self._pb.legacy_continuity
-                and not declared_member
+                not declared_member
                 and not declared_empty
                 and (value is None or _is_junk(value))
             ):
@@ -810,8 +805,7 @@ class Director:
                     continue
             existing = state.slots.get(_ekey(cp.entity, key))
             if (
-                not self._pb.legacy_continuity
-                and existing is not None
+                existing is not None
                 and existing.status == "confirmed"
                 and existing.value == coerced
             ):
@@ -832,7 +826,7 @@ class Director:
         # structurally miss unless the caller names one (six eval cases lost
         # preferred_language this way). Fill deterministically from the
         # bridge-detected sticky language; an explicit verdict value wins.
-        if not self._pb.legacy_continuity and state.language:
+        if state.language:
             from .render import _LANGUAGE_NAMES
 
             lang_value = _LANGUAGE_NAMES.get(
@@ -974,10 +968,7 @@ class Director:
                         rule=f"interrupt:{spec.id}",
                     )
                 )
-                if (
-                    not self._pb.legacy_continuity
-                    and self._pb.checkpoint(spec.to).terminal
-                ):
+                if self._pb.checkpoint(spec.to).terminal:
                     # Close-class interrupt (goodbye/DNC) into a terminal
                     # checkpoint: the closing step often has no authored
                     # verbatim (simple playbooks fold the closing line into
@@ -1048,7 +1039,7 @@ class Director:
                             corroborated=corroborated,
                         )
                     )
-                    if not corroborated and not self._pb.legacy_continuity:
+                    if not corroborated:
                         # Appended AFTER the AdvanceEvent so the fold's
                         # advance-time steering reset doesn't clear it: the
                         # steer belongs to the TARGET step.

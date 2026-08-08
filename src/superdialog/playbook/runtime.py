@@ -201,11 +201,7 @@ class PlaybookRuntime:
             and not is_interrupt
             and not decision.detour_continues
         ):
-            corroborated_advance = (
-                advance is not None
-                and not self._pb.legacy_continuity
-                and advance.corroborated is True
-            )
+            corroborated_advance = advance is not None and advance.corroborated is True
             if not corroborated_advance:
                 self._apply(
                     [e for e in decision.events if not isinstance(e, AdvanceEvent)]
