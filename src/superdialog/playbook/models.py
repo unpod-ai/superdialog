@@ -127,6 +127,13 @@ class SlotSpec(BaseModel):
     # spoken; ``"soft"`` lets it advance on a provisional fill even inside a
     # hard-gated checkpoint. See capability ``dialogue-gate-policy``.
     gate: Literal["soft", "hard"] | None = None
+    # Continuity v2's junk-value guard (director.py's _is_junk) rejects ""/
+    # "none"/"n/a" etc. as a failed extraction, not a real answer -- correct
+    # for most slots, but wrong for one whose OWN legitimate confirmed value
+    # is "nothing" (e.g. special_requests when the caller declines: '' IS the
+    # answer, not a missing one). Set true to exempt "" specifically from
+    # junk rejection for this slot; every other junk value is still rejected.
+    allow_empty: bool = False
 
     @model_validator(mode="after")
     def _date_defaults_hard(self) -> "SlotSpec":

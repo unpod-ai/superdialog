@@ -416,6 +416,28 @@ def test_prompt_glosses_v2_triggers_and_marks_uncorroborated() -> None:
     assert "(init)" in system  # corroborated=None advances stay unmarked
 
 
+def test_prompt_forbids_narrating_unverified_outcomes_and_shows_tool_results() -> None:
+    # Real production defect: the supervisor's inject note told the caller
+    # "I have held that slot and sent the payment link" -- from trajectory
+    # shape alone, with NO hold or payment-link tool call ever fired that
+    # session. The prompt must both ground the model in actual tool results
+    # (ok/status only, mirroring the Director's own tool_lines) and forbid
+    # claiming an outcome those results don't back.
+    sup = Supervisor(_VerdictLLM({"action": "none"}), _pb())
+    rt = _runtime()
+    rt.log.append(
+        ToolResultEvent(
+            tool="action-slots-hold", store_as="hold_result", ok=False, status=500
+        )
+    )
+    messages = sup._prompt(rt.state, rt.log, ["junk_rejected:special_requests"])
+    prefix = messages[0][CACHE_PREFIX_KEY]
+    assert "NEVER write a note that states or implies a real-world outcome" in prefix
+    system = messages[0]["content"]
+    assert "Tool results:" in system
+    assert "hold_result: ok=False status=500" in system
+
+
 async def test_turn_budget_camp_forces_forward_inject_when_verdict_none() -> None:
     # A caller camping in an early step (turn_budget) must not be judged benign:
     # even when the verdict passively returns none, the supervisor floors it to a

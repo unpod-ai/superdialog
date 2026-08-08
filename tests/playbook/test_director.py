@@ -752,6 +752,52 @@ async def test_junk_rejected_detail_is_entity_namespaced_off_caller() -> None:
     assert any(e.detail == "junk_rejected:partner:date_of_birth" for e in degraded)
 
 
+async def test_allow_empty_slot_accepts_empty_string_as_a_real_answer() -> None:
+    # Real production defect: special_requests='' on a caller's genuine
+    # decline ("no add-ons") was rejected as junk every time, so the expr
+    # rule gating the booking hold on `special_requests != None` never
+    # fired -- the caller repeated "no" three times and the flow eventually
+    # narrated a fabricated success with no real hold ever placed.
+    # allow_empty: true declares "" as THIS slot's own legitimate value.
+    yaml_text = textwrap.dedent("""
+        persona: "Assistant."
+        journeys:
+          j:
+            checkpoints:
+              - id: ask
+                goal: "collect special requests"
+                gate: soft
+                slots:
+                  special_requests: {type: str, allow_empty: true}
+                advance_when:
+                  - {when: "done", judge: llm, to: j.done}
+              - id: done
+                terminal: true
+    """)
+    pb = Playbook.from_yaml(yaml_text)
+    log = EventLog()
+    log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint="j.ask", rule="init"))
+    log.append(UtteranceEvent(role="user", text="no add-ons"))
+    state = ConversationState.fold(log, playbook=pb)
+    llm = CannedLLM(
+        {"slots": {"special_requests": ""}, "advance": None, "note": None}
+    )
+    decision = await Director(pb, llm).evaluate(state)
+    writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
+    assert any(e.key == "special_requests" and e.value == "" for e in writes)
+    assert not [e for e in decision.events if isinstance(e, DegradedEvent)]
+    # Other junk values are still rejected even on an allow_empty slot --
+    # only "" is exempted, "none"/"n/a" still mean "not really extracted".
+    llm2 = CannedLLM(
+        {"slots": {"special_requests": "none"}, "advance": None, "note": None}
+    )
+    decision2 = await Director(pb, llm2).evaluate(state)
+    writes2 = [e for e in decision2.events if isinstance(e, SlotWriteEvent)]
+    assert not [e for e in writes2 if e.key == "special_requests"]
+    degraded2 = [e for e in decision2.events if isinstance(e, DegradedEvent)]
+    assert any(e.detail == "junk_rejected:special_requests" for e in degraded2)
+
+
 async def test_junk_slot_values_pass_under_legacy() -> None:
     # legacy_continuity: true preserves the old accept-anything behavior
     # byte-for-byte: 'None' is written, no junk_rejected audit event.

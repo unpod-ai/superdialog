@@ -666,9 +666,15 @@ class Director:
             declared_member = slot_spec.type == "enum" and value in (
                 slot_spec.values or ()
             )
+            # allow_empty: the author has declared "" itself as this slot's
+            # legitimate confirmed value (e.g. special_requests on a decline)
+            # -- exempt ONLY the empty string, not "none"/"n/a"/etc, which
+            # still mean "nothing extracted" even on an allow_empty slot.
+            declared_empty = slot_spec.allow_empty and value == ""
             if (
                 not self._pb.legacy_continuity
                 and not declared_member
+                and not declared_empty
                 and (value is None or _is_junk(value))
             ):
                 # Auditable rejection: repeated junk on one key is a
