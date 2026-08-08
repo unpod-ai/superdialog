@@ -168,11 +168,12 @@ def _wrap_would_complete(
     goodbyes close immediately — a deflected close is a lost close) and
     (b) the current checkpoint's missing required slots are the ONLY
     ones missing playbook-wide, so the wrap can actually finish the job.
-    Default (caller) entity throughout — a multi-entity playbook errs
-    toward closing, never toward deflecting.
+    Keys are entity-namespaced via _ekey, so a bare key shared across
+    entities (caller vs partner) never shadows a missing slot — the
+    predicate is exact for multi-entity playbooks too.
     """
     required = {
-        k
+        _ekey(c.entity, k)
         for j in pb.journeys.values()
         for c in j.checkpoints
         for k, s in c.slots.items()
@@ -180,9 +181,17 @@ def _wrap_would_complete(
     }
     if not required:
         return False
-    missing_all = {k for k in required if not state.filled([k])}
+    missing_all = {
+        _ekey(c.entity, k)
+        for j in pb.journeys.values()
+        for c in j.checkpoints
+        for k, s in c.slots.items()
+        if s.required and not state.filled([k], entity=c.entity)
+    }
     missing_here = {
-        k for k, s in cp.slots.items() if s.required and not state.filled([k])
+        _ekey(cp.entity, k)
+        for k, s in cp.slots.items()
+        if s.required and not state.filled([k], entity=cp.entity)
     }
     captured_some = len(missing_all) < len(required)
     return bool(missing_here) and captured_some and missing_all <= missing_here

@@ -331,8 +331,59 @@ def test_no_wrap_when_nothing_captured_yet():
 
 
 def test_no_wrap_when_playbook_has_no_required_slots():
+    # _kb_state's playbook declares no required slots anywhere: nothing to
+    # wrap for -> the predicate defaults to False (close).
     pb, state = _kb_state("main.legacy")
     assert not _wrap_would_complete(pb, pb.checkpoint("main.legacy"), state)
+
+
+_MULTI_ENTITY_YAML = textwrap.dedent("""
+    multi_entity: true
+    persona: "You are a booking assistant."
+    journeys:
+      main:
+        checkpoints:
+          - id: collect_self
+            entity: caller
+            gate: soft
+            slots:
+              name: {type: str, required: true}
+              city: {type: str, required: true}
+            advance_when:
+              - {when: "caller details given", judge: llm,
+                 to: main.collect_partner, requires: [name, city]}
+          - id: collect_partner
+            entity: partner
+            gate: soft
+            slots:
+              name: {type: str, required: true}
+            advance_when:
+              - {when: "partner name given", judge: llm, to: main.done,
+                 requires: [name]}
+          - id: done
+            terminal: true
+            outcome: closed
+    interrupts:
+      - {id: goodbye, when: "caller says goodbye", judge: llm,
+         to: main.done, resume: false}
+""")
+
+
+async def test_goodbye_closes_when_missing_slot_hides_behind_other_entity():
+    # Cross-entity key shadowing pin: 'name' is required on BOTH the caller
+    # and partner checkpoints, stored under different _ekey namespaces
+    # ('name' vs 'partner:name'). Only caller city is filled; partner:name
+    # is still missing playbook-wide, so a wrap at collect_self cannot
+    # finish the capture -> close. A bare-key predicate would let the
+    # caller's 'name' shadow the partner's and wrap anyway.
+    pb = Playbook.from_yaml(_MULTI_ENTITY_YAML)
+    state = _folded(pb, "main.collect_self", {"city": "Pune"}, user_text="ok bye")
+    llm = CannedLLM({"slots": {}, "interrupt": "goodbye"})
+    decision = await Director(pb, llm).evaluate(state)
+    adv = [e for e in decision.events if isinstance(e, AdvanceEvent)]
+    assert adv and adv[0].to_checkpoint == "main.done"
+    notes = [e for e in decision.events if isinstance(e, SteeringNoteEvent)]
+    assert not [n for n in notes if n.text.startswith(_WRAP_MARKER)]
 
 
 async def test_goodbye_interrupt_passes_on_second_ask():
