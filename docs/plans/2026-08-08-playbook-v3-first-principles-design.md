@@ -39,17 +39,29 @@ Deleted from v2:
 - **`legacy_continuity`** — the flag, the inert-guard bookkeeping in every
   v2-flagged guard, and the dual-mode test branches. Playbooks still setting
   it get v3 semantics plus a parse-time warning.
-- **Detour expiry `@6 advances`** (G21) — replaced by re-checking parent
-  checkpoint eligibility at resume time. Smaller and more correct: the
-  detour expires exactly when its parent is invalid, not on a turn count.
-- **G13's `≥2/3 complete` wrap fraction** — the wrap question fires iff a
-  hard-required slot is still unconfirmed. Same behavior, no magic constant.
-- **Director's free-text `note`** — finite reason codes. Repair detection
-  (G33/G18) keeps its consumer through a code instead of prose.
-- **Fixed 12-turn Director context** (director.py:375) — current utterance
-  + settled state + checkpoint spec; recent dialogue attaches only when the
-  turn contains unresolved references (ellipsis, "go back to that",
-  corrections).
+- ~~**Detour expiry `@6 advances`** (G21)~~ — *dissolved at implementation
+  depth.* The counter is load-bearing: multi-checkpoint detours strand
+  their stack entries by design (interior advances clear
+  `entered_via_resume`, state.py:212-227, so they never auto-resume) and
+  the counter is the only reaper. No cheap deterministic "parent still
+  eligible" predicate exists in this engine. It stays as the **secondary
+  fallback** — exactly the report's own expiry hierarchy (causal checks
+  primary, a fallback bound secondary).
+- **G13's `≥2/3 complete` wrap fraction** — replaced by a constant-free
+  predicate: wrap iff something required is already captured AND the
+  current checkpoint's missing required slots are the only ones missing
+  playbook-wide (one wrap question finishes the capture). Early goodbyes
+  still close immediately; a wrap that can't finish the job is never
+  asked.
+- ~~**Director's free-text `note`**~~ — *dissolved at implementation
+  depth.* The report's rule bans unconstrained notes **without a defined
+  consumer**; this note has one — it becomes the Talker's steering note,
+  whitespace-collapsed and clamped (director.py:992-999). It stays.
+- ~~**Fixed 12-turn Director context**~~ (director.py:375) — *deferred.*
+  Detecting "unresolved references" deterministically means a lexical
+  gate — the exact G4 class of semantic second-guessing that killed a
+  production call. Revisit only with Director prefill-latency evidence
+  showing the transcript tail dominates.
 - **The duplicated rewind bounds check** — supervisor.apply checks version
   bounds (supervisor.py:310) and runtime.rewind checks them again
   (runtime.py:309). One survives. *(This replaces the brainstorm's planned
@@ -58,7 +70,7 @@ Deleted from v2:
   add abstraction where nothing is shared.)*
 - **`mark_interrupted`'s in-place rewrite** (agent.py:240-270) — the hook
   survives, but rewriting a logged event's text in place violates
-  invariant 2. It becomes the append of the `AssistantDelivered`
+  invariant 2. It becomes the append of a `SpeechCorrectionEvent`
   truncation record instead.
 
 Rejected from the research review (not needed for this product):
@@ -81,8 +93,10 @@ Rejected from the research review (not needed for this product):
 Added — only what the invariants demand:
 
 - **Substring-anchored slot writes** (invariant 1, made machine-checkable).
-- **`AssistantDelivered` event** with truncation point (invariant 2).
-- **Resume eligibility recheck** (invariants 1 + 3; replaces the counter).
+- **`SpeechCorrectionEvent`** — append-only barge-in truncation
+  (invariant 2; replaces `mark_interrupted`'s in-place rewrite).
+- **`never_say` excision on hold/recovery lines** (closes a verified
+  hole, talker.py:431-458).
 
 ## The v3 turn algorithm
 
@@ -92,15 +106,16 @@ TURN(user_text):
   1. APPEND   UtteranceEvent → EventLog          # append-only; one process
   2. FOLD     state = fold(EventLog)             # pure; full fold, no snapshots
 
-  3. DIRECTOR one constrained call, trimmed context:
+  3. DIRECTOR one constrained call:
        sees: current utterance + settled state + checkpoint spec
-             (+ recent turns ONLY if unresolved references exist)
+             + recent transcript window (12 turns — trim deferred)
        returns: {
-         slot_writes: [{slot_id, raw_span, value}],
-         advance:   {target, reason_code} | null,
-         interrupt: {target, reason_code} | null
+         slots:  {key: value},
+         spans:  {key: "<caller's words the value was heard in>"},   # NEW
+         advance: target | null,
+         interrupt: id | null,
+         note: clamped free text (defined consumer: the Talker steer)
        }
-       → DirectorVerdictObserved appended (proposal, not state)
 
   4. ENGINE   validate each proposal — reject is the default:
        slot_write accepted iff:
@@ -120,12 +135,14 @@ TURN(user_text):
          parent-invalidation > resume > soft navigation
 
   5. QUIESCE  expr/pipeline/auto hops, max_hops = 8, exhaustion → loud
-       resume a detour ONLY after re-checking parent eligibility  # NEW
+       detour resume: level-by-level unwind; stranded entries reaped by
+       the advance-age backstop (kept — see kill list)
 
   6. TALKER   verbatim/template → direct render, no LLM
        else one streaming call from settled state,
-       never_say excised on-stream (v2's G24, unchanged)
-       → AssistantDelivered {exact_text, completed, truncation}   # NEW
+       never_say excised on-stream AND on every canned line   # NEW
+       spoken text logged as UtteranceEvent; on barge-in the host
+       appends SpeechCorrectionEvent(heard prefix) — append-only  # NEW
 
   7. SUPERVISOR iff a trigger fires past the 2-turn cooldown
        (sticky triggers watermarked — no new evidence, no LLM call;
@@ -166,8 +183,8 @@ checklist.
 |---|---|---|
 | **Slot acceptance** | G3–G9 | One linear pipeline: declared → not-authoritative → anchor → re-derivation → structural junk filter → churn suppression. G6/G9 become re-derivation rules. |
 | **Turn arbitration** | G10–G18 | Interrupt trio and advance logic feed one precedence table. G13 reformulated (hard-required slot unconfirmed). G18 becomes a table row. |
-| **Quiescence** | G19–G21, G36 | `max_hops = 8` unchanged. Counter dies; resume rechecks eligibility. Tool ladder unchanged — it *is* transition authority. |
-| **Speech** | G22–G28 | `AssistantDelivered` added. Fix a verified hole: the hold line and recovery line bypass `never_say` excision (talker.py:431-458) — route every canned line through the same filter the stream and filler use. Filler stays excluded from the logged transcript (G25). |
+| **Quiescence** | G19–G21, G36 | `max_hops = 8` unchanged. Advance-age counter stays as documented backstop. Tool ladder unchanged — it *is* transition authority. |
+| **Speech** | G22–G28 | `SpeechCorrectionEvent` added (append-only truncation). Fix a verified hole: the hold line and recovery line bypass `never_say` excision (talker.py:431-458) — route every canned line through the same filter the stream and filler use. Filler stays excluded from the logged transcript (G25). |
 | **Supervisor + always-on** | G29–G35 | Five actions stay; the duplicated rewind bounds check dies. Watermarking (sticky triggers only), forward-only redirect, injection clamps, post-terminal silence unchanged. |
 
 Cross-cutting: every `legacy_continuity` branch dies, so each station has
@@ -196,10 +213,10 @@ pitch, restart-demander, westgate2, prompt-injection close) is the
 regression floor; every guard behind it carries forward.
 
 **Known residual:** barge-in truncation coverage depends on the transport
-reporting the cutoff point (today's hook: the host calling
-`mark_interrupted` with the heard prefix). Where the transport cannot,
-`AssistantDelivered` records `completed: false` with the intended text —
-flagged, not silently wrong.
+reporting the cutoff point (the host calling `mark_interrupted` with the
+heard prefix). Where the transport cannot, the correction event carries
+the intended text with the `[interrupted by caller]` tag — flagged, not
+silently wrong.
 
 ## Testing
 
@@ -212,7 +229,7 @@ No transition commits to an edge absent from the graph.
 QUIESCE terminates within max_hops on every input.
 fold(EventLog) invokes no Director, Talker, or Supervisor.
 Supervisor repairs never delete events.
-Every spoken turn has an AssistantDelivered event.
+Barge-in truncation is an appended correction, never an in-place rewrite.
 ```
 
 (The fifth law names `fold`, not "replay": counterfactual replay
@@ -230,8 +247,9 @@ means the check is nearly free.
 ## Migration and rollout
 
 - `legacy_continuity` in a playbook → v3 semantics + parse-time warning.
-- The verdict schema change (`raw_span`, reason codes) is prompt+schema
-  versioned. Old conversations replay untouched: replay folds *accepted
+- The verdict schema change (the additive `spans` map) degrades
+  gracefully: a spanless verdict falls back to value-in-utterance. Old
+  conversations replay untouched: state reconstruction folds *accepted
   events*, never verdicts.
 - The anchor check ships **shadow-first**, mirroring the repo's
   `CRITIC_MODE` pattern: log would-be rejections, enforce nothing, for a
