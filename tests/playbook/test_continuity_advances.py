@@ -280,3 +280,24 @@ async def test_language_slot_filled_from_bridge_signal_under_v2() -> None:
     await rt2.start()
     await rt2.on_user_text("haan bataiye", language="hi")
     assert rt2.state.slot_value("preferred_language") is None
+
+
+async def test_none_after_bare_negative_answer_is_a_real_value() -> None:
+    """ENDSESSION golf log: agent asks 'any special requests?', caller says
+    'No.', director extracts 'None', junk guard rejects it -> re-ask loop
+    until the caller gives up ('Hello, are you there?'). A bare negative
+    answer makes 'none' a STATED value, not a placeholder."""
+    rt = _rt([{"slots": {"budget": "None"}, "advance": None, "note": None}])
+    await rt.start()
+    await rt.on_user_text("No.")
+    assert rt.state.slot_value("budget") == "none"  # canonicalized, written
+
+    rt2 = _rt([{"slots": {"budget": "None"}, "advance": None, "note": None}])
+    await rt2.start()
+    await rt2.on_user_text("Nahi ji.")   # Hindi bare negative
+    assert rt2.state.slot_value("budget") == "none"
+
+    rt3 = _rt([{"slots": {"budget": "None"}, "advance": None, "note": None}])
+    await rt3.start()
+    await rt3.on_user_text("hmm what do you mean?")  # NOT a negative answer
+    assert rt3.state.slot_value("budget") is None    # junk rejection stands

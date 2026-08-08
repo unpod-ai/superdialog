@@ -67,6 +67,19 @@ _INVALID = object()  # sentinel: value failed validation; skip the write
 #: (configuration='None', city='' in production traversals).
 _JUNK_VALUES = {"", "none", "null", "n/a", "na", "not specified", "unknown"}
 
+#: Bare negative answers to an optional ask ("any special requests?"). When
+#: the caller SAYS no, 'none' is a stated value, not an extraction
+#: placeholder — junking it re-asks the question forever (ENDSESSION golf
+#: log: junk_rejected:special_requests fired 4x on the caller's "No." until
+#: they gave up with "Hello, are you there?"). Deliberately narrow: bare
+#: no/nothing/none forms (en + hi), optional trailing courtesy tokens.
+_NEGATIVE_ANSWER_RE = re.compile(
+    r"^\s*(?:no+|nope|nothing|none|nahi+n?|nahin|bas+)"
+    r"(?:[\s,]+(?:nothing|else|more|thanks?|thank you|ji|sir|madam))*"
+    r"[\s.,!।]*$",
+    re.IGNORECASE,
+)
+
 
 def _is_junk(value: Any) -> bool:
     return isinstance(value, str) and value.strip().lower() in _JUNK_VALUES
@@ -682,6 +695,16 @@ class Director:
                 slot_spec.values or ()
             )
             if (
+                not self._pb.legacy_continuity
+                and not declared_member
+                and (value is None or _is_junk(value))
+                and _NEGATIVE_ANSWER_RE.match(_last_user_text(state))
+            ):
+                # The caller answered a bare "No/Nothing/Nahi": 'none' IS the
+                # stated value for this slot, not a placeholder. Canonicalize
+                # and write it so the checkpoint can move on.
+                value = "none"
+            elif (
                 not self._pb.legacy_continuity
                 and not declared_member
                 and (value is None or _is_junk(value))
