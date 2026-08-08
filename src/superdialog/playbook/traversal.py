@@ -18,6 +18,7 @@ from .events import (
     EventLog,
     SessionEndEvent,
     SlotWriteEvent,
+    SpeechCorrectionEvent,
     ToolCallEvent,
     ToolResultEvent,
     UtteranceEvent,
@@ -90,6 +91,18 @@ def build_playbook_traversal(
 
     events = log.events
 
+    # G38 append-only barge-in truncation: exports must carry what the caller
+    # HEARD, not what was generated. Dict comprehension keeps the last
+    # correction per utterance, matching the fold's last-wins order.
+    heard = {
+        e.utterance_version: e.heard_text
+        for e in events
+        if isinstance(e, SpeechCorrectionEvent)
+    }
+
+    def _utt_text(e: UtteranceEvent) -> str:
+        return heard.get(e.version, e.text)
+
     # --- per-turn windows ---
     # Window 0 holds everything before the first user utterance (env writes,
     # init/auto advances, greeting). Window k (k >= 1) starts at user turn
@@ -148,7 +161,7 @@ def build_playbook_traversal(
             for adv, bucket in segments:
                 step_num += 1
                 bot = next(
-                    (e.text for e in bucket
+                    (_utt_text(e) for e in bucket
                      if isinstance(e, UtteranceEvent) and e.role == "assistant"),
                     None,
                 )
@@ -178,7 +191,7 @@ def build_playbook_traversal(
         # the first assistant utterance AFTER it (never one from before).
         user_message = window[0].text
         bot_message = next(
-            (e.text for e in window[1:]
+            (_utt_text(e) for e in window[1:]
              if isinstance(e, UtteranceEvent) and e.role == "assistant"),
             None,
         )

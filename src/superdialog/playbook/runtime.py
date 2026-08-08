@@ -23,6 +23,7 @@ from .events import (
     SessionEndEvent,
     SessionStartEvent,
     SlotWriteEvent,
+    SpeechCorrectionEvent,
     SteeringNoteEvent,
     ToolCallEvent,
     ToolResultEvent,
@@ -242,7 +243,20 @@ class PlaybookRuntime:
             ),
             None,
         )
-        if last is None or last.spoke_from_version is None or "?" not in last.text:
+        if last is None or last.spoke_from_version is None:
+            return
+        # G38: judge on what the caller HEARD — a barge-in may have cut the
+        # question off, in which case there is no re-ask to repair.
+        heard = next(
+            (
+                e.heard_text
+                for e in reversed(self.log.events)
+                if isinstance(e, SpeechCorrectionEvent)
+                and e.utterance_version == last.version
+            ),
+            last.text,
+        )
+        if "?" not in heard:
             return
         if any(  # idempotent: this stale utterance was already repaired
             isinstance(e, SteeringNoteEvent)

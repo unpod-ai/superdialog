@@ -4,6 +4,7 @@ from superdialog.playbook.events import (
     ExternalEvent,
     SessionEndEvent,
     SlotWriteEvent,
+    SpeechCorrectionEvent,
     UtteranceEvent,
 )
 from superdialog.playbook.models import Playbook
@@ -127,6 +128,35 @@ async def test_stale_talker_speech_triggers_repair_note() -> None:
     await rt.check_repairs()
     notes = [e for e in rt.log.events if e.type == "steering_note"]
     assert any(n.kind == "repair" for n in notes)
+
+
+async def test_check_repairs_reads_corrected_text() -> None:
+    """G38: a barge-in cut the question off before the caller heard it — the
+    heard record has no "?" so there is no re-ask to repair."""
+    rt = _runtime({"slots": {}, "advance": None, "note": None})
+    await rt.start()
+    stale_version = rt.state.version
+    rt.log.append(UtteranceEvent(role="user", text="my city is Pune"))
+    utt = rt.log.append(
+        UtteranceEvent(
+            role="assistant",
+            text="Which city would you like?",
+            spoke_from_version=stale_version,
+        )
+    )
+    rt.log.append(
+        SlotWriteEvent(key="city", value="Pune", status="confirmed", by="director")
+    )
+    rt.log.append(
+        SpeechCorrectionEvent(
+            utterance_version=utt.version,
+            heard_text="Which ci [interrupted by caller]",
+        )
+    )
+    await rt.check_repairs()
+    assert not any(
+        e.type == "steering_note" and e.kind == "repair" for e in rt.log.events
+    )
 
 
 TURN_BUDGET_YAML = textwrap.dedent("""

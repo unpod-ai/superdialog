@@ -14,6 +14,7 @@ from superdialog.playbook.events import (
     DegradedEvent,
     EventLog,
     SlotWriteEvent,
+    SpeechCorrectionEvent,
     UtteranceEvent,
 )
 from superdialog.playbook.models import Playbook
@@ -231,6 +232,30 @@ def test_dwell_turns_get_steps() -> None:
     assert dwell_b["turn"] == 3
     assert dwell_b["user_message"] == "thanks"
     assert dwell_b["bot_message"] == "You're welcome"
+
+
+def test_speech_correction_reaches_bot_message() -> None:
+    """G38: exports must carry what the caller HEARD, not what was generated —
+    covers both bot_message reads (turn-0 greeting bucket and per-turn window)."""
+    log = _log(
+        AdvanceEvent(
+            from_checkpoint=None, to_checkpoint="booking.collect", rule="init"
+        ),
+        UtteranceEvent(role="assistant", text="Hi! Where would you like to go?"),
+        SpeechCorrectionEvent(
+            utterance_version=2, heard_text="Hi! [interrupted by caller]"
+        ),
+        UtteranceEvent(role="user", text="I want a hotel"),  # turn 1
+        UtteranceEvent(role="assistant", text="Which city and what date?"),
+        SpeechCorrectionEvent(
+            utterance_version=5, heard_text="Which city [interrupted by caller]"
+        ),
+    )
+    t = build_playbook_traversal(log, Playbook.from_yaml(MINIMAL_YAML))
+    steps = t["traversal"]
+    assert steps[0]["bot_message"] == "Hi! [interrupted by caller]"
+    assert steps[1]["bot_message"] == "Which city [interrupted by caller]"
+    assert steps[1]["user_message"] == "I want a hotel"  # user text untouched
 
 
 def test_dwell_step_carries_window_events_and_latency() -> None:
