@@ -180,11 +180,15 @@ async def test_goodbye_wraps_once_when_last_slot_missing():
 # --- _wrap_would_complete: the constant-free investment predicate --------------
 
 
-def _folded(pb: Playbook, cp_id: str, filled: dict[str, str]) -> ConversationState:
+def _folded(
+    pb: Playbook, cp_id: str, filled: dict[str, str], user_text: str | None = None
+) -> ConversationState:
     log = EventLog()
     log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint=cp_id, rule="init"))
     for k, v in filled.items():
         log.append(SlotWriteEvent(key=k, value=v, status="confirmed", by="director"))
+    if user_text is not None:
+        log.append(UtteranceEvent(role="user", text=user_text))
     return ConversationState.fold(log, playbook=pb)
 
 
@@ -232,10 +236,12 @@ def test_no_wrap_when_other_checkpoints_still_missing_slots():
 
 
 def test_no_wrap_when_only_gap_is_on_a_different_checkpoint():
-    # BEHAVIOR FLIP vs the old 2/3 rule: 3 of 4 required filled used to
-    # wrap, but the one missing slot (email) lives on booking.contact, not
-    # the current step — a wrap aimed at slots this step can't even ask
-    # for was theater. New rule: close.
+    # PREDICATE-LEVEL FLIP vs the old 2/3 rule: 3 of 4 required filled
+    # used to satisfy _capture_nearly_complete, but the one missing slot
+    # (email) lives on booking.contact, not the current step. (The old
+    # GUARD still closed here — the call site's missing-here check was
+    # already empty at collect and short-circuited before the predicate;
+    # the genuine end-to-end flip is pinned below with gaps on BOTH.)
     pb = Playbook.from_yaml(_SPLIT_YAML)
     state = _folded(
         pb,
@@ -243,6 +249,59 @@ def test_no_wrap_when_only_gap_is_on_a_different_checkpoint():
         {"city": "Pune", "date": "2026-07-12", "phone": "123"},
     )
     assert not _wrap_would_complete(pb, pb.checkpoint("booking.collect"), state)
+
+
+_TWO_GAPS_YAML = textwrap.dedent("""
+    persona: "You are a booking assistant."
+    journeys:
+      booking:
+        checkpoints:
+          - id: collect
+            gate: soft
+            slots:
+              city: {type: str, required: true}
+              date: {type: date, required: true}
+              name: {type: str, required: true}
+            advance_when:
+              - {when: "details complete", judge: llm, to: booking.contact,
+                 requires: [city, date, name]}
+          - id: contact
+            gate: soft
+            slots:
+              phone: {type: str, required: true}
+              email: {type: str, required: true}
+              company: {type: str, required: true}
+            advance_when:
+              - {when: "contact complete", judge: llm, to: booking.close,
+                 requires: [phone, email, company]}
+          - id: close
+            terminal: true
+            outcome: closed
+    interrupts:
+      - {id: goodbye, when: "caller says goodbye", judge: llm,
+         to: booking.close, resume: false}
+""")
+
+
+async def test_goodbye_closes_when_gaps_span_two_checkpoints():
+    # BEHAVIOR FLIP (guard-level, end-to-end): 4 of 6 required filled with
+    # one gap HERE (name) and one on booking.contact (company). The old
+    # guard wrapped — missing-here non-empty and 4*3 >= 6*2 — deflecting a
+    # goodbye into a wrap that couldn't finish the capture anyway. New
+    # guard: missing_all !<= missing_here -> honor the goodbye and close.
+    pb = Playbook.from_yaml(_TWO_GAPS_YAML)
+    state = _folded(
+        pb,
+        "booking.collect",
+        {"city": "Pune", "date": "2026-07-12", "phone": "123", "email": "a@b.c"},
+        user_text="ok bye",
+    )
+    llm = CannedLLM({"slots": {}, "interrupt": "goodbye"})
+    decision = await Director(pb, llm).evaluate(state)
+    adv = [e for e in decision.events if isinstance(e, AdvanceEvent)]
+    assert adv and adv[0].to_checkpoint == "booking.close"
+    notes = [e for e in decision.events if isinstance(e, SteeringNoteEvent)]
+    assert not [n for n in notes if n.text.startswith(_WRAP_MARKER)]
 
 
 _ONE_SLOT_YAML = textwrap.dedent("""
