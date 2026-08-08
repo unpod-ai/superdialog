@@ -144,7 +144,18 @@ legacy-mode tests deleted with the semantics they pinned, 5 inert-flag
 pins added — plus 2 G38 consumer pins). Full repo: 1489 passed,
 38 skipped, 1 pre-existing unrelated failure
 (`tests/observability/test_observer.py` — `langfuse` not installed in this
-env; fails identically before v3). The five behavioral eval suites
-(composites .80–.92, goodbye/no-reentry checks live and falsifiable) are the
-pre-merge gate for the G13 predicate flip and **have not been re-run since
-v3** — pending.
+env; fails identically before v3). The five behavioral eval suites were
+re-run on v3 (2026-08-08, `eval-out/suites-v3/`, full tier, forced): **all
+five PASSED**, every per-case gate ok — disconnect 0.782 (was 0.748),
+realestate-derailment 0.838 (was 0.657), kairali-derailment 0.915 (0.916),
+standard 0.826 (0.836), westgate-breakit 0.876 (0.877). The G13 flip cost
+no closes (all goodbye gates fired; the pooja objection control survived 8
+turns) and both historical breaking points held (prompt-injection ts 0.8,
+restart-demander ts 1.0 + no_reentry). Attributable v3 cost: Director
+input +15–25%/turn (the `spans` schema + emission); Talker tokens and LLM
+calls/turn flat. Latency p50 rose vs the baseline run but uniformly across
+suites with single-call gateway samples ranging 0.9–3.0 s the same hour —
+gateway conditions dominate; a same-hour A/B (`bench_backend_ab.py`) is
+the tool if attribution is ever needed. `anchor_miss` shadow rate is not
+exportable from suite artifacts (reports carry no event logs) — measure in
+production telemetry before any `enforce` flip.
