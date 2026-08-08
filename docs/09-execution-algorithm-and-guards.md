@@ -95,7 +95,7 @@ TURN(user_text):
 |---|---|---|
 | G22 | hard-gate barrier: wait → filler → hold line; Director down → polite degrade, never hang | resilience |
 | G23 | `say_verbatim` bypasses generation; `strict` without a script → recovery line, never improvised | speech honesty |
-| G24 | `never_say`: deterministic excision on the stream, the filler, AND every canned line — hold and recovery, falling back authored line → built-in default → empty (punctuation-only remainder → skipped). Excision is casefold-safe: per-character folded alignment, terminates on casefold-expanding text ('ß'→'ss') | speech honesty |
+| G24 | `never_say`: deterministic excision on the stream, the filler, AND every canned line — hold/recovery fall back authored line → built-in default → empty; a fully-excised filler is skipped outright (silence beats "…"). Excision is casefold-safe: per-character folded alignment, terminates on casefold-expanding text ('ß'→'ss') | speech honesty |
 | G25 | filler/hold lines tagged and **excluded from the logged transcript** (spoken, never poisoning Director context) | speech honesty |
 | G26 | stale-speech suppression when the turn advanced and verbatim pass-through exists | speech honesty |
 | G27 | stream retry ×1 → recovery line; inner stream closed on barge-in | resilience |
@@ -139,9 +139,9 @@ TURN(user_text):
 
 ## Verification status (2026-08-08, post-v3)
 
-`tests/playbook`: 740 passed (peaked at 746 before the legacy flag went
-inert: 11 legacy-mode tests deleted with the semantics they pinned, 5
-inert-flag pins added). Full repo: 1487 passed,
+`tests/playbook`: 742 passed (746 before the legacy flag went inert — 11
+legacy-mode tests deleted with the semantics they pinned, 5 inert-flag
+pins added — plus 2 G38 consumer pins). Full repo: 1489 passed,
 38 skipped, 1 pre-existing unrelated failure
 (`tests/observability/test_observer.py` — `langfuse` not installed in this
 env; fails identically before v3). The five behavioral eval suites
