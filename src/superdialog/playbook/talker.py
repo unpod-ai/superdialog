@@ -38,6 +38,19 @@ def _excise(buf: str, folded: list[str]) -> str:
     return buf
 
 
+def _excise_line(text: str, folded: list[str]) -> str:
+    """Excise never_say phrases from a canned line.
+
+    Returns '' when excision leaves only punctuation/space — speaking
+    "…" alone is worse than silence. Callers fall back to their built-in
+    default line (itself excised) before accepting silence.
+    """
+    if not folded:
+        return text
+    cleaned = _excise(text, folded)
+    return cleaned if re.sub(r"[\W_]+", "", cleaned, flags=re.UNICODE) else ""
+
+
 async def _filter_never_say(
     tokens: AsyncIterator[str], phrases: list[str]
 ) -> AsyncIterator[str]:
@@ -410,16 +423,16 @@ class Talker:
         cp = self._pb.checkpoint(state.checkpoint_id) if state.checkpoint_id else None
 
         if cp is not None and director_done is not None and self._is_gated(cp):
+            folded = [p.casefold() for p in (cp.never_say or []) if p]
             fresh: ConversationState | None = None
             with anyio.move_on_after(self._barrier_timeout):
                 fresh = await director_done()
             if fresh is None:
-                filler_text = self._resolve_line(self._filler, state, FILLER)
-                folded = [p.casefold() for p in (cp.never_say or []) if p]
-                if folded:
-                    filler_text = _excise(filler_text, folded)
                 # Skip a filler that excision reduced to punctuation/space —
                 # speaking "…" alone is worse than silence.
+                filler_text = _excise_line(
+                    self._resolve_line(self._filler, state, FILLER), folded
+                )
                 if re.sub(r"[\W_]+", "", filler_text, flags=re.UNICODE):
                     yield SpeechChunk(
                         text=filler_text + " ",
@@ -429,8 +442,11 @@ class Talker:
                 with anyio.move_on_after(self._hold_timeout):
                     fresh = await director_done()
             if fresh is None:  # Director is down: degrade politely, never hang
+                hold_text = _excise_line(
+                    self._resolve_line(self._hold_line, state, HOLD_LINE), folded
+                ) or _excise_line(HOLD_LINE, folded)
                 yield SpeechChunk(
-                    text=self._resolve_line(self._hold_line, state, HOLD_LINE),
+                    text=hold_text,
                     final=True,
                     spoke_from_version=state.version,
                     filler=True,
@@ -451,8 +467,10 @@ class Talker:
                 )
             else:
                 # strict but no verbatim authored: never improvise on a strict step.
+                folded = [p.casefold() for p in (cp.never_say or []) if p]
                 yield SpeechChunk(
-                    text=self._recovery_line,
+                    text=_excise_line(self._recovery_line, folded)
+                    or _excise_line(RECOVERY_LINE, folded),
                     final=True,
                     spoke_from_version=state.version,
                 )
@@ -543,8 +561,10 @@ class Talker:
                     traceback.format_exc(),
                 )
                 if attempt == 2:
+                    folded = [p.casefold() for p in never_say if p]
                     yield SpeechChunk(
-                        text=self._recovery_line,
+                        text=_excise_line(self._recovery_line, folded)
+                        or _excise_line(RECOVERY_LINE, folded),
                         final=True,
                         spoke_from_version=view.spoke_from_version,
                     )

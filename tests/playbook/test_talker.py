@@ -607,6 +607,48 @@ async def test_filler_excised_to_punctuation_is_skipped() -> None:
     assert "".join(c.text for c in chunks).endswith("All set.")
 
 
+async def test_hold_line_respects_never_say() -> None:
+    """The hold line is canned but must still honor checkpoint never_say."""
+    pb, state = _gated_never_say_state("bear with me")
+
+    async def never() -> ConversationState:
+        await anyio.sleep(60)
+        return state
+
+    talker = Talker(pb, StreamLLM([]), barrier_timeout=0.02, hold_timeout=0.05)
+    received = [c.text async for c in talker.speak(state, director_done=never)]
+    text = "".join(received)
+    assert "bear with me" not in text.casefold()
+    assert "taking a little longer" in text  # rest of the hold line survives
+
+
+async def test_recovery_line_respects_never_say() -> None:
+    """Strict-no-verbatim recovery line must honor never_say too."""
+    yaml_text = textwrap.dedent('''
+        persona: "Assistant."
+        journeys:
+          j:
+            checkpoints:
+              - id: greet
+                strict: true
+                guidance: "say hi"
+                never_say:
+                  - "say that again"
+              - id: done
+                terminal: true
+    ''')
+    pb = Playbook.from_yaml(yaml_text)
+    log = EventLog()
+    log.append(
+        AdvanceEvent(from_checkpoint=None, to_checkpoint="j.greet", rule="init")
+    )
+    state = ConversationState.fold(log, playbook=pb)
+    chunks = [c async for c in Talker(pb, StreamLLM(["no"])).speak(state)]
+    text = "".join(c.text for c in chunks)
+    assert "say that again" not in text.casefold()
+    assert "Sorry" in text  # rest of the recovery line survives
+
+
 async def test_broken_line_provider_degrades_to_defaults() -> None:
     # A raising provider must never kill the turn — defaults speak instead.
     pb, state = _state("booking.confirm")
