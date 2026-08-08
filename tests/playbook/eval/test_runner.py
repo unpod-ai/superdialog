@@ -6,7 +6,6 @@ from typing import Any
 from superdialog.playbook.agent import PlaybookAgent
 from superdialog.playbook.eval.models import PersonaSpec
 from superdialog.playbook.eval.runner import run_eval, run_session
-from superdialog.playbook.events import DegradedEvent, EventLog, SteeringNoteEvent
 from superdialog.playbook.models import Playbook
 from tests.playbook.test_director import CannedLLM
 from tests.playbook.test_models import MINIMAL_YAML

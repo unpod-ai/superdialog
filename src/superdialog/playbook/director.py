@@ -65,7 +65,14 @@ _INVALID = object()  # sentinel: value failed validation; skip the write
 #: Values a verdict sometimes emits that mean "nothing extracted". Writing
 #: them as confirmed truth poisoned the Talker prompt every turn
 #: (configuration='None', city='' in production traversals).
-_JUNK_VALUES = {"", "none", "null", "n/a", "na", "not specified", "unknown"}
+#: STRUCTURAL non-values only — artifacts no caller ever utters (JSON null,
+#: empty string, the literal token "null"). Semantic judgments ('none',
+#: 'unknown', 'not specified') belong to the LLM: the verdict prompt's
+#: decline-convention makes "none" a deliberate, stated value, and a lexical
+#: filter second-guessing it killed a production call (ENDSESSION golf log:
+#: the caller's "No." to "any special requests?" was extracted as 'None',
+#: blindly junked, and the checkpoint re-asked until the caller hung up).
+_JUNK_VALUES = {"", "null"}
 
 
 def _is_junk(value: Any) -> bool:
@@ -390,7 +397,11 @@ def _verdict_prompt(
         "SLOT RULE: Only extract a slot when the user EXPLICITLY states that value "
         "in this utterance. Never infer slots from ambiguous yes/no answers to "
         "unrelated questions. A value the caller volunteers for a DIFFERENT "
-        "step's slot may also be extracted — same explicitness bar. Exception: "
+        "step's slot may also be extracted — same explicitness bar. When the "
+        'caller explicitly DECLINES an optional ask ("No", "Nothing", "Nahi") '
+        'set that slot to "none" — that is a real answer. For slots the caller '
+        "did NOT address, OMIT the key entirely; never fill it with null or a "
+        "placeholder. Exception: "
         "slots listed under CANDIDATE RESOLUTION "
         "below — set those by matching the caller's spoken name to a candidate id.\n\n"
         f"Interrupts:\n{interrupt_lines}\n"

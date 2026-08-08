@@ -707,23 +707,23 @@ def test_verdict_prompt_flat_when_not_multi_entity() -> None:
     assert "Already known: " in system  # today's flat shape
 
 
+# STRUCTURAL non-values: artifacts no caller utters. Semantic strings
+# ('none', 'unknown', 'not specified') are the LLM's judgment — the verdict
+# prompt's decline-convention makes them deliberate answers, and blindly
+# filtering them killed a production call (ENDSESSION: caller's "No." junked
+# into a re-ask loop).
 _JUNK_TABLE = [
-    "None",
     "",
-    "none",
     "NULL",
-    "n/a",
-    "Not Specified",
-    "unknown",
-    " none ",
+    "null",
+    " ",
     None,  # JSON null: str coercion would mint the literal 'None' string
 ]
 
+_TRUSTED_SEMANTIC_VALUES = ["None", "none", "n/a", "Not Specified", "unknown"]
 
-async def test_junk_slot_values_are_rejected_under_v2() -> None:
-    # The director LLM emits 'None'/''/'not specified' as confirmed slot
-    # values in production; under v2 they are not-extracted, audited as
-    # junk_rejected:<key>.
+
+async def test_structural_junk_rejected_under_v2() -> None:
     for junk in _JUNK_TABLE:
         pb, state = _state()
         llm = CannedLLM({"slots": {"city": junk}, "advance": None, "note": None})
@@ -732,13 +732,18 @@ async def test_junk_slot_values_are_rejected_under_v2() -> None:
         assert not [e for e in writes if e.key == "city"], f"wrote junk {junk!r}"
         degraded = [e for e in decision.events if isinstance(e, DegradedEvent)]
         assert any(e.detail == "junk_rejected:city" for e in degraded), repr(junk)
-    # Negative: a real value merely CONTAINING a junk token must be written.
-    pb, state = _state()
-    llm = CannedLLM({"slots": {"city": "Noneville"}, "advance": None, "note": None})
-    decision = await Director(pb, llm).evaluate(state)
-    writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
-    assert [e for e in writes if e.key == "city" and e.value == "Noneville"]
-    assert not [e for e in decision.events if isinstance(e, DegradedEvent)]
+
+
+async def test_semantic_values_trusted_to_the_llm_under_v2() -> None:
+    # 'none'/'unknown'/'n/a' are STATED answers under the prompt's
+    # decline-convention — the engine must not override the LLM's judgment.
+    for value in _TRUSTED_SEMANTIC_VALUES + ["Noneville"]:
+        pb, state = _state()
+        llm = CannedLLM({"slots": {"city": value}, "advance": None, "note": None})
+        decision = await Director(pb, llm).evaluate(state)
+        writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
+        assert [e for e in writes if e.key == "city"], f"filtered {value!r}"
+        assert not [e for e in decision.events if isinstance(e, DegradedEvent)]
 
 
 async def test_junk_rejected_detail_is_entity_namespaced_off_caller() -> None:
@@ -746,7 +751,7 @@ async def test_junk_rejected_detail_is_entity_namespaced_off_caller() -> None:
     # junk_rejected:<entity>:<key>, mirroring slot_churn's {entity}:{key}
     # keying (caller stays bare for backward compat).
     pb, _log, state = _partner_state("umm")
-    llm = CannedLLM({"slots": {"date_of_birth": "None"}, "advance": None, "note": None})
+    llm = CannedLLM({"slots": {"date_of_birth": ""}, "advance": None, "note": None})
     decision = await Director(pb, llm).evaluate(state)
     degraded = [e for e in decision.events if isinstance(e, DegradedEvent)]
     assert any(e.detail == "junk_rejected:partner:date_of_birth" for e in degraded)

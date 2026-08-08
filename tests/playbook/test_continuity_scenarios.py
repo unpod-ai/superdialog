@@ -173,7 +173,7 @@ async def test_junk_only_turn_prose_advance_is_uncorroborated() -> None:
         [
             {"slots": {"location": "Pune"}, "advance": "main.pitch"},
             {"slots": {}, "advance": "main.ask_budget"},
-            {"slots": {"budget": "None"}, "advance": "main.close"},
+            {"slots": {"budget": ""}, "advance": "main.close"},
         ],
         pb=Playbook.from_yaml(BUDGET_STRIPPED_YAML),
     )
