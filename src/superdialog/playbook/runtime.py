@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, Field
 
 from ._canon import canonical_json
-from .director import CompletesLLM, Director, _strip_fences
+from .director import AnchorMode, CompletesLLM, Director, _strip_fences
 from .events import (
     AdvanceEvent,
     DegradedEvent,
@@ -81,7 +81,7 @@ class PlaybookRuntime:
         max_hops: int = 8,
         intercept_llm: CompletesLLM | None = None,
         allow_private_hosts: bool = False,
-        anchor: Literal["off", "shadow", "enforce"] = "shadow",
+        anchor: AnchorMode = "shadow",
     ) -> None:
         self.log = EventLog()
         self._pb = playbook

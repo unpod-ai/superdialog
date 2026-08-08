@@ -15,14 +15,14 @@ import logging
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Literal, cast
+from typing import Any, AsyncIterator, cast
 
 import anyio
 
 from ..agent import TurnResult
 from ..chat_context import ChatContext, ChatMessage, Role
 from ..stream import StreamChunk, Turn
-from .director import CompletesLLM
+from .director import AnchorMode, CompletesLLM
 from .events import EventLog, SummaryEvent, UtteranceEvent
 from .models import Playbook
 from .runtime import PlaybookRuntime
@@ -126,7 +126,9 @@ class PlaybookAgent:
         filler: SpokenLine | None = None,
         hold_line: SpokenLine | None = None,
         allow_private_hosts: bool = False,
-        anchor: Literal["off", "shadow", "enforce"] = "shadow",
+        # G37 slot-evidence anchor: shadow audits anchor_miss, enforce rejects
+        # unanchored writes, off disables (see Director._anchor_ok).
+        anchor: AnchorMode = "shadow",
     ) -> None:
         # Offline-eval knob: when True the Talker waits for the Director to
         # settle before speaking on EVERY turn (not just the greeting), so a

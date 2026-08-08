@@ -39,9 +39,9 @@ _NOTE_CLAMP = 300  # supervisor notes render into the Talker's system prompt
 class SupervisorDecision(BaseModel):
     """One intervention, straight from the trajectory verdict."""
 
-    action: Literal["none", "inject", "redirect", "rewind", "discard", "handover"] = (
-        "none"
-    )
+    action: Literal[
+        "none", "inject", "redirect", "rewind", "discard", "handover"
+    ] = "none"
     note: str = ""  # repair brief for the Talker (what to acknowledge/do)
     to_checkpoint: str | None = None  # redirect target
     to_version: int | None = None  # rewind target (state as of this version)
@@ -98,6 +98,10 @@ def detect_triggers(
         isinstance(e, DegradedEvent)
         and e.version > max(entered, since_version)
         and not e.detail.startswith("junk_rejected:")
+        # anchor_miss is G37's shadow AUDIT event — it fires on ordinary
+        # healthy turns (any unspanned extraction) and must not spend a
+        # supervisor call, same rationale as the junk_rejected carve-out.
+        and not e.detail.startswith("anchor_miss:")
         for e in log.events
     ):
         triggers.append("degraded")

@@ -32,6 +32,8 @@ _VERDICT_PREAMBLE = (
     "You supervise a live conversation. Read the transcript and respond with "
     'STRICT JSON only: {"slots": {<key>: <value> for any newly evident slot '
     "values}, "
+    '"spans": {<key>: <the exact words of this user turn the value came '
+    "from>}, "
 )
 
 
@@ -152,7 +154,17 @@ def _false_goodbye(text: str) -> bool:
     return len(t.split()) <= _FALSE_GOODBYE_MAX_WORDS
 
 
+#: G37 anchor modes: shadow audits mismatches, enforce rejects them, off skips.
+AnchorMode = Literal["off", "shadow", "enforce"]
+
+
 def _norm(text: Any) -> str:
+    # TODO: before anchor="enforce" ships, strip punctuation on both sides
+    # (verified misses: "next-friday" vs "next friday", curly vs ASCII
+    # apostrophes, trailing-comma drift) and make _anchor_ok's substring
+    # check word-boundary (verified false positives: "basic" inside
+    # "basically", span "no" inside "i know"). Shadow measures the real
+    # drift rate first; harden on that data, not speculation.
     return " ".join(str(text).split()).casefold()
 
 
@@ -427,9 +439,7 @@ def _verdict_prompt(
         "placeholder. Exception: "
         "slots listed under CANDIDATE RESOLUTION "
         "below — set those by matching the caller's spoken name to a candidate id.\n"
-        "For every slot you extract, also copy the exact words of THIS user turn "
-        'you heard the value in into "spans": {<key>: "<words>"}. Omit a key you '
-        "have no words for.\n\n"
+        'In "spans", omit any key you have no exact words of this turn for.\n\n'
         f"Interrupts:\n{interrupt_lines}\n"
     )
     system = (
@@ -510,7 +520,7 @@ class Director:
         fast_release_allow: set[str] | None = None,
         fast_release_deny: set[str] | None = None,
         structured_output: bool = True,
-        anchor: Literal["off", "shadow", "enforce"] = "shadow",
+        anchor: AnchorMode = "shadow",
     ) -> None:
         self._pb = playbook
         self._llm = llm

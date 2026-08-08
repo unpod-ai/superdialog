@@ -29,7 +29,8 @@ from tests.playbook.test_toolexec import FakeHttp
 
 _IDLE = {"slots": {}, "advance": None, "note": None}
 
-SUP_YAML = textwrap.dedent("""
+SUP_YAML = textwrap.dedent(
+    """
     journeys:
       flow:
         checkpoints:
@@ -55,7 +56,8 @@ SUP_YAML = textwrap.dedent("""
         method: POST
         url: "https://api.test/release"
         tier: reversible
-""")
+"""
+)
 
 
 def _pb() -> Playbook:
@@ -136,9 +138,7 @@ def test_degraded_trigger_is_watermarked() -> None:
         rt.state, rt.log, _pb(), since_version=stale
     )
     rt.log.append(DegradedEvent(component="director", detail="llm_error"))
-    assert "degraded" in detect_triggers(
-        rt.state, rt.log, _pb(), since_version=stale
-    )
+    assert "degraded" in detect_triggers(rt.state, rt.log, _pb(), since_version=stale)
 
 
 def test_slot_churn_trigger() -> None:
@@ -257,6 +257,17 @@ def test_junk_rejected_does_not_fire_generic_degraded() -> None:
     # their own >=2-per-slot threshold).
     rt = _runtime()
     rt.log.append(DegradedEvent(component="director", detail="junk_rejected:city"))
+    assert "degraded" not in detect_triggers(rt.state, rt.log, _pb())
+    rt.log.append(DegradedEvent(component="director", detail="llm_error"))
+    assert "degraded" in detect_triggers(rt.state, rt.log, _pb())
+
+
+def test_anchor_miss_does_not_fire_generic_degraded() -> None:
+    # G37 shadow audit: anchor_miss fires on ordinary healthy sessions (any
+    # unspanned extraction), so like junk_rejected it must not spend a
+    # supervisor call via the generic degraded trigger.
+    rt = _runtime()
+    rt.log.append(DegradedEvent(component="director", detail="anchor_miss:date"))
     assert "degraded" not in detect_triggers(rt.state, rt.log, _pb())
     rt.log.append(DegradedEvent(component="director", detail="llm_error"))
     assert "degraded" in detect_triggers(rt.state, rt.log, _pb())
@@ -754,20 +765,23 @@ async def test_redirect_into_completed_checkpoint_is_blocked() -> None:
 
     rt = PlaybookRuntime(
         Playbook.from_yaml(CONTINUITY_YAML),
-        director_llm=SeqLLM([
-            {"slots": {"location": "Pune"}, "advance": "main.pitch"},
-            {"slots": {}, "advance": "main.ask_budget"},
-        ]),
+        director_llm=SeqLLM(
+            [
+                {"slots": {"location": "Pune"}, "advance": "main.pitch"},
+                {"slots": {}, "advance": "main.ask_budget"},
+            ]
+        ),
         http=FakeHttp([]),
     )
     await rt.start()
     await rt.on_user_text("Pune")
-    await rt.on_user_text("ok")           # now at ask_budget; pitch completed
+    await rt.on_user_text("ok")  # now at ask_budget; pitch completed
     assert "main.pitch" in rt.state.completed
 
     sup = Supervisor(_VerdictLLM('{"action": "none"}'), rt._pb)
-    decision = SupervisorDecision(action="redirect", to_checkpoint="main.pitch",
-                                  reason="caller demanded restart")
+    decision = SupervisorDecision(
+        action="redirect", to_checkpoint="main.pitch", reason="caller demanded restart"
+    )
     out = await sup.apply(rt, decision)
     assert out == []
     assert rt.state.checkpoint_id == "main.ask_budget"  # NOT rewound

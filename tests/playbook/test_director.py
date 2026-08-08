@@ -952,6 +952,7 @@ ANCHOR_YAML = textwrap.dedent(
             slots:
               appointment_date: {type: date}
               tier: {type: enum, values: [basic, premium]}
+              special_requests: {type: str}
           - id: done
             terminal: true
 """
@@ -1046,6 +1047,76 @@ async def test_anchor_exempts_resolve_from_slots() -> None:
     decision = await Director(pb, llm, anchor="enforce").evaluate(state)
     writes = {e.key: e.value for e in decision.events if isinstance(e, SlotWriteEvent)}
     assert writes.get("course_id") == "course_ddfd8225"
+    assert not _anchor_misses(decision)
+
+
+async def test_anchor_span_absent_from_utterance_misses() -> None:
+    # A span the caller never said proves nothing — no value fallback for a
+    # bad span: shadow audits, enforce skips the write.
+    pb, state = _anchor_state("any time later in the week is fine")
+    verdict = {
+        "slots": {"appointment_date": "2026-08-14"},
+        "spans": {"appointment_date": "next friday"},
+        "advance": None,
+        "note": None,
+    }
+    shadow = await Director(pb, CannedLLM(verdict)).evaluate(state)
+    assert any(
+        isinstance(e, SlotWriteEvent) and e.key == "appointment_date"
+        for e in shadow.events
+    )
+    assert _anchor_misses(shadow)
+    enforce = await Director(pb, CannedLLM(verdict), anchor="enforce").evaluate(state)
+    assert not any(
+        isinstance(e, SlotWriteEvent) and e.key == "appointment_date"
+        for e in enforce.events
+    )
+    assert _anchor_misses(enforce)
+
+
+async def test_anchor_anchored_span_cannot_launder_unrelated_date() -> None:
+    # Anti-laundering: an anchored span vouches for a date only if re-deriving
+    # the value from the span reproduces it — "friday" cannot vouch for an
+    # arbitrary date the caller never implied.
+    pb, state = _anchor_state("friday would be great")
+    llm = CannedLLM(
+        {
+            "slots": {"appointment_date": "2026-09-30"},
+            "spans": {"appointment_date": "friday"},
+            "advance": None,
+            "note": None,
+        }
+    )
+    decision = await Director(pb, llm, anchor="enforce").evaluate(state)
+    assert not any(
+        isinstance(e, SlotWriteEvent) and e.key == "appointment_date"
+        for e in decision.events
+    )
+    assert any(
+        e.detail == "anchor_miss:appointment_date" for e in _anchor_misses(decision)
+    )
+
+
+async def test_anchor_str_decline_convention_passes() -> None:
+    # Pins that str never re-derives: the decline convention maps "No" to
+    # "none", so an anchored span alone vouches for a str value. If str is
+    # ever tightened like date/time, this breaks loudly.
+    pb, state = _anchor_state("No")
+    llm = CannedLLM(
+        {
+            "slots": {"special_requests": "none"},
+            "spans": {"special_requests": "No"},
+            "advance": None,
+            "note": None,
+        }
+    )
+    decision = await Director(pb, llm, anchor="enforce").evaluate(state)
+    assert any(
+        isinstance(e, SlotWriteEvent)
+        and e.key == "special_requests"
+        and e.value == "none"
+        for e in decision.events
+    )
     assert not _anchor_misses(decision)
 
 
