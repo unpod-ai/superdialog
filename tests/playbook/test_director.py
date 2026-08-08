@@ -791,16 +791,24 @@ async def test_allow_empty_slot_accepts_empty_string_as_a_real_answer() -> None:
     writes = [e for e in decision.events if isinstance(e, SlotWriteEvent)]
     assert any(e.key == "special_requests" and e.value == "" for e in writes)
     assert not [e for e in decision.events if isinstance(e, DegradedEvent)]
-    # Other junk values are still rejected even on an allow_empty slot --
-    # only "" is exempted, "none"/"n/a" still mean "not really extracted".
+    # "none" is a SEMANTIC value, not structural junk: the verdict prompt's
+    # decline-convention makes it a stated answer (G4 redesign — a lexical
+    # filter junking a caller's "No." re-ask-looped a production call).
+    # Structural junk (the literal "null") is still rejected.
     llm2 = CannedLLM(
         {"slots": {"special_requests": "none"}, "advance": None, "note": None}
     )
     decision2 = await Director(pb, llm2).evaluate(state)
     writes2 = [e for e in decision2.events if isinstance(e, SlotWriteEvent)]
-    assert not [e for e in writes2 if e.key == "special_requests"]
-    degraded2 = [e for e in decision2.events if isinstance(e, DegradedEvent)]
-    assert any(e.detail == "junk_rejected:special_requests" for e in degraded2)
+    assert any(e.key == "special_requests" and e.value == "none" for e in writes2)
+    llm3 = CannedLLM(
+        {"slots": {"special_requests": "null"}, "advance": None, "note": None}
+    )
+    decision3 = await Director(pb, llm3).evaluate(state)
+    writes3 = [e for e in decision3.events if isinstance(e, SlotWriteEvent)]
+    assert not [e for e in writes3 if e.key == "special_requests"]
+    degraded3 = [e for e in decision3.events if isinstance(e, DegradedEvent)]
+    assert any(e.detail == "junk_rejected:special_requests" for e in degraded3)
 
 
 async def test_junk_slot_values_pass_under_legacy() -> None:
