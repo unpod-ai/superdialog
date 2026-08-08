@@ -245,10 +245,10 @@ async def test_volunteered_junk_still_rejected_and_multi_entity_stays_strict() -
     from superdialog.playbook.models import Playbook
     from tests.playbook.continuity_fixtures import CONTINUITY_YAML
 
-    rt = _rt([{"slots": {"budget": "None"}, "advance": None}])
+    rt = _rt([{"slots": {"budget": ""}, "advance": None}])
     await rt.start()
     await rt.on_user_text("hmm")
-    assert rt.state.slot_value("budget") is None  # junk guard still applies
+    assert rt.state.slot_value("budget") is None  # structural junk still rejected
     pb = Playbook.from_yaml(CONTINUITY_YAML).model_copy(update={"multi_entity": True})
     rt2 = _rt([{"slots": {"budget": "50L"}, "advance": None}], pb=pb)
     await rt2.start()
@@ -282,22 +282,23 @@ async def test_language_slot_filled_from_bridge_signal_under_v2() -> None:
     assert rt2.state.slot_value("preferred_language") is None
 
 
-async def test_none_after_bare_negative_answer_is_a_real_value() -> None:
-    """ENDSESSION golf log: agent asks 'any special requests?', caller says
-    'No.', director extracts 'None', junk guard rejects it -> re-ask loop
-    until the caller gives up ('Hello, are you there?'). A bare negative
-    answer makes 'none' a STATED value, not a placeholder."""
+async def test_semantic_none_is_trusted_regardless_of_utterance() -> None:
+    """The LLM owns the semantics of 'none': under the verdict prompt's
+    decline-convention it is a STATED answer (ENDSESSION golf log: the
+    caller's "No." was extracted as 'None' and blindly junked into a re-ask
+    loop). The engine no longer second-guesses it; only STRUCTURAL
+    non-values (JSON null, empty string, literal 'null') are rejected."""
     rt = _rt([{"slots": {"budget": "None"}, "advance": None, "note": None}])
     await rt.start()
     await rt.on_user_text("No.")
-    assert rt.state.slot_value("budget") == "none"  # canonicalized, written
+    assert rt.state.slot_value("budget") == "None"  # trusted as extracted
 
-    rt2 = _rt([{"slots": {"budget": "None"}, "advance": None, "note": None}])
+    rt2 = _rt([{"slots": {"budget": "none"}, "advance": None, "note": None}])
     await rt2.start()
-    await rt2.on_user_text("Nahi ji.")   # Hindi bare negative
+    await rt2.on_user_text("hmm what do you mean?")  # utterance is irrelevant
     assert rt2.state.slot_value("budget") == "none"
 
-    rt3 = _rt([{"slots": {"budget": "None"}, "advance": None, "note": None}])
+    rt3 = _rt([{"slots": {"budget": None}, "advance": None, "note": None}])
     await rt3.start()
-    await rt3.on_user_text("hmm what do you mean?")  # NOT a negative answer
-    assert rt3.state.slot_value("budget") is None    # junk rejection stands
+    await rt3.on_user_text("No.")
+    assert rt3.state.slot_value("budget") is None  # JSON null: structural

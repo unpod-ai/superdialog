@@ -65,20 +65,14 @@ _INVALID = object()  # sentinel: value failed validation; skip the write
 #: Values a verdict sometimes emits that mean "nothing extracted". Writing
 #: them as confirmed truth poisoned the Talker prompt every turn
 #: (configuration='None', city='' in production traversals).
-_JUNK_VALUES = {"", "none", "null", "n/a", "na", "not specified", "unknown"}
-
-#: Bare negative answers to an optional ask ("any special requests?"). When
-#: the caller SAYS no, 'none' is a stated value, not an extraction
-#: placeholder — junking it re-asks the question forever (ENDSESSION golf
-#: log: junk_rejected:special_requests fired 4x on the caller's "No." until
-#: they gave up with "Hello, are you there?"). Deliberately narrow: bare
-#: no/nothing/none forms (en + hi), optional trailing courtesy tokens.
-_NEGATIVE_ANSWER_RE = re.compile(
-    r"^\s*(?:no+|nope|nothing|none|nahi+n?|nahin|bas+)"
-    r"(?:[\s,]+(?:nothing|else|more|thanks?|thank you|ji|sir|madam))*"
-    r"[\s.,!।]*$",
-    re.IGNORECASE,
-)
+#: STRUCTURAL non-values only — artifacts no caller ever utters (JSON null,
+#: empty string, the literal token "null"). Semantic judgments ('none',
+#: 'unknown', 'not specified') belong to the LLM: the verdict prompt's
+#: decline-convention makes "none" a deliberate, stated value, and a lexical
+#: filter second-guessing it killed a production call (ENDSESSION golf log:
+#: the caller's "No." to "any special requests?" was extracted as 'None',
+#: blindly junked, and the checkpoint re-asked until the caller hung up).
+_JUNK_VALUES = {"", "null"}
 
 
 def _is_junk(value: Any) -> bool:
@@ -403,7 +397,11 @@ def _verdict_prompt(
         "SLOT RULE: Only extract a slot when the user EXPLICITLY states that value "
         "in this utterance. Never infer slots from ambiguous yes/no answers to "
         "unrelated questions. A value the caller volunteers for a DIFFERENT "
-        "step's slot may also be extracted — same explicitness bar. Exception: "
+        "step's slot may also be extracted — same explicitness bar. When the "
+        'caller explicitly DECLINES an optional ask ("No", "Nothing", "Nahi") '
+        'set that slot to "none" — that is a real answer. For slots the caller '
+        "did NOT address, OMIT the key entirely; never fill it with null or a "
+        "placeholder. Exception: "
         "slots listed under CANDIDATE RESOLUTION "
         "below — set those by matching the caller's spoken name to a candidate id.\n\n"
         f"Interrupts:\n{interrupt_lines}\n"
@@ -695,16 +693,6 @@ class Director:
                 slot_spec.values or ()
             )
             if (
-                not self._pb.legacy_continuity
-                and not declared_member
-                and (value is None or _is_junk(value))
-                and _NEGATIVE_ANSWER_RE.match(_last_user_text(state))
-            ):
-                # The caller answered a bare "No/Nothing/Nahi": 'none' IS the
-                # stated value for this slot, not a placeholder. Canonicalize
-                # and write it so the checkpoint can move on.
-                value = "none"
-            elif (
                 not self._pb.legacy_continuity
                 and not declared_member
                 and (value is None or _is_junk(value))
