@@ -27,14 +27,28 @@ SpokenLine = str | Callable[[ConversationState], str]
 
 
 def _excise(buf: str, folded: list[str]) -> str:
-    """Remove every casefolded occurrence of each phrase from ``buf``."""
-    low = buf.casefold()
+    """Remove every casefolded occurrence of each phrase from ``buf``.
+
+    ``casefold()`` can expand a character ('ß' → 'ss'), so match indices on
+    the folded text need not line up with ``buf`` — searching the folded
+    text and slicing ``buf`` at those indices mangles neighbors and, when
+    the match index lands past ``len(buf)``, removes nothing and loops
+    forever. Matches are therefore found on a per-character folded
+    alignment and mapped back to original indices; a match ending inside
+    one character's expansion removes that whole character.
+    """
     for p in folded:
-        i = low.find(p)
-        while i != -1:
-            buf = buf[:i] + buf[i + len(p) :]
-            low = buf.casefold()
-            i = low.find(p)
+        while True:
+            low: list[str] = []
+            owner: list[int] = []  # original index owning each folded char
+            for j, ch in enumerate(buf):
+                f = ch.casefold()
+                low.append(f)
+                owner.extend([j] * len(f))
+            i = "".join(low).find(p)
+            if i == -1:
+                break
+            buf = buf[: owner[i]] + buf[owner[i + len(p) - 1] + 1 :]
     return buf
 
 

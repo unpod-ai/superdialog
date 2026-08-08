@@ -1,4 +1,5 @@
 import re
+import signal
 import textwrap
 
 import anyio
@@ -6,7 +7,13 @@ import anyio
 from superdialog.playbook.events import AdvanceEvent, EventLog, UtteranceEvent
 from superdialog.playbook.models import Playbook
 from superdialog.playbook.state import ConversationState
-from superdialog.playbook.talker import FILLER, HOLD_LINE, RECOVERY_LINE, Talker
+from superdialog.playbook.talker import (
+    FILLER,
+    HOLD_LINE,
+    RECOVERY_LINE,
+    Talker,
+    _excise,
+)
 from tests.playbook.test_models import MINIMAL_YAML
 
 
@@ -647,6 +654,51 @@ async def test_recovery_line_respects_never_say() -> None:
     text = "".join(c.text for c in chunks)
     assert "say that again" not in text.casefold()
     assert "Sorry" in text  # rest of the recovery line survives
+
+
+def test_excise_terminates_on_casefold_expanding_text() -> None:
+    """casefold() can expand ('ß' → 'ss'), shifting folded indices past
+    len(buf); the old index-reusing loop then removed nothing and never
+    terminated. SIGALRM turns a hang into a failure."""
+
+    def _timeout(signum: int, frame: object) -> None:
+        raise TimeoutError("_excise did not terminate")
+
+    old = signal.signal(signal.SIGALRM, _timeout)
+    signal.alarm(2)
+    try:
+        assert _excise("ßßßßßßx", ["x"]) == "ßßßßßß"
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old)
+
+
+def test_excise_maps_match_back_to_original_indices() -> None:
+    """An expanding char BEFORE the match must not shift the excision window
+    onto neighboring characters."""
+    out = _excise("Straße gut — bear with me bitte", ["bear with me"])
+    assert out == "Straße gut —  bitte"
+
+
+async def test_stream_failure_recovery_line_respects_never_say() -> None:
+    """The attempt-2 stream-failure recovery line must honor never_say."""
+    pb, state = _gated_never_say_state("say that again")
+    dead = Talker(pb, StreamLLM([], fail_times=99))
+    text = "".join([c.text async for c in dead.speak(state)])
+    assert "say that again" not in text.casefold()
+    assert "Sorry" in text
+
+
+async def test_stream_failure_recovery_falls_back_to_default_when_excised() -> None:
+    """A custom recovery line fully excised by never_say falls back to the
+    built-in default (itself excised) rather than speaking punctuation."""
+    pb, state = _gated_never_say_state("totally custom line")
+    dead = Talker(
+        pb, StreamLLM([], fail_times=99), recovery_line="Totally custom line!"
+    )
+    text = "".join([c.text async for c in dead.speak(state)])
+    assert "totally custom line" not in text.casefold()
+    assert RECOVERY_LINE in text
 
 
 async def test_broken_line_provider_degrades_to_defaults() -> None:
