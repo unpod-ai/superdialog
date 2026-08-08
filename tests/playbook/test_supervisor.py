@@ -707,7 +707,6 @@ async def test_redirect_into_completed_checkpoint_is_blocked() -> None:
     restart-demander eval showed the supervisor honoring a caller's restart
     demand the Director had deflected twice, re-running the pitch (no_reentry
     FAIL). Backward state correction is rewind's job; redirect routes forward."""
-    import json as _json
 
     from superdialog.playbook.models import Playbook
     from superdialog.playbook.runtime import PlaybookRuntime
