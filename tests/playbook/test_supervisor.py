@@ -607,9 +607,26 @@ async def test_apply_rewind_bad_version_degrades() -> None:
     sup = Supervisor(_VerdictLLM({}), _pb())
     await sup.apply(rt, SupervisorDecision(action="rewind", to_version=99))
     assert any(
-        isinstance(e, DegradedEvent) and e.component == "supervisor"
+        isinstance(e, DegradedEvent)
+        and e.component == "supervisor"
+        and e.detail == "rewind_bad_version:99"
         for e in rt.log.events
     )
+
+
+async def test_apply_rewind_none_version_degrades() -> None:
+    rt = _runtime()
+    before = rt.state.checkpoint_id
+    sup = Supervisor(_VerdictLLM({}), _pb())
+    await sup.apply(rt, SupervisorDecision(action="rewind", to_version=None))
+    assert any(
+        isinstance(e, DegradedEvent)
+        and e.component == "supervisor"
+        and e.detail == "rewind_bad_version:None"
+        for e in rt.log.events
+    )
+    assert rt.state.checkpoint_id == before
+    assert not any(isinstance(e, RevertEvent) for e in rt.log.events)
 
 
 async def test_apply_handover_marks_scratchpad_and_steers() -> None:

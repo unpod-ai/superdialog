@@ -307,10 +307,10 @@ class Supervisor:
             return pass_through
         if decision.action == "rewind":
             v = decision.to_version
-            if v is None or not 0 <= v < runtime.state.version:
+            if v is None:
                 runtime.log.append(
                     DegradedEvent(
-                        component="supervisor", detail=f"rewind_bad_version:{v}"
+                        component="supervisor", detail="rewind_bad_version:None"
                     )
                 )
                 return []
@@ -323,13 +323,21 @@ class Supervisor:
             pending_confirm = (runtime.state.steering_note or "").startswith(
                 COMPENSATE_MARKER
             )
-            outcome = await runtime.rewind(
-                v,
-                decision.reason or "supervisor rewind",
-                by="supervisor",
-                confirmed=decision.confirmed and pending_confirm,
-                repair_note=note or None,
-            )
+            try:
+                outcome = await runtime.rewind(
+                    v,
+                    decision.reason or "supervisor rewind",
+                    by="supervisor",
+                    confirmed=decision.confirmed and pending_confirm,
+                    repair_note=note or None,
+                )
+            except ValueError:
+                runtime.log.append(
+                    DegradedEvent(
+                        component="supervisor", detail=f"rewind_bad_version:{v}"
+                    )
+                )
+                return []
             if outcome.status == "needs_confirmation":
                 runtime.log.append(
                     SteeringNoteEvent(
