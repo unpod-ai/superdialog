@@ -341,6 +341,66 @@ async def _filter_generic_tag_leak(tokens: AsyncIterator[str]) -> AsyncIterator[
         yield buf
 
 
+# A fourth hallucination shape observed in production: the Talker speaks its
+# own internal stage-direction/narration text verbatim instead of staying
+# silent, e.g. "(Zero words - system fires availability check for DLF Golf
+# on 2026-08-12 at 09:00 for one player)" -- a parenthetical describing what
+# the SYSTEM will do, not something a caller-facing voice agent would ever
+# say. Real spoken turns in this domain never open with a parenthesis (TTS
+# has no way to convey one anyway), so the trigger is deliberately broad:
+# buffer from the first character if it's "(", track paren depth, and on a
+# balanced close, discard the whole span only if it contains an internal-
+# narration marker -- otherwise flush it as ordinary (if unusual) speech,
+# same conservative default as _filter_structured_output_leak.
+_STAGE_DIRECTION_MARKER_RE = re.compile(
+    r"zero words|system fires|system will|silently (?:call|fire)|no speech",
+    re.IGNORECASE,
+)
+
+
+async def _filter_stage_direction_leak(tokens: AsyncIterator[str]) -> AsyncIterator[str]:
+    """Suppress a turn whose entire output is a hallucinated stage-direction
+    narration instead of natural speech. See module comment above."""
+    buf = ""
+    watching: bool | None = None
+    depth = 0
+    async for token in tokens:
+        if watching is None:
+            buf += token
+            stripped = buf.lstrip()
+            if not stripped:
+                continue
+            watching = stripped[0] == "("
+            if not watching:
+                yield buf
+                buf = ""
+                continue
+            for ch in buf:
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+        elif watching:
+            buf += token
+            for ch in token:
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+        else:
+            yield token
+            continue
+
+        if watching and depth <= 0:
+            flush = not _STAGE_DIRECTION_MARKER_RE.search(buf)
+            if flush:
+                yield buf
+            buf = ""
+            watching = None
+    if buf:
+        yield buf
+
+
 class StreamsLLM(Protocol):
     """Anything that can stream plain-text tokens for a chat prompt."""
 
@@ -502,18 +562,21 @@ class Talker:
                 try:
                     # never_say enforcement is deterministic, not prompt-hope:
                     # authored phrases are excised from the stream before TTS.
-                    # Structured (JSON) and both tag-shaped leakage variants
-                    # are all stripped first (see _filter_structured_output_leak
-                    # / _filter_tool_call_leakage / _filter_generic_tag_leak)
+                    # Structured (JSON), both tag-shaped leakage variants, and
+                    # the stage-direction leak are all stripped first (see
+                    # _filter_structured_output_leak / _filter_tool_call_leakage
+                    # / _filter_generic_tag_leak / _filter_stage_direction_leak)
                     # so none of them can smuggle a never_say phrase past the
-                    # excision pass by splitting it across a tag/brace
-                    # boundary. JSON detection runs outermost since it needs
-                    # the stream's true first character, before any other
-                    # filter touches it.
+                    # excision pass by splitting it across a tag/brace/paren
+                    # boundary. JSON and stage-direction detection both run
+                    # outermost since they need the stream's true first
+                    # character, before any other filter touches it.
                     filtered = _filter_never_say(
                         _filter_generic_tag_leak(
                             _filter_tool_call_leakage(
-                                _filter_structured_output_leak(stream)
+                                _filter_stage_direction_leak(
+                                    _filter_structured_output_leak(stream)
+                                )
                             )
                         ),
                         never_say,

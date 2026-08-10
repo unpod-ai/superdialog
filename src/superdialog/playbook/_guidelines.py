@@ -299,6 +299,11 @@ _WEEKDAYS = {
 
 _N_DAYS_RE = re.compile(r"^(?:in\s+)?(\d+)\s+days?(?:\s+from\s+now)?$")
 _N_WEEKS_RE = re.compile(r"^(?:in\s+)?(\d+)\s+weeks?(?:\s+from\s+now)?$")
+# Real production case: caller said "a day after tomorrow" (meaning the day
+# after tomorrow, i.e. +2 days) -- unresolved this fell through as a literal
+# string into the availability API URL and 500'd. "a"/"one" both mean 1 (not
+# caught by _sub_ordinal_words, which only maps ordinal words like "ninth").
+_DAY_AFTER_TOMORROW_RE = re.compile(r"^(?:(\d+|a|one)\s+)?days?\s+after\s+tomorrow$")
 _WEEKDAY_RE = re.compile(
     r"^(?:(this|next|coming|upcoming)\s+)?(" + "|".join(_WEEKDAYS) + r")$"
 )
@@ -435,6 +440,10 @@ def normalize_date(value: object, now: datetime | None):
         m = _N_WEEKS_RE.match(v)
         if m:
             return (now.date() + timedelta(days=7 * int(m.group(1)))).isoformat()
+        m = _DAY_AFTER_TOMORROW_RE.match(v)
+        if m:
+            count = 1 if m.group(1) in (None, "a", "one") else int(m.group(1))
+            return (now.date() + timedelta(days=1 + count)).isoformat()
         if v == "next week":
             return (now.date() + timedelta(days=7)).isoformat()
         m = _WEEKDAY_RE.match(v)
