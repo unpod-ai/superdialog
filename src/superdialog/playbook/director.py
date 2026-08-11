@@ -99,6 +99,19 @@ _WRAP_MARKER = "Caller wants to end the call"
 #: types -- "byeee", "byee", "byes" -- without loosening the word itself.
 _GOODBYE_RE = re.compile(r"\b(good\s?bye+|bye+s?)\b", re.IGNORECASE)
 
+# A bare confirmation is materially different from a request that happens to
+# include an affirmative word ("yes, make it 10 AM").  Keep this deliberately
+# narrow: it is only used to select a uniquely-authored confirmation rule, not
+# to extract or mutate any slots.
+_BARE_AFFIRMATION_RE = re.compile(
+    r"^(?:(?:yes|yeah|yep|sure|ok(?:ay)?|please|proceed|haan|theek hai|"
+    r"book it|hold (?:it|that)|go ahead)[\s,.!?:-]*)+$",
+    re.IGNORECASE,
+)
+_CONFIRMATION_RULE_RE = re.compile(
+    r"^\s*caller\s+(?:confirms?|accepts?|agrees?)\b", re.IGNORECASE
+)
+
 
 def _clear_goodbye(text: str) -> bool:
     """True only for an unambiguous spoken close.
@@ -682,6 +695,39 @@ class Director:
                 return events
         return []
 
+    def _bare_affirmation_advance(
+        self, cp: Checkpoint, state: ConversationState, cp_ref: str
+    ) -> list[Event]:
+        """Advance a resolved, uniquely-authored confirmation without an LLM.
+
+        A slot offer commonly has a confirmation rule beside change/recheck
+        rules. Once the opaque offered id is already resolved, a caller saying
+        only "yes" cannot supply the changed date/time required by those other
+        paths. Letting an LLM choose among them caused confirmations to re-run
+        availability with stale values and left callers in a silent loop.
+        """
+        if not _BARE_AFFIRMATION_RE.fullmatch(_last_user_text(state).strip()):
+            return []
+        matches = [
+            rule
+            for rule in cp.advance_when
+            if rule.judge == "llm"
+            and _CONFIRMATION_RULE_RE.search(rule.when)
+            and self._requires_met(rule.requires, cp, state)
+        ]
+        if len(matches) != 1:
+            return []
+        rule = matches[0]
+        return [
+            AdvanceEvent(
+                from_checkpoint=cp_ref,
+                to_checkpoint=rule.to,
+                rule=rule.rule_id,
+                by="director",
+                corroborated=True,
+            )
+        ]
+
     async def evaluate(
         self, state: ConversationState, expr_only: bool = False
     ) -> DirectorDecision:
@@ -696,6 +742,10 @@ class Director:
             return DirectorDecision(events=expr_events)
         if expr_only:
             return DirectorDecision()
+
+        affirmation_events = self._bare_affirmation_advance(cp, state, cp_ref)
+        if affirmation_events:
+            return DirectorDecision(events=affirmation_events)
 
         # Build the prompt outside the try-block: a prompt-construction bug is
         # a programming error, not LLM degradation.

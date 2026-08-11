@@ -311,6 +311,14 @@ class Policies(BaseModel):
     # Max post-filler wait for the Director before the hold line is spoken;
     # short enough that a caller doesn't feel disengaged.
     hold_timeout: float = Field(default=4.0, gt=0)
+    # Extra wait AFTER the hold line for a hard-gated pipeline that's still
+    # working (not down) -- 0 (default) ends the turn on the hold line exactly
+    # as before. A playbook whose checkpoints chain several external HTTP
+    # calls (routinely 3-8s total) sets this so the Director resolving inside
+    # this window still flows into real spoken content instead of being
+    # orphaned: the turn already ended on the hold line with nothing left to
+    # speak the pipeline's result once it lands.
+    extended_timeout: float = Field(default=0.0, ge=0)
     # Author-facing barrier lines (spoken at hard-gated checkpoints while the
     # Director settles). None keeps the Talker's built-in English defaults —
     # a persona whose call runs in another language authors these here

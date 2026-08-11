@@ -431,6 +431,7 @@ class Talker:
         token_budget: int = 4000,
         barrier_timeout: float = 0.4,
         hold_timeout: float = 4.0,
+        extended_timeout: float = 0.0,
         filler: SpokenLine = FILLER,
         hold_line: SpokenLine = HOLD_LINE,
         recovery_line: str = RECOVERY_LINE,
@@ -440,6 +441,16 @@ class Talker:
         self._budget = token_budget
         self._barrier_timeout = barrier_timeout
         self._hold_timeout = hold_timeout
+        # 0 (default) preserves the pre-existing behavior exactly: give up
+        # and end the turn the instant hold_timeout expires. A host whose
+        # hard-gated pipelines routinely run longer than barrier+hold (e.g.
+        # 2-3 chained external HTTP calls) can set this to keep waiting
+        # instead of abandoning an in-flight pipeline as if the Director
+        # were down -- "still working, just slow" and "genuinely dead" are
+        # not the same failure, and treating every case as the latter turns
+        # a live pipeline's eventual result into dead air with nothing left
+        # to speak it once it lands.
+        self._extended_timeout = extended_timeout
         self._filler = filler
         self._hold_line = hold_line
         self._recovery_line = recovery_line
@@ -515,17 +526,30 @@ class Talker:
                     )
                 with anyio.move_on_after(self._hold_timeout):
                     fresh = await director_done()
-            if fresh is None:  # Director is down: degrade politely, never hang
+            if fresh is None:
+                # Not yet resolved after barrier+hold. Speak the hold line as
+                # a NON-final chunk (not "Director is down" -- most of the
+                # time it's still working, just slow) and, if the host opted
+                # into extended_timeout, keep waiting instead of abandoning
+                # the in-flight pipeline. extended_timeout=0 (default) means
+                # the next check below fails immediately, reproducing the
+                # old give-up-now behavior byte-for-byte.
                 hold_text = _excise_line(
                     self._resolve_line(self._hold_line, state, HOLD_LINE), folded
                 ) or _excise_line(HOLD_LINE, folded)
                 yield SpeechChunk(
                     text=hold_text,
-                    final=True,
                     spoke_from_version=state.version,
                     filler=True,
                 )
-                return
+                if self._extended_timeout > 0:
+                    with anyio.move_on_after(self._extended_timeout):
+                        fresh = await director_done()
+                if fresh is None:  # genuinely stuck/down even after every window
+                    yield SpeechChunk(
+                        text="", final=True, spoke_from_version=state.version
+                    )
+                    return
             state = fresh
             cp = (
                 self._pb.checkpoint(state.checkpoint_id)

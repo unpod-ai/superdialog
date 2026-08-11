@@ -373,6 +373,80 @@ async def test_hard_gate_hold_line_when_director_never_comes() -> None:
     assert any(HOLD_LINE in t for t in received)
 
 
+async def test_extended_timeout_zero_still_gives_up_after_hold_with_one_final_chunk() -> None:
+    # Default (extended_timeout=0) must reproduce the old give-up-now shape
+    # exactly: hold line spoken, turn ends, exactly one final chunk overall.
+    pb, state = _state("booking.confirm")
+
+    async def never() -> ConversationState:
+        await anyio.sleep(60)
+        return state
+
+    talker = Talker(pb, StreamLLM([]), barrier_timeout=0.02, hold_timeout=0.05)
+    chunks = [c async for c in talker.speak(state, director_done=never)]
+    assert sum(c.final for c in chunks) == 1
+    assert any(HOLD_LINE in c.text for c in chunks)
+    assert "Your booking is held." not in "".join(c.text for c in chunks)
+
+
+async def test_extended_timeout_resumes_pipeline_result_instead_of_abandoning_it() -> None:
+    # The bug this fixes: a pipeline that's still working (not down) after
+    # hold_timeout used to be treated identically to a dead Director -- the
+    # turn ended with only the hold line, and whatever the pipeline produced
+    # a moment later was orphaned (nothing left in this turn to speak it).
+    # With extended_timeout set, the Director resolving inside that extra
+    # window must still flow into the real spoken content, in the same turn.
+    pb, state = _state("booking.confirm")
+    event = anyio.Event()
+
+    async def slow_but_alive() -> ConversationState:
+        await event.wait()
+        return state
+
+    talker = Talker(
+        pb,
+        StreamLLM([]),
+        barrier_timeout=0.02,
+        hold_timeout=0.05,
+        extended_timeout=10.0,
+    )
+    received: list[str] = []
+
+    async def consume() -> None:
+        async for c in talker.speak(state, director_done=slow_but_alive):
+            received.append(c.text)
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(consume)
+        await anyio.sleep(0.2)  # past barrier_timeout AND hold_timeout
+        assert any(HOLD_LINE in t for t in received)  # hold line already spoken
+        assert "Your booking is held." not in "".join(received)  # not orphaned yet
+        event.set()  # pipeline finally settles, well within extended_timeout
+    assert "".join(received).endswith("Your booking is held.")
+
+
+async def test_extended_timeout_still_gives_up_if_director_never_comes() -> None:
+    # extended_timeout is a bigger window, not an infinite one -- "never hang"
+    # must still hold once every window (barrier + hold + extended) expires.
+    pb, state = _state("booking.confirm")
+
+    async def never() -> ConversationState:
+        await anyio.sleep(60)
+        return state
+
+    talker = Talker(
+        pb,
+        StreamLLM([]),
+        barrier_timeout=0.02,
+        hold_timeout=0.05,
+        extended_timeout=0.05,
+    )
+    with anyio.fail_after(2):
+        chunks = [c async for c in talker.speak(state, director_done=never)]
+    assert sum(c.final for c in chunks) == 1
+    assert any(HOLD_LINE in c.text for c in chunks)
+
+
 async def test_abort_closes_inner_stream() -> None:
     """Host abort (aclose, e.g. LiveKit barge-in) must close the inner stream."""
     pb, state = _state("booking.collect")

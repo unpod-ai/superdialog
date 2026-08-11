@@ -160,6 +160,62 @@ async def test_python_tool_and_arg_coercion() -> None:
     assert "exploded" in (result2.error or "")
 
 
+async def test_python_tool_applies_env_and_slot_updates() -> None:
+    # Previously env_updates/slot_updates only fired on the type:http path,
+    # forcing a python tool that needed to write a slot into a redundant
+    # second HTTP call whose only purpose was to reach that code path (see
+    # the golf playbook's action-slot-exact-check, which re-fetched
+    # availability from scratch a second time purely to get slot_id written
+    # via slot_updates). A python tool's own return value must flow through
+    # the same field-update machinery as an http response.
+    # A python tool's return value IS the `data` payload directly -- there is
+    # no separate envelope to dig through the way an http response has one
+    # (that "data.x" shape is this test suite's REST convention, not a
+    # framework rule), so the update paths key straight off the return dict.
+    spec = ToolSpec(
+        id="pick_slot",
+        type="python",
+        store_response_as="pick_result",
+        env_updates={"picked_course": "course_id"},
+        slot_updates={"slot_id": "matches.0.slot_id"},
+    )
+
+    async def pick_fn(args: dict, state: ConversationState) -> dict:
+        return {"course_id": "course_1", "matches": [{"slot_id": "slot_abc"}]}
+
+    ex = ToolExecutor(http=FakeHttp([]), python_tools={"pick_slot": pick_fn})
+    events = await ex.execute(spec, _state())
+    kinds = [type(e).__name__ for e in events]
+    assert kinds == [
+        "ToolCallEvent",
+        "ToolResultEvent",
+        "EnvWriteEvent",
+        "SlotWriteEvent",
+    ]
+    assert events[2].key == "picked_course" and events[2].value == "course_1"
+    assert events[3].key == "slot_id" and events[3].value == "slot_abc"
+
+
+async def test_python_tool_failure_skips_field_updates() -> None:
+    # A failed python tool must not write env/slots from a data shape that
+    # was never actually produced.
+    spec = ToolSpec(
+        id="pick_slot_boom",
+        type="python",
+        store_response_as="pick_result",
+        slot_updates={"slot_id": "data.slot_id"},
+    )
+
+    async def boom_fn(args: dict, state: ConversationState) -> dict:
+        raise RuntimeError("no availability data")
+
+    ex = ToolExecutor(http=FakeHttp([]), python_tools={"pick_slot_boom": boom_fn})
+    events = await ex.execute(spec, _state())
+    kinds = [type(e).__name__ for e in events]
+    assert kinds == ["ToolCallEvent", "ToolResultEvent"]
+    assert events[1].ok is False
+
+
 async def test_unregistered_python_tool_degrades() -> None:
     spec = ToolSpec(id="ghost", type="python", store_response_as="ghost_result")
     ex = ToolExecutor(http=FakeHttp([]))  # no python tools registered

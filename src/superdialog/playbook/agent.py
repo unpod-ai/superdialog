@@ -117,6 +117,7 @@ class PlaybookAgent:
         token_budget: int = 4000,
         barrier_timeout: float = 4.0,
         hold_timeout: float | None = None,
+        extended_timeout: float | None = None,
         traversal_dir: str | Path | None = None,
         traversal_source: str = "",
         traversal_model: str = "",
@@ -177,6 +178,11 @@ class PlaybookAgent:
                 hold_timeout
                 if hold_timeout is not None
                 else playbook.policies.hold_timeout
+            ),
+            extended_timeout=(
+                extended_timeout
+                if extended_timeout is not None
+                else playbook.policies.extended_timeout
             ),
             **_line_kwargs,
         )

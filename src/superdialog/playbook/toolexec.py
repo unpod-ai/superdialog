@@ -161,6 +161,56 @@ def coerce_args(args: dict[str, Any], specs: dict[str, SlotSpec]) -> dict[str, A
     return out
 
 
+def _field_update_events(spec: ToolSpec, data: Any) -> list[Event]:
+    """``env_updates``/``slot_updates`` events for a successful ``data`` payload.
+
+    Shared by both the ``type: http`` and ``type: python`` execution paths —
+    a python tool that never sets either mapping is unaffected (empty dicts,
+    empty return), so this is purely additive: a python tool can now
+    deterministically resolve a slot/env value (e.g. picking a candidate id
+    out of data it already fetched) without needing a second, redundant
+    tool call whose only purpose was to get onto the http path that used to
+    be the only place these updates applied.
+    """
+    events: list[Event] = []
+    for env_key, path in spec.env_updates.items():
+        value = _dig(data, path)
+        if value is not None:
+            events.append(EnvWriteEvent(key=env_key, value=str(value)))
+        else:
+            # Path missed the response shape (e.g. `data.x` against a
+            # flat body). env stays unset and downstream tools render
+            # an empty header/arg — silently. Surface it.
+            _log.warning(
+                "[tool] ⚠ %s env_updates '%s': path '%s' not found "
+                "in response — env unset",
+                spec.id,
+                env_key,
+                path,
+            )
+    # slot_updates: write a resolved value straight into a slot (e.g. a
+    # name->id lookup the Director can't resolve itself). Applied to the
+    # log at pipeline end (state is an event-fold), so downstream nodes
+    # read the fresh value; NOT folded mid-pipeline (see pipeline._refold)
+    # so a later step in the same pipeline should read it from env, not
+    # the slot. Status confirmed: a tool resolution is authoritative.
+    for slot_key, path in spec.slot_updates.items():
+        value = _dig(data, path)
+        if value is not None:
+            events.append(
+                SlotWriteEvent(key=slot_key, value=value, status="confirmed", by="tool")
+            )
+        else:
+            _log.warning(
+                "[tool] ⚠ %s slot_updates '%s': path '%s' not found "
+                "in response — slot unset",
+                spec.id,
+                slot_key,
+                path,
+            )
+    return events
+
+
 def _idempotency_key(spec: ToolSpec, url: str, body: Any) -> str:
     """Deterministic idempotency key for a side-effecting tool call.
 
@@ -245,6 +295,7 @@ class ToolExecutor:
                         data=data,
                     )
                 )
+                events.extend(_field_update_events(spec, data))
             except Exception as exc:  # tool failure is data, not a crash
                 events.append(
                     ToolResultEvent(
@@ -406,46 +457,7 @@ class ToolExecutor:
         )
         events.append(result)
         if ok:
-            for env_key, path in spec.env_updates.items():
-                value = _dig(data, path)
-                if value is not None:
-                    events.append(EnvWriteEvent(key=env_key, value=str(value)))
-                else:
-                    # Path missed the response shape (e.g. `data.x` against a
-                    # flat body). env stays unset and downstream tools render
-                    # an empty header/arg — silently. Surface it.
-                    _log.warning(
-                        "[tool] ⚠ %s env_updates '%s': path '%s' not found "
-                        "in response — env unset",
-                        spec.id,
-                        env_key,
-                        path,
-                    )
-            # slot_updates: write a resolved value straight into a slot (e.g. a
-            # name->id lookup the Director can't resolve itself). Applied to the
-            # log at pipeline end (state is an event-fold), so downstream nodes
-            # read the fresh value; NOT folded mid-pipeline (see pipeline._refold)
-            # so a later step in the same pipeline should read it from env, not
-            # the slot. Status confirmed: a tool resolution is authoritative.
-            for slot_key, path in spec.slot_updates.items():
-                value = _dig(data, path)
-                if value is not None:
-                    events.append(
-                        SlotWriteEvent(
-                            key=slot_key,
-                            value=value,
-                            status="confirmed",
-                            by="tool",
-                        )
-                    )
-                else:
-                    _log.warning(
-                        "[tool] ⚠ %s slot_updates '%s': path '%s' not found "
-                        "in response — slot unset",
-                        spec.id,
-                        slot_key,
-                        path,
-                    )
+            events.extend(_field_update_events(spec, data))
         return events
 
 

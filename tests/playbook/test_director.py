@@ -57,6 +57,44 @@ async def test_extracts_slots_and_advances_when_requires_met() -> None:
     assert adv and adv[0].to_checkpoint == "booking.confirm"
 
 
+async def test_bare_affirmation_prefers_the_unique_confirm_rule() -> None:
+    pb = Playbook.from_yaml(
+        textwrap.dedent(
+            """
+            journeys:
+              main:
+                checkpoints:
+                  - id: present_slot
+                    slots:
+                      slot_id: {gate: soft}
+                      date: {gate: soft}
+                    advance_when:
+                      - when: Caller confirms they want to hold the offered slot
+                        to: main.hold
+                        requires: [slot_id]
+                      - when: Caller asks for a different date or time
+                        to: main.recheck
+                        requires: [date]
+                  - id: hold
+                  - id: recheck
+            """
+        )
+    )
+    log = EventLog()
+    log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint="main.present_slot", rule="init"))
+    log.append(SlotWriteEvent(key="slot_id", value="slot_0900", status="confirmed", by="tool"))
+    log.append(SlotWriteEvent(key="date", value="2026-08-13", status="confirmed", by="tool"))
+    log.append(UtteranceEvent(role="user", text="Yes, yes."))
+    state = ConversationState.fold(log, playbook=pb)
+    llm = CannedLLM({"slots": {}, "advance": "main.recheck", "note": None})
+
+    decision = await Director(pb, llm).evaluate(state)
+
+    advances = [e for e in decision.events if isinstance(e, AdvanceEvent)]
+    assert [e.to_checkpoint for e in advances] == ["main.hold"]
+    assert llm.calls == []
+
+
 async def test_requires_blocks_advance_and_steers() -> None:
     pb, state = _state()
     llm = CannedLLM(
