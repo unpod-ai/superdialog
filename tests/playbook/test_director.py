@@ -19,12 +19,25 @@ from tests.playbook.test_models import MINIMAL_YAML
 
 
 class CannedLLM:
+    """Fixed-payload fake for the main verdict call.
+
+    Director now confirms a claimed goodbye interrupt with a second,
+    dedicated classifier call (Director._classify_goodbye) before honoring
+    it. That call is a distinct completion this fake also receives -- answer
+    it separately (always confirming) so existing tests, which exist to
+    isolate the deterministic _confirmed_goodbye/_clear_goodbye text guard,
+    keep exercising exactly that guard rather than being gated by this fake's
+    single canned payload having no "goodbye" key.
+    """
+
     def __init__(self, payload: dict) -> None:
         self.payload = payload
         self.calls: list[list[dict]] = []
 
     async def complete(self, messages, **kwargs) -> str:
         self.calls.append(messages)
+        if any("strict binary classifier" in m.get("content", "") for m in messages):
+            return json.dumps({"goodbye": True})
         return json.dumps(self.payload)
 
 
@@ -153,7 +166,9 @@ async def test_interrupt_overrides_rules() -> None:
     # A goodbye at a step with REQUIRED slots unfilled first gets ONE steer to
     # collect them (terminal-interrupt slot guard); interrupts still override
     # advance rules — proven with the required slots filled in the verdict.
-    pb, state = _state()
+    # _confirmed_goodbye requires real closing evidence in the caller's own
+    # words, so the fixture's last user turn must actually contain one.
+    pb, state = _state(extra_events=[UtteranceEvent(role="user", text="Okay, goodbye.")])
     llm = CannedLLM(
         {
             "slots": {"city": "Pune", "date": "2026-07-05"},

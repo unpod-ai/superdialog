@@ -10,7 +10,9 @@ staying silent on frustration ('I already told you') and embedded byes.
 
 import textwrap
 
-from superdialog.playbook.director import _clear_goodbye, _false_goodbye
+import pytest
+
+from superdialog.playbook.director import _clear_goodbye, _confirmed_goodbye
 from superdialog.playbook.events import SessionEndEvent
 from superdialog.playbook.models import Playbook
 from superdialog.playbook.runtime import PlaybookRuntime
@@ -78,36 +80,156 @@ def test_clear_goodbye_ignores_frustration_and_embedded_bye() -> None:
     )
 
 
-def test_false_goodbye_recognizes_bare_negation() -> None:
-    # The real production case: "any add-ons or special requests?" -> "No."
-    # routed straight to call_end mid-booking, before payment link or
-    # confirmation, because the Director LLM claimed the goodbye interrupt.
-    assert _false_goodbye("No.")
-    assert _false_goodbye("Nope.")
-    assert _false_goodbye("No thanks.")
-    assert _false_goodbye("Nothing, thanks.")
-    assert _false_goodbye("Nahi")
-    assert _false_goodbye("Bas")
+def test_confirmed_goodbye_rejects_bare_negation_and_affirmation() -> None:
+    # Real production cases: "any add-ons or special requests?" -> "No."
+    # and, on the opposite polarity, "did you want to change something?" ->
+    # "Yes." both routed straight to call_end mid-booking because the
+    # Director LLM claimed the goodbye interrupt. Neither carries a bye
+    # token or an explicit close phrase, so neither clears this check.
+    assert not _confirmed_goodbye("No.")
+    assert not _confirmed_goodbye("Nope.")
+    assert not _confirmed_goodbye("No thanks.")
+    assert not _confirmed_goodbye("Nothing, thanks.")
+    assert not _confirmed_goodbye("Nahi")
+    assert not _confirmed_goodbye("Bas")
+    assert not _confirmed_goodbye("Yes.")
+    assert not _confirmed_goodbye("yes please")
 
 
-def test_false_goodbye_covers_phrasing_the_first_cut_missed() -> None:
-    # A second real production case: the first version of this guard only
-    # allowed a fixed set of trailing phrases (thanks/that's all/else) and
-    # missed this exact live call -- "No, I don't require." isn't on any
-    # enumerated list but is an ordinary decline of an in-flow offer, not a
-    # goodbye. The length+negation-start rewrite must catch it.
-    assert _false_goodbye("No, I don't require.")
-    assert _false_goodbye("No, I don't need that.")
-    assert _false_goodbye("Not needed.")
-    assert _false_goodbye("No, we're good.")
+def test_confirmed_goodbye_rejects_phrasing_variety_and_filler_prefixes() -> None:
+    # A prior negation-start regex kept missing real phrasing variety: first
+    # a decline with no enumerated trailing phrase ("No, I don't require."),
+    # then a filler word before the negation ("Uh, no, no time.") defeating
+    # the anchored ^(no|nope|...) match entirely. Positive evidence (no bye
+    # token, no explicit close phrase) rejects all of these at once instead
+    # of requiring one more shape to be enumerated after each live miss.
+    assert not _confirmed_goodbye("No, I don't require.")
+    assert not _confirmed_goodbye("No, I don't need that.")
+    assert not _confirmed_goodbye("Not needed.")
+    assert not _confirmed_goodbye("No, we're good.")
+    assert not _confirmed_goodbye("Uh, no, no time.")
+    assert not _confirmed_goodbye("no, I also wanted to ask about pricing")
 
 
-def test_false_goodbye_ignores_actual_goodbyes_and_longer_replies() -> None:
-    assert not _false_goodbye("No, that's all, goodbye")  # has a bye token
-    assert not _false_goodbye("no, I also wanted to ask about pricing")
-    assert not _false_goodbye("Goodbye")
-    assert not _false_goodbye("")
-    assert not _false_goodbye("yes please")
+def test_confirmed_goodbye_recognizes_actual_goodbyes() -> None:
+    assert _confirmed_goodbye("No, that's all, goodbye")  # has a bye token
+    assert _confirmed_goodbye("Goodbye")
+    assert _confirmed_goodbye("Sorry, I have to go now")
+    assert _confirmed_goodbye("Can you call me back later")
+    assert _confirmed_goodbye("I'm driving, can we do this another time")
+
+
+def test_confirmed_goodbye_rejects_empty_text() -> None:
+    assert not _confirmed_goodbye("")
+
+
+# -- the full utterance matrix ----------------------------------------------------
+#
+# One table, every category of caller reply this guard has to get right,
+# each tagged with which real golfai incident (if any) it documents. This
+# is the living regression suite the classifier's docstrings keep
+# referencing "the next live miss" against -- when a new false positive or
+# false negative turns up in production, it gets a row here, not just a
+# one-off assertion.
+#
+# category tags:
+#   negation        bare decline of an in-flow question -- must NOT confirm
+#   affirmation     bare confirmation of an in-flow question -- must NOT confirm
+#   filler          negation/affirmation with a leading filler word
+#   frustration     caller is annoyed, not leaving -- must NOT confirm
+#   continuation    longer reply that keeps the conversation going
+#   embedded_bye    contains "bye" mid-sentence but isn't a close
+#   explicit_bye    an actual spoken goodbye -- MUST confirm
+#   explicit_close  a non-"bye" closing phrase (has to go/driving/etc) -- MUST confirm
+#   hindi           Hindi/Hinglish variant of the above, either script
+#   ambiguous       genuinely context-dependent; documents the conservative
+#                   default this guard takes (does not confirm) rather than
+#                   claiming a single "correct" answer
+_GOODBYE_MATRIX = [
+    # -- negation: real golfai incident (any add-ons? -> No.) --------------
+    ("No.", False, "negation"),
+    ("Nope.", False, "negation"),
+    ("Nah.", False, "negation"),
+    ("Nahi", False, "negation"),
+    ("Bas", False, "negation"),
+    ("Nothing.", False, "negation"),
+    ("Not needed.", False, "negation"),
+    ("No thanks.", False, "negation"),
+    ("No, I don't require.", False, "negation"),
+    ("No, I don't need that.", False, "negation"),
+    ("No, we're good.", False, "negation"),
+    # -- affirmation: real golfai incident (did you want to change something? -> Yes.) --
+    ("Yes.", False, "affirmation"),
+    ("Yeah.", False, "affirmation"),
+    ("Sure.", False, "affirmation"),
+    ("Okay.", False, "affirmation"),
+    ("Ok.", False, "affirmation"),
+    ("Haan", False, "affirmation"),
+    ("Theek hai", False, "affirmation"),
+    ("Please proceed.", False, "affirmation"),
+    ("Go ahead.", False, "affirmation"),
+    # -- filler-prefixed: real golfai incident (Uh, no, no time.) -----------
+    ("Uh, no, no time.", False, "filler"),
+    ("Um, yeah.", False, "filler"),
+    ("Uh, no.", False, "filler"),
+    ("Well, no.", False, "filler"),
+    ("Uh, okay.", False, "filler"),
+    # -- frustration: caller is annoyed, still on the call ------------------
+    ("I already told you that.", False, "frustration"),
+    ("बता तो दिया", False, "frustration"),
+    ("This is so annoying, just fix it.", False, "frustration"),
+    # -- continuation: longer replies that keep the conversation going ------
+    ("no, I also wanted to ask about pricing", False, "continuation"),
+    ("No, I also wanted to know about the buggy rental please.", False, "continuation"),
+    ("Actually can we check a different date instead.", False, "continuation"),
+    ("What about Sunday morning, is that available.", False, "continuation"),
+    # -- embedded bye: contains "bye" but is not a close (finding from the ---
+    # explore-mode matrix design -- _confirmed_goodbye must match _clear_
+    # goodbye's own length-bounded bye check, not a raw substring search)
+    ("bye for now but first tell me all about the amenities and pricing please", False, "embedded_bye"),
+    ("I'll say bye once we sort out the booking, but first what's the price.", False, "embedded_bye"),
+    # -- explicit goodbye: MUST confirm --------------------------------------
+    ("Goodbye", True, "explicit_bye"),
+    ("Goodbye.", True, "explicit_bye"),
+    ("bye bye", True, "explicit_bye"),
+    ("ok bye", True, "explicit_bye"),
+    ("Thanks, bye.", True, "explicit_bye"),
+    ("No, that's all, goodbye", True, "explicit_bye"),
+    ("byeee", True, "explicit_bye"),
+    ("Then I'm good. Goodbye, VP Chandigarh", True, "explicit_bye"),
+    # -- explicit non-bye close phrases: MUST confirm ------------------------
+    ("I have to go now.", True, "explicit_close"),
+    ("Sorry, gotta go.", True, "explicit_close"),
+    ("Can you call me back later.", True, "explicit_close"),
+    ("Please call me back tomorrow instead.", True, "explicit_close"),
+    ("I'm driving right now, can we do this another time.", True, "explicit_close"),
+    ("I'm busy right now, call back another time.", True, "explicit_close"),
+    ("Please stop calling me.", True, "explicit_close"),
+    ("Can you just end the call please.", True, "explicit_close"),
+    ("This is not a good time for me.", True, "explicit_close"),
+    # -- Hindi/Hinglish variants: MUST confirm -------------------------------
+    ("फोन रखती हूँ", True, "hindi"),
+    ("phone rakhti hoon", True, "hindi"),
+    ("मुझे जाना है", True, "hindi"),
+    ("mujhe jaana hai", True, "hindi"),
+    ("baad mein baat karte hain, abhi mujhe jaana hai", True, "hindi"),
+    # -- ambiguous: conservative default is "do not confirm" -- documents ---
+    # the choice, not a claim that this is the one correct reading
+    ("That's all.", False, "ambiguous"),
+    ("Okay, thanks.", False, "ambiguous"),
+    ("Alright.", False, "ambiguous"),
+]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected", "category"),
+    _GOODBYE_MATRIX,
+    ids=[f"{cat}:{text[:30]!r}" for text, _, cat in _GOODBYE_MATRIX],
+)
+def test_confirmed_goodbye_matrix(text: str, expected: bool, category: str) -> None:
+    assert _confirmed_goodbye(text) is expected, (
+        f"category={category!r} text={text!r} expected confirmed={expected}"
+    )
 
 
 # -- integration: the backstop through the runtime -------------------------------
@@ -155,8 +277,42 @@ async def test_llm_claimed_goodbye_on_bare_negation_is_suppressed() -> None:
     await rt.start()
     await rt.on_user_text("No.")
     assert not rt.state.ended
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_ended", "category"),
+    _GOODBYE_MATRIX,
+    ids=[f"{cat}:{text[:30]!r}" for text, _, cat in _GOODBYE_MATRIX],
+)
+async def test_llm_claimed_goodbye_end_to_end_matrix(
+    text: str, expected_ended: bool, category: str
+) -> None:
+    """Full-pipeline version of test_confirmed_goodbye_matrix: for each of
+    the same 58 caller replies, the Director LLM is forced (via CannedLLM)
+    to claim interrupt=global_goodbye no matter what -- the worst case,
+    where the LLM decided on its own to fire the interrupt on this exact
+    answer to the in-flow "collect the enquiry" question. Asserts what
+    actually happens to the call: does it really end, or does the
+    deterministic guard drop the LLM's claim and keep the conversation
+    going. This is the question-and-answer framing directly -- not "does
+    this string look like a goodbye" in isolation, but "the agent asked
+    something, the caller answered this, and the LLM (wrongly, in every
+    row here) called for the interrupt anyway -- does the call actually
+    hang up or not."
+    """
+    rt = PlaybookRuntime(
+        Playbook.from_yaml(_PB),
+        director_llm=CannedLLM(
+            {"slots": {}, "advance": None, "note": None, "interrupt": "global_goodbye"}
+        ),
+        http=FakeHttp([]),
+    )
+    await rt.start()
     assert rt.state.checkpoint_id == "main.collect"
-    assert rt.state.checkpoint_id == "main.collect"
+    await rt.on_user_text(text)
+    assert rt.state.ended is expected_ended, (
+        f"category={category!r} text={text!r} expected call-ended={expected_ended}"
+    )
 
 
 # -- post-terminal silence (Westgate resurrection fix) ---------------------------

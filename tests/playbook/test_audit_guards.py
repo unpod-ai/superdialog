@@ -118,7 +118,11 @@ async def test_goodbye_closes_immediately_when_capture_cold():
     # goodbye once and hangs up never repeats it — deflecting a cold call
     # (little/nothing captured) loses the close. 0 of 2 required filled ->
     # honor the goodbye NOW, no wrap.
-    pb, state = _state()  # at booking.collect; city+date required, unfilled
+    # _confirmed_goodbye requires real closing evidence in the caller's own
+    # words, so the fixture's last user turn must actually contain one.
+    pb, state = _state(
+        extra_events=[UtteranceEvent(role="user", text="Okay, goodbye.")]
+    )  # at booking.collect; city+date required, unfilled
     llm = CannedLLM({"slots": {}, "interrupt": "goodbye"})
     decision = await Director(pb, llm).evaluate(state)
     adv = [e for e in decision.events if isinstance(e, AdvanceEvent)]
@@ -388,8 +392,13 @@ async def test_goodbye_closes_when_missing_slot_hides_behind_other_entity():
 
 async def test_goodbye_interrupt_passes_on_second_ask():
     # The wrap marker is already the live steering note -> honor the goodbye.
+    # _confirmed_goodbye requires real closing evidence in the caller's own
+    # words, so the fixture's last user turn must actually contain one.
     pb, state = _state(
-        extra_events=[SteeringNoteEvent(text=f"{_WRAP_MARKER} — ask", kind="steer")]
+        extra_events=[
+            SteeringNoteEvent(text=f"{_WRAP_MARKER} — ask", kind="steer"),
+            UtteranceEvent(role="user", text="Okay, goodbye."),
+        ]
     )
     llm = CannedLLM({"slots": {}, "interrupt": "goodbye"})
     decision = await Director(pb, llm).evaluate(state)
@@ -401,7 +410,9 @@ async def test_goodbye_interrupt_passes_when_slots_filled():
     llm = CannedLLM(
         {"slots": {"city": "Pune", "date": "2026-07-05"}, "interrupt": "goodbye"}
     )
-    pb, state = _state()
+    # _confirmed_goodbye requires real closing evidence in the caller's own
+    # words, so the fixture's last user turn must actually contain one.
+    pb, state = _state(extra_events=[UtteranceEvent(role="user", text="Okay, goodbye.")])
     decision = await Director(pb, llm).evaluate(state)
     adv = [e for e in decision.events if isinstance(e, AdvanceEvent)]
     assert adv and adv[0].to_checkpoint == "booking.close"
