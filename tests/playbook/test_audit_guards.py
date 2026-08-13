@@ -32,15 +32,75 @@ async def _run_filter(phrases: list[str], *chunks: str) -> str:
     return "".join(out)
 
 
-async def test_never_say_excises_phrase_within_one_chunk():
+async def test_never_say_drops_the_whole_sentence_within_one_chunk():
+    # Was: assert got == "I can offer a  today!" -- phrase scope. That still
+    # promises the caller an offer, and the residual double space is the guard
+    # firing and failing. The sentence is the smallest unit that removes the
+    # claim rather than mangling it.
     got = await _run_filter(["free upgrade"], "I can offer a free upgrade today!")
-    assert got == "I can offer a  today!"
+    assert got == ""
 
 
 async def test_never_say_catches_phrase_split_across_chunks():
     got = await _run_filter(["free upgrade"], "a free upg", "rade for you")
     assert "free upgrade" not in got
-    assert "for you" in got
+    # "for you" sits inside the offending sentence, so it goes with it.
+    assert got == ""
+
+
+async def test_never_say_keeps_clean_sentences_in_the_same_turn():
+    """Only the offending sentence is dropped, never the whole turn."""
+    got = await _run_filter(
+        ["free upgrade"],
+        "Your booking is on the 20th. ",
+        "I can offer a free upgrade today! ",
+        "Anything else?",
+    )
+    assert "free upgrade" not in got
+    assert "Your booking is on the 20th." in got
+    assert "Anything else?" in got
+
+
+async def test_never_say_suppresses_the_number_in_a_fabricated_price():
+    """The regression this scope change exists for.
+
+    Live golfai line, spoken from a checkpoint holding no availability data in
+    a session where no availability call was ever made. Under phrase scope the
+    forbidden words vanished and the invented figure was still spoken -- a
+    number can never be a never_say entry, so phrase scope could not reach it.
+    """
+    line = (
+        "I found a slot at Example Golf Club on weekend around eight in the "
+        "morning for four players. The green fee is two thousand four hundred "
+        "and thirty rupees. Please complete the payment within seven minutes."
+    )
+    got = await _run_filter(["green fee", "complete the payment"], line)
+    assert "green fee" not in got
+    assert "two thousand four hundred" not in got, "fabricated price still spoken"
+    assert "thirty rupees" not in got
+    # The non-offending sentence is untouched.
+    assert "I found a slot at Example Golf Club" in got
+
+
+async def test_never_say_sentence_scope_handles_devanagari_danda():
+    """A Hindi line ends on '।'; without that boundary the turn is one long
+    sentence and scope-based excision would delete an entire Hinglish turn."""
+    got = await _run_filter(
+        ["पेमेंट लिंक"],
+        "आपकी बुकिंग हो गई है। पेमेंट लिंक भेज दिया है। धन्यवाद।",
+    )
+    assert "पेमेंट लिंक" not in got
+    assert "आपकी बुकिंग हो गई है।" in got
+    assert "धन्यवाद।" in got
+
+
+async def test_never_say_unpunctuated_stream_still_blocks_the_phrase():
+    """No terminator ever arrives: past the buffer cap the filter degrades to
+    phrase scope so TTS cannot stall, and the phrase is still blocked."""
+    long_run = "word " * 120
+    got = await _run_filter(["free upgrade"], long_run + "free upgrade " + long_run)
+    assert "free upgrade" not in got
+    assert "word" in got
 
 
 async def test_never_say_is_case_insensitive():

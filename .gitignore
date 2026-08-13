@@ -42,3 +42,12 @@ examples/datasets
 *.yaml
 !tests/fixtures/playbooks/*.yaml
 *.sh
+
+# Live eval replays of real production calls. These carry the client's own
+# caller number, session ids, course/project names and transcript content, so
+# they stay local -- the framework fixes they exercise are covered by
+# tests/playbook/test_engine_grounding_fixes.py and test_audit_guards.py.
+tests/playbook/eval/test_golfai_live_5calls.py
+tests/playbook/eval/test_golfai_fabrication_repro.py
+tests/playbook/eval/test_westgate_live_3calls.py
+tests/playbook/eval/test_westgate_interrupt_resume.py

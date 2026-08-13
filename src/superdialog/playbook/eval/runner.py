@@ -75,6 +75,13 @@ def _persona_messages(
             continue
         role = "assistant" if entry.role == "user" else "user"
         messages.append({"role": role, "content": entry.text})
+    # The agent's last turn can legitimately produce no new spoken line (a
+    # checkpoint choosing to say nothing) -- the transcript's last entry is
+    # then still the caller's own prior line, which flips to role=assistant
+    # here. Some providers (Anthropic) reject a message list that doesn't
+    # end in "user"; a synthetic silence turn keeps this provider-agnostic.
+    if messages[-1]["role"] != "user":
+        messages.append({"role": "user", "content": "(silence)"})
     return messages
 
 

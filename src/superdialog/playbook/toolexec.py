@@ -19,6 +19,7 @@ import json
 import logging
 import random
 import re
+from collections import defaultdict
 from typing import Any, Awaitable, Callable, Protocol
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -100,6 +101,11 @@ def _template_ns(state: ConversationState) -> dict[str, Any]:
             k: {"ok": r.ok, "status": r.status, "data": r.data, "error": r.error}
             for k, r in state.tool_results.items()
         },
+        # Attempt count per tool id; mirrors render.template_namespace so a
+        # url/body template and its guidance see the same signal. A tool
+        # skipped by its own `when:` guard leaves no ToolResultEvent, so
+        # `results` alone cannot tell "returned nothing" from "never ran".
+        "calls": defaultdict(int, state.tool_call_counts),
     }
 
 

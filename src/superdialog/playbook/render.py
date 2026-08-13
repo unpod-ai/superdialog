@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
@@ -146,6 +147,15 @@ def template_namespace(pb: Playbook, state: ConversationState) -> dict[str, Any]
             k: {"ok": r.ok, "status": r.status, "data": r.data, "error": r.error}
             for k, r in state.tool_results.items()
         },
+        # Attempt count per tool id, so guidance can ground on "did this
+        # actually run". `results` cannot answer that: a tool skipped by its
+        # own `when:` guard emits no ToolResultEvent, so results.X is absent
+        # and reads exactly like a call that ran and found nothing -- which is
+        # how a checkpoint came to tell callers it had just checked
+        # availability across four turns of a session with zero availability
+        # calls. defaultdict so an unseen id is 0 and compares equal to 0,
+        # rather than a ChainableUndefined that silently fails every ==.
+        "calls": defaultdict(int, state.tool_call_counts),
     }
 
 

@@ -85,6 +85,36 @@ class _DotDict:
         return bool(self._data)
 
 
+class _Calls:
+    """How many times each tool was ATTEMPTED this call.
+
+    ``results`` cannot answer "did it run": a tool skipped by its own ``when:``
+    guard emits no ToolResultEvent at all (``ToolExecutor.execute`` returns
+    ``[]``), so ``results.X`` is simply absent — indistinguishable from a call
+    that ran and returned nothing. Guidance reading that absence reported
+    "checked, nothing available" in sessions where zero availability calls were
+    ever made, and the caller acted on it. ``calls['tool-id'] == 0`` means never
+    attempted.
+
+    Unseen ids yield 0 rather than raising, so a guard on a tool that has not
+    run yet stays falsy instead of collapsing the whole expression to None.
+    """
+
+    def __init__(self, state: ConversationState) -> None:
+        self._counts = dict(state.tool_call_counts)
+
+    def __getitem__(self, item: Any) -> int:
+        return int(self._counts.get(item, 0))
+
+    def __getattr__(self, item: str) -> int:
+        if item.startswith("_"):
+            raise ExprError(f"forbidden attribute {item!r}")
+        return int(self._counts.get(item, 0))
+
+    def __bool__(self) -> bool:
+        return bool(self._counts)
+
+
 class _Slots:
     def __init__(self, state: ConversationState) -> None:
         self._state = state
@@ -176,6 +206,7 @@ def evaluate(
         **_HELPERS,
         "slots": _Slots(state),
         "results": _Results(state),
+        "calls": _Calls(state),
         "env": _DotDict(dict(state.env)),
         **(extra or {}),
     }

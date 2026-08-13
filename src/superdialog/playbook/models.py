@@ -135,6 +135,32 @@ class SlotSpec(BaseModel):
     # answer, not a missing one). Set true to exempt "" specifically from
     # junk rejection for this slot; every other junk value is still rejected.
     allow_empty: bool = False
+    # `type: date` only: reject a resolved date earlier than the call anchor.
+    # The Director invents years under latency pressure -- a caller saying
+    # "this Saturday, the 10th of June" was extracted as "2024-06-10", two
+    # years before the call, and the availability request went out for it. A
+    # well-formed ISO date is not necessarily a bookable one.
+    #
+    # OPT-IN, not default. Rejecting the past by default was tried and is
+    # wrong: date_of_birth is a date slot whose whole purpose is a past value,
+    # and it silently stopped advancing. Only the author knows which of their
+    # date slots is forward-looking, so they declare it.
+    future_only: bool = False
+    # Per-slot override of the session's G37 anchor mode. "inherit" (default)
+    # uses the Director's own setting, so nothing changes unless an author asks.
+    #
+    # Exists because the anchor is only meaningful per slot. Flipping the whole
+    # session to "enforce" was tried and was actively harmful: it rejects
+    # DERIVED slots, which the caller never utters. "8 AM" legitimately becomes
+    # time_from=07:00 / time_to=09:00 (a +/-1h search window), and "07:00" is
+    # not in "8 am", so those correct writes were dropped, the availability call
+    # never fired, and the Talker -- starved of data -- invented MORE prices
+    # than before. Set "enforce" only on CALLER-STATED slots, where the Director
+    # can supply a real span (see Director._anchor_ok: for a non-date/time slot
+    # a valid span anchors the write whatever its normalized form, so
+    # preferred_time="08:00" from the words "8 AM" still lands, while an
+    # invented "afternoon" -- which has no words to point at -- does not).
+    anchor: Literal["inherit", "off", "shadow", "enforce"] = "inherit"
 
     @model_validator(mode="after")
     def _date_defaults_hard(self) -> "SlotSpec":

@@ -52,8 +52,63 @@ def _excise(buf: str, folded: list[str]) -> str:
     return buf
 
 
+#: Sentence boundary for never_say scope. Includes the Devanagari danda — a
+#: Hindi/Hinglish line ends on '।' and would otherwise read as one long
+#: "sentence", defeating scope-based excision for exactly the calls that need
+#: it most.
+_SENTENCE_END_RE = re.compile(r"[.!?।\n]+[\s\"'’”)\]]*")
+
+#: Cap on how long the stream filter waits for a sentence terminator before
+#: degrading to phrase scope, so an unpunctuated turn cannot stall TTS.
+_MAX_SENTENCE_BUF = 400
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Split on sentence terminators, keeping the terminator and trailing
+    whitespace attached so ``"".join(_split_sentences(t)) == t``."""
+    out: list[str] = []
+    pos = 0
+    for m in _SENTENCE_END_RE.finditer(text):
+        out.append(text[pos : m.end()])
+        pos = m.end()
+    if pos < len(text):
+        out.append(text[pos:])
+    return out
+
+
+def _excise_sentences(text: str, folded: list[str]) -> str:
+    """Drop every SENTENCE containing a never_say phrase.
+
+    Phrase-scope excision removes only the matched substring, which leaves
+    the rest of the claim standing and speaking. Real production line::
+
+        "The green fee is one thousand two hundred eighty-five rupees"
+     -> "The  is one thousand two hundred eighty-five rupees"
+
+    The forbidden phrase is gone; the fabricated PRICE — the only part that
+    actually harms the caller — is still spoken. A number can never be a
+    never_say entry (it is unbounded), so phrase scope is structurally
+    incapable of suppressing invented figures, and that tell-tale double
+    space is the guard firing and failing. The enclosing sentence is the
+    smallest unit that removes the claim instead of mangling it.
+
+    Sentences with no match are preserved verbatim, so a legitimate line
+    sharing a turn with a forbidden one is still spoken.
+    """
+    return "".join(s for s in _split_sentences(text) if _excise(s, folded) == s)
+
+
 def _excise_line(text: str, folded: list[str]) -> str:
     """Excise never_say phrases from a canned line.
+
+    Deliberately PHRASE-scoped, unlike ``_filter_never_say``. Its inputs are
+    authored, trusted text — FILLER, HOLD_LINE, RECOVERY_LINE, ``say_verbatim``
+    — never model output, so a phrase hit here is an authoring collision, not a
+    fabrication. These lines are usually a single sentence, so sentence scope
+    would delete all of them and leave the caller in silence: a never_say of
+    "say that again" would erase the entire recovery line and the turn would go
+    quiet mid-call. Fabricated claims arrive on the token stream, and that is
+    where sentence scope is applied.
 
     Returns '' when excision leaves only punctuation/space — speaking
     "…" alone is worse than silence. Callers fall back to their built-in
@@ -70,11 +125,16 @@ async def _filter_never_say(
 ) -> AsyncIterator[str]:
     """Deterministic never_say enforcement on the token stream.
 
-    Buffers just enough text (longest phrase − 1 chars) to catch phrases split
-    across chunk boundaries, excises any casefolded occurrence, and flushes
-    the confirmed-clean prefix — so an authored phrase can never reach TTS,
-    whatever the LLM emits. Prompt-only enforcement is probabilistic; this is
-    the guarantee. Adds no LLM calls and microseconds per chunk.
+    Buffers to the next SENTENCE boundary, drops any complete sentence
+    containing a phrase, and flushes the rest verbatim — so an authored
+    phrase can never reach TTS, whatever the LLM emits, and neither can the
+    rest of the claim it was embedded in (see ``_excise_sentences`` for why
+    phrase scope is not enough). Prompt-only enforcement is probabilistic;
+    this is the guarantee. Adds no LLM calls and microseconds per chunk.
+
+    Cost: first audio waits for the first sentence to complete rather than
+    streaming mid-sentence. That is the deliberate trade — a mangled
+    fabricated price reaching a caller is worse than a few hundred ms.
     """
     folded = [p.casefold() for p in phrases if p]
     if not folded:
@@ -84,11 +144,29 @@ async def _filter_never_say(
     tail = max(len(p) for p in folded) - 1
     buf = ""
     async for token in tokens:
-        buf = _excise(buf + token, folded)
-        if len(buf) > tail:
-            yield buf[: len(buf) - tail]
-            buf = buf[len(buf) - tail :]
-    buf = _excise(buf, folded)
+        buf += token
+        parts = _split_sentences(buf)
+        # All but the last part end in a terminator; the last is the
+        # still-incomplete sentence and stays buffered.
+        if parts and not _SENTENCE_END_RE.search(parts[-1]):
+            buf = parts.pop()
+        else:
+            buf = ""
+        for sentence in parts:
+            if _excise(sentence, folded) == sentence:
+                yield sentence
+        # ponytail: a model that emits no terminator at all would buffer
+        # forever and stall TTS. Past the cap, degrade to phrase scope on the
+        # safe prefix — keeps the original guarantee, loses sentence scope.
+        # Raise the cap if long unpunctuated turns are legitimate here.
+        if len(buf) > _MAX_SENTENCE_BUF:
+            safe = _excise(buf, folded)
+            if len(safe) > tail:
+                yield safe[: len(safe) - tail]
+                buf = safe[len(safe) - tail :]
+            else:
+                buf = safe
+    buf = _excise(_excise_sentences(buf, folded), folded)
     if buf:
         yield buf
 

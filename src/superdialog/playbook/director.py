@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Callable, Literal, Protocol
 
 from pydantic import BaseModel, Field
@@ -282,6 +282,11 @@ def normalize_time(value: Any) -> Any:
     return f"{hh:02d}:{mm:02d}"
 
 
+#: A resolved calendar date. Anything else in a `type: date` slot is prose the
+#: date parser could not resolve, and prose reaches tool templates verbatim.
+_ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
 def _coerce_slot(value: Any, spec: SlotSpec, now: datetime | None = None) -> Any:
     """Cast a verdict value to the spec's type; return ``_INVALID`` on failure.
 
@@ -293,7 +298,35 @@ def _coerce_slot(value: Any, spec: SlotSpec, now: datetime | None = None) -> Any
     if spec.type == "enum":
         return value if spec.values and value in spec.values else _INVALID
     if spec.type == "date":
-        return normalize_date(value, now)
+        # normalize_date is pass-through on failure BY CONTRACT (it is also a
+        # display helper), so an unresolvable phrase came back verbatim and was
+        # STORED as the date -- `type: date` guaranteed nothing. 'this weekend'
+        # / 'soon' / 'whenever' then reached tool templates as-is and shipped
+        # as ?date=this weekend, which the availability API answers with HTTP
+        # 500, so the caller is told nothing is available when nothing was ever
+        # checked. Multi-day phrases are the common case and are not resolvable
+        # even in principle ("this weekend" is two days), so the only correct
+        # outcome is to leave the slot unwritten and let the checkpoint ask
+        # which day. type: time (above) and type: enum already return _INVALID
+        # on failure; date was the lone inconsistency.
+        resolved = normalize_date(value, now)
+        if isinstance(resolved, (date, datetime)):
+            resolved = resolved.isoformat()[:10]
+        resolved = str(resolved or "")
+        if not _ISO_DATE_RE.fullmatch(resolved):
+            return _INVALID
+        try:
+            parsed = date.fromisoformat(resolved)
+        except ValueError:  # shape matched but not a real calendar date
+            return _INVALID
+        # Well-formed is not the same as bookable. The Director invents years
+        # under latency pressure: "this Saturday, the 10th of June" came back as
+        # "2024-06-10" -- two years before the call -- and a shape check waves
+        # that through, so availability was requested for 2024. Opt-in per slot:
+        # date_of_birth is also a date slot and is legitimately in the past.
+        if spec.future_only and now is not None and parsed < now.date():
+            return _INVALID
+        return resolved
     if spec.type == "time":
         return normalize_time(value)
     if spec.type == "str":
@@ -632,6 +665,18 @@ class Director:
             return False
         return _is_known_hard_gate(key)
 
+    def _anchor_mode(self, spec: SlotSpec) -> str:
+        """Effective anchor mode for one slot: its own override, else the
+        session default.
+
+        The anchor is only meaningful per slot. A session-wide "enforce"
+        rejects DERIVED slots the caller never utters -- time_from=07:00 from
+        the words "8 AM" -- which starves the flow of the tool data it needs
+        and makes the Talker invent more, not less. Authors mark the
+        caller-stated slots instead.
+        """
+        return self._anchor if spec.anchor == "inherit" else spec.anchor
+
     def _anchor_ok(
         self,
         span: Any,
@@ -651,7 +696,7 @@ class Director:
         present-and-anchored span suffices for them; only date/time
         re-derive the value from the span.
         """
-        if self._anchor == "off" or spec.resolve_from is not None:
+        if self._anchor_mode(spec) == "off" or spec.resolve_from is not None:
             return True
         utterance = _norm(_last_user_text(state))
         if not utterance:
@@ -932,6 +977,27 @@ class Director:
                 coerced
             ) not in _resolve_candidate_ids(slot_spec, state):
                 continue  # not a live candidate id -- reject, never store raw caller text
+            existing = state.slots.get(_ekey(cp.entity, key))
+            if (
+                existing is not None
+                and existing.status == "confirmed"
+                and existing.value == coerced
+            ):
+                # Identical confirmed value re-extracted: no event, no version
+                # churn (westgate2 wrote `staying` 4x with the same value).
+                #
+                # Deliberately ORDERED BEFORE the anchor check. This is a no-op
+                # -- the slot already holds exactly this confirmed value -- so it
+                # needs no fresh evidence, and it was being discarded right here
+                # anyway. Anchoring it first meant every carry-forward re-write
+                # logged anchor_miss (city='Gurugram' on a turn where the caller
+                # never repeated the city), which buried the real signal: nearly
+                # every write in a session was flagged, correct ones included, so
+                # anchor="enforce" looked unusable and the guard stayed in
+                # audit-only shadow mode. With no-ops filtered first, anchor_miss
+                # means what it says -- a NEW value with no support in the
+                # caller's turn -- and enforce becomes safe to switch on.
+                continue
             # G37 anchor check: the Director points at evidence ("spans"),
             # the engine verifies it against the caller's actual turn.
             if not self._anchor_ok(spans.get(key), value, coerced, slot_spec, state):
@@ -941,17 +1007,8 @@ class Director:
                         detail=f"anchor_miss:{_ekey(cp.entity, key)}",
                     )
                 )
-                if self._anchor == "enforce":
+                if self._anchor_mode(slot_spec) == "enforce":
                     continue
-            existing = state.slots.get(_ekey(cp.entity, key))
-            if (
-                existing is not None
-                and existing.status == "confirmed"
-                and existing.value == coerced
-            ):
-                # Identical confirmed value re-extracted: no event, no version
-                # churn (westgate2 wrote `staying` 4x with the same value).
-                continue
             events.append(
                 SlotWriteEvent(
                     key=key,
@@ -1211,6 +1268,40 @@ class Director:
                 # The verdict named a target no llm rule declares. Silent
                 # no-ops here looked like caller-visible stalls with zero log
                 # evidence — make them auditable.
+                #
+                # Auditable was not enough: dropping the advance also drops the
+                # TURN. The Director wanted to move, nothing moved, and the
+                # Talker re-asked the same question — observed live as camps of
+                # 6-9 turns at one checkpoint, and a camped Talker eventually
+                # runs out of legitimate things to say and starts inventing
+                # (a slot, a price, a payment link). Fabrication and camping
+                # are the same defect seen twice. A verdict target is not
+                # fuzzy-matchable back to a real one (the invented names --
+                # main.payment, main.check_availability, mainTEE_TIME_SEARCH --
+                # resemble nothing declared), and guessing a "nearest" target
+                # would route the caller somewhere they never asked for. So
+                # steer instead of guessing, and say nothing about checkpoints:
+                # this text renders into the Talker's SYSTEM prompt, and naming
+                # internal ids there risks speaking them aloud.
+                #
+                # SELF-TARGET IS NOT AN ERROR. A verdict naming the checkpoint
+                # it is already on means "stay here", which correctly produces
+                # no advance -- there is nothing to correct and no camp to
+                # break. Steering on it told the Talker its step did not exist
+                # on an ordinary stay-put turn, twice in a single observed
+                # session. Log it (still worth auditing) but do not steer.
+                if target != state.checkpoint_id:
+                    events.append(
+                        SteeringNoteEvent(
+                            text=(
+                                "The step you tried to move to does not exist. "
+                                "Do not repeat your previous turn verbatim: "
+                                "either ask for the single piece of information "
+                                "still missing, or continue this step's own goal."
+                            ),
+                            kind="steer",
+                        )
+                    )
                 events.append(
                     DegradedEvent(
                         component="director",
