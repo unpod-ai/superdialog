@@ -443,12 +443,27 @@ class PlaybookAgent:
         try:
             async for chunk in speech:
                 talker_chunks.append(chunk)
+                if quiescent.is_set() and self.runtime.state.checkpoint_id != entry_cp:
+                    # The Director already landed on a NEW checkpoint while
+                    # this chunk was still generating from the OLD
+                    # (entry_cp) state -- speaking it (or anything after it
+                    # in this generation) would be an audible stale/repeated
+                    # line reaching the TTS pipeline (real incident: a
+                    # just-answered question re-asked verbatim once the
+                    # Director's decision landed a beat after the Talker had
+                    # already started speaking from the pre-advance state).
+                    # Stop forwarding to the host now, before more of it
+                    # reaches the speaker. The finally block below still runs
+                    # its own (separate, log-only) suppress check on
+                    # whatever was actually spoken up to this point.
+                    break
                 if chunk.text:
                     # GeneratorExit may be thrown here on barge-in: it unwinds
                     # straight to the finally (no task group to exit), so the
                     # foreign-task abort is clean.
                     yield StreamChunk(text=chunk.text)
-            completed_normally = True
+            else:
+                completed_normally = True
         finally:
             # Runs on normal completion AND on GeneratorExit; shield so the
             # async cleanup survives the abort. Entered and exited within this
