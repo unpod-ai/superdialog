@@ -18,6 +18,7 @@ see bench_scenarios.py for why they aren't merged into this report.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 
@@ -141,10 +142,11 @@ async def test_scenario(case) -> None:
     caller = _completer(_CALLER_MODEL)
 
     agent = await _playbook_agent()
-    playbook_metrics = await run_session(agent, case.persona, caller)
-
     vanilla = await _vanilla_agent()
-    vanilla_metrics = await run_vanilla_session(vanilla, case.persona, caller)
+    playbook_metrics, vanilla_metrics = await asyncio.gather(
+        run_session(agent, case.persona, caller),
+        run_vanilla_session(vanilla, case.persona, caller),
+    )
 
     results = await score_case_both_modes(
         case=case,
