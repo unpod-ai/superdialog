@@ -87,11 +87,18 @@ async def _load_or_generate_dataset() -> EvalDataset:
 
 async def _playbook_agent() -> PlaybookAgent:
     """Director/Talker come from the playbook's own llm: block -- never
-    overridden, per the design spec's LLM-roles table."""
+    overridden, per the design spec's LLM-roles table. Each resolved
+    provider is wrapped through provider_adapters() before use --
+    PlaybookAgent needs the StreamsLLM/CompletesLLM adapters, not the raw
+    provider resolve_llm_providers() returns (passing the raw provider
+    crashes the Talker's stream filter pipeline with a StreamChunk/str
+    type mismatch on every turn)."""
     pb = Playbook.load(str(PB_PATH))
-    talker_llm, director_llm = await pb.resolve_llm_providers()
+    talker_provider, director_provider = await pb.resolve_llm_providers()
+    _, talker_adapter = provider_adapters(talker_provider)
+    director_adapter, _ = provider_adapters(director_provider)
     return PlaybookAgent(
-        playbook=pb, talker_llm=talker_llm, director_llm=director_llm, http=httpx_http,
+        playbook=pb, talker_llm=talker_adapter, director_llm=director_adapter, http=httpx_http,
     )
 
 
