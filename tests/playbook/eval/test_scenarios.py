@@ -155,6 +155,6 @@ async def test_scenario(case) -> None:
     assert pb_result.metrics["pii_violation_rate"].value == 0.0, (
         f"PII LEAK: {pb_result.metrics['pii_violation_rate'].reason}"
     )
-    assert pb_result.metrics["constraint_adherence"].value != 0.0, (
+    assert pb_result.metrics["constraint_adherence"].value == 1.0, (
         f"CONSTRAINT VIOLATED: {pb_result.metrics['constraint_adherence'].reason}"
     )
