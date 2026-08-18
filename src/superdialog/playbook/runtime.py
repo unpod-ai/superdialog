@@ -557,7 +557,19 @@ class PlaybookRuntime:
                 isinstance(e, SlotWriteEvent) and e.key == "error_context"
                 for e in decision.events
             )
-            if advanced and not failure_routed:
+            # Only surface cp's own line as an exit line if the caller
+            # actually had a live turn at this checkpoint since entering it.
+            # Without this guard, a checkpoint whose expr condition is
+            # ALREADY satisfied the instant it's (re-)entered -- most
+            # visibly on a resume=True interrupt's detour returning to a
+            # checkpoint whose exit slot was captured during the detour
+            # itself -- re-speaks its own intro line only to immediately
+            # leave again in the same breath, since _speak_verbatim's dedup
+            # is scoped to checkpoint_entered_version and a resume re-entry
+            # bumps that version just like a fresh entry. The caller already
+            # heard this line during whichever turn was genuinely current;
+            # zero live turns here means nothing new to say before moving on.
+            if advanced and not failure_routed and state.user_turns_in_checkpoint >= 1:
                 self._speak_verbatim(cp, pass_through)
             await self._apply_with_entry(decision.events, pass_through)
             return True

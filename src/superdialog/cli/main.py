@@ -119,7 +119,7 @@ def _build_playbook_agent(
     playbook: Any,
     llm: str,
     barrier_timeout: float = 0.4,
-    token_budget: int = 4000,
+    token_budget: int = 40000,
 ) -> Any:
     """Build a PlaybookAgent for ``playbook`` using a single resolved model."""
     from ..llm.resolver import resolve_llm

@@ -114,7 +114,7 @@ class PlaybookAgent:
         director_llm: CompletesLLM,
         http: HttpFn,
         python_tools: dict[str, PythonToolFn] | None = None,
-        token_budget: int = 4000,
+        token_budget: int = 40000,
         barrier_timeout: float = 4.0,
         hold_timeout: float | None = None,
         extended_timeout: float | None = None,
@@ -443,19 +443,38 @@ class PlaybookAgent:
         try:
             async for chunk in speech:
                 talker_chunks.append(chunk)
-                if quiescent.is_set() and self.runtime.state.checkpoint_id != entry_cp:
-                    # The Director already landed on a NEW checkpoint while
-                    # this chunk was still generating from the OLD
-                    # (entry_cp) state -- speaking it (or anything after it
-                    # in this generation) would be an audible stale/repeated
+                if (
+                    quiescent.is_set()
+                    and chunk.spoke_from_version < self.runtime.state.version
+                ):
+                    # This chunk was rendered from a version of state that is
+                    # now superseded -- speaking it (or anything after it in
+                    # this generation) would be an audible stale/repeated
                     # line reaching the TTS pipeline (real incident: a
                     # just-answered question re-asked verbatim once the
                     # Director's decision landed a beat after the Talker had
                     # already started speaking from the pre-advance state).
-                    # Stop forwarding to the host now, before more of it
-                    # reaches the speaker. The finally block below still runs
-                    # its own (separate, log-only) suppress check on
-                    # whatever was actually spoken up to this point.
+                    # Checking spoke_from_version instead of `checkpoint_id !=
+                    # entry_cp` matters on a barrier turn (greeting_turn /
+                    # settle_before_speak, or any hard-gated checkpoint's own
+                    # internal wait in Talker.speak): there, Talker is handed
+                    # -- or internally settles to -- the ALREADY-ADVANCED
+                    # state before ever rendering, so checkpoint_id differs
+                    # from entry_cp on the very first chunk even though that
+                    # chunk is fresh, not stale. The old checkpoint-identity
+                    # check discarded every such chunk outright, truncating a
+                    # freeform multi-token reply to a single word the instant
+                    # the target checkpoint had no say_verbatim to fall back
+                    # on (confirmed via a deterministic repro: a fast fake
+                    # Director interrupting into a gated, non-verbatim
+                    # checkpoint reliably killed the Talker's stream after
+                    # exactly one token). spoke_from_version is stamped once
+                    # per render (render_view/say_verbatim) directly off the
+                    # state actually used to build the prompt, so comparing
+                    # it against the live state.version is the same
+                    # staleness test the finally block's own suppress logic
+                    # already relies on -- just applied live, per chunk,
+                    # instead of only after the fact.
                     break
                 if chunk.text:
                     # GeneratorExit may be thrown here on barge-in: it unwinds

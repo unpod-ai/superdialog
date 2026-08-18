@@ -506,7 +506,7 @@ class Talker:
         self,
         playbook: Playbook,
         llm: StreamsLLM,
-        token_budget: int = 4000,
+        token_budget: int = 40000,
         barrier_timeout: float = 0.4,
         hold_timeout: float = 4.0,
         extended_timeout: float = 0.0,

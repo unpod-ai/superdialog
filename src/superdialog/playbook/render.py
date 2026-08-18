@@ -41,6 +41,17 @@ _jinja = SandboxedEnvironment(undefined=ChainableUndefined, autoescape=False)
 # tiny budget it rounds to ~0, preserving graceful degradation.
 _TRANSCRIPT_BUDGET_FRACTION = 0.2
 
+# Fixed ceiling on the rendered knowledge_base block, independent of
+# token_budget: token_budget is a prompt-packing PREFERENCE (how much to
+# include), not the Talker model's actual context window. A small/fast
+# Talker model (chosen for latency) can choke on a large knowledge_base
+# dumped wholesale regardless of how generous token_budget is configured.
+# Real incident: a ~47KB knowledge_base injected verbatim on a KB-answering
+# checkpoint produced a single truncated word ("Since", "दो") instead of a
+# real reply, on two different Talker/Director model pairs -- the KB size
+# was the common factor, not the model choice or token_budget value.
+_KB_MAX_TOKENS = 8000
+
 
 _LANGUAGE_NAMES = {
     "en": "English",
@@ -370,6 +381,18 @@ def _system_block(pb: Playbook, state: ConversationState) -> tuple[str, str]:
         if pb.knowledge_base and cp_uses_kb
         else ""
     )
+    if kb and estimate_tokens(kb) > _KB_MAX_TOKENS:
+        before = estimate_tokens(kb)
+        kb = kb.encode("utf-8")[: _KB_MAX_TOKENS * 4].decode("utf-8", errors="ignore")
+        kb = kb.rstrip() + "\n...(knowledge base truncated)"
+        _log.warning(
+            "[render] knowledge_base truncated %d -> ~%d estimated tokens "
+            "(checkpoint=%s) -- scope uses_kb content per step instead of "
+            "relying on truncation",
+            before,
+            _KB_MAX_TOKENS,
+            cp.id if cp else "?",
+        )
     if kb:
         parts.append("## Knowledge base\n" + kb)
         parts.append(
@@ -389,7 +412,7 @@ def _system_block(pb: Playbook, state: ConversationState) -> tuple[str, str]:
 
 
 def render_view(
-    pb: Playbook, state: ConversationState, token_budget: int = 4000
+    pb: Playbook, state: ConversationState, token_budget: int = 40000
 ) -> RenderedView:
     """Pack the Talker's view into ``token_budget`` estimated tokens."""
     system, cache_prefix = _system_block(pb, state)
