@@ -8,6 +8,12 @@ Usage:
 Generates (or reuses, if <playbook>.evalcases.yaml already exists)
 personas + probes from the playbook itself via the same machinery
 `superdialog eval gen-dataset` uses -- no scenario is ever hand-written.
+
+Scores 7 of 9 metrics per case (task_success, pass_at_1,
+failure_recovery_rate, conversational_consistency, slot_accuracy,
+constraint_adherence, pii_violation_rate). guardrail and efficiency run
+separately via `superdialog eval bench` (different session driver) --
+see bench_scenarios.py for why they aren't merged into this report.
 """
 
 from __future__ import annotations
@@ -56,7 +62,8 @@ def _skip_if_missing() -> None:
 
 
 def _dataset_path() -> Path:
-    return PB_PATH.with_suffix("").with_suffix(".evalcases.yaml")
+    stem = os.path.splitext(str(PB_PATH))[0]
+    return Path(f"{stem}.evalcases.yaml")
 
 
 def _completer(model_uri: str):
@@ -121,7 +128,13 @@ def pytest_generate_tests(metafunc):
 
 
 async def test_scenario(case) -> None:
-    """One case, both modes, all 9 metrics -- printed and asserted."""
+    """One case, both modes, 7 of 9 metrics -- printed and asserted.
+
+    guardrail/efficiency are NOT computed here -- they run on a separate
+    session driver via `superdialog eval bench` (see bench_scenarios.py's
+    module docstring for why). Run that command too for full 9-metric
+    coverage on the same playbook.
+    """
     pb = Playbook.load(str(PB_PATH))
     never_say = _never_say(pb)
     judge = _completer(_JUDGE_MODEL)
