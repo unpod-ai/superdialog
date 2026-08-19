@@ -296,7 +296,20 @@ def _coerce_slot(value: Any, spec: SlotSpec, now: datetime | None = None) -> Any
     skipped entirely.
     """
     if spec.type == "enum":
-        return value if spec.values and value in spec.values else _INVALID
+        if not spec.values:
+            return _INVALID
+        if value in spec.values:
+            return value
+        # A model asked for a numeric-looking enum ('1'/'2'/'3'/'4' players)
+        # sometimes emits a bare JSON int/bool instead of the quoted string
+        # the values: list authors -- 3 != '3' under `in`, so the write was
+        # silently dropped as _INVALID every time, stranding the flow on a
+        # slot the model DID answer correctly, just in the wrong JSON type
+        # (real incident: golfai's booking_players enum, confirmed via a
+        # direct state dump showing the slot missing despite being present,
+        # correctly typed, in the verdict JSON).
+        as_str = str(value)
+        return as_str if as_str in spec.values else _INVALID
     if spec.type == "date":
         # normalize_date is pass-through on failure BY CONTRACT (it is also a
         # display helper), so an unresolvable phrase came back verbatim and was
@@ -1197,11 +1210,28 @@ class Director:
 
         target = verdict.get("advance")
         if target:
-            # First llm rule with this target wins, in author order.
+            # Multiple llm rules can share the same target checkpoint (e.g.
+            # "caller names a different city" and "caller names a different
+            # course" both routing to the same collection step, gated on
+            # different requires). Picking blindly by list position meant a
+            # course-change request always got matched against the city
+            # rule's requires whenever the city rule happened to be authored
+            # first, blocking every course change on a city that was never
+            # asked for -- the flow camped indefinitely and the Talker
+            # eventually fabricated a result (real incident: golfai's
+            # returning_rebook_same). Prefer whichever same-target rule's
+            # requires are ACTUALLY met; only fall back to author-order when
+            # none are (preserves today's steer-text behavior for the
+            # single-rule-per-target case, which is unaffected either way).
+            same_target = [
+                r for r in cp.advance_when if r.judge == "llm" and r.to == target
+            ]
             rule = next(
-                (r for r in cp.advance_when if r.judge == "llm" and r.to == target),
+                (r for r in same_target if self._requires_met(r.requires, cp, peek)),
                 None,
             )
+            if rule is None and same_target:
+                rule = same_target[0]
             if rule is not None:
                 if self._requires_met(rule.requires, cp, peek):
                     # End-on-frustration guard: if the engine just flagged a
