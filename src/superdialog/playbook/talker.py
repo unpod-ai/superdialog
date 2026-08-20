@@ -431,7 +431,8 @@ async def _filter_generic_tag_leak(tokens: AsyncIterator[str]) -> AsyncIterator[
 # narration marker -- otherwise flush it as ordinary (if unusual) speech,
 # same conservative default as _filter_structured_output_leak.
 _STAGE_DIRECTION_MARKER_RE = re.compile(
-    r"zero words|system fires|system will|silently (?:call|fire)|no speech",
+    r"zero words|system fires|system will|silently (?:call|fire)|no speech"
+    r"|^silence\b|performing .{0,40}check|checking availability",
     re.IGNORECASE,
 )
 
