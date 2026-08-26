@@ -27,7 +27,7 @@ _IDLE_VERDICT: dict = {"slots": {}, "advance": None, "note": None}
 class RecordingLLM:
     """Compactor LLM stub: records prompts, returns a fixed summary."""
 
-    def __init__(self, text: str = "Caller is Rohit; wants a Sept site visit.") -> None:
+    def __init__(self, text: str = "Caller is Ada; wants a Sept appointment.") -> None:
         self.text = text
         self.calls: list[list[dict]] = []
 
@@ -88,21 +88,21 @@ def test_render_view_drops_all_but_the_floor_turn() -> None:
 def test_compact_prompt_holds_prior_summary_and_dropped_turns() -> None:
     llm = RecordingLLM()
     entries = [
-        TranscriptEntry(role="user", text="my name is Rohit", version=1),
-        TranscriptEntry(role="assistant", text="noted, Rohit", version=2),
+        TranscriptEntry(role="user", text="my name is Ada", version=1),
+        TranscriptEntry(role="assistant", text="noted, Ada", version=2),
     ]
 
     async def go() -> str:
-        return await compact(llm, "Prior call: asked about 2BHK.", entries)
+        return await compact(llm, "Prior call: asked about option A.", entries)
 
     out = anyio.run(go)
 
     assert out == llm.text
     prompt = "\n".join(m["content"] for m in llm.calls[0])
     # The digest must reach the model, or the compactor's rewrite drops it.
-    assert "Prior call: asked about 2BHK." in prompt
-    assert "my name is Rohit" in prompt
-    assert "noted, Rohit" in prompt
+    assert "Prior call: asked about option A." in prompt
+    assert "my name is Ada" in prompt
+    assert "noted, Ada" in prompt
 
 
 def test_compact_returns_empty_when_llm_yields_nothing() -> None:
@@ -219,14 +219,14 @@ def test_prior_digest_survives_until_the_compactor_rewrites_it() -> None:
     agent = _agent(llm, budget=2_000)
 
     async def go() -> str:
-        agent.apply_memory("Prior call: asked about 2BHK.")
-        assert agent.runtime.state.summary == "Prior call: asked about 2BHK."
+        agent.apply_memory("Prior call: asked about option A.")
+        assert agent.runtime.state.summary == "Prior call: asked about option A."
         _seed_history(agent)
         await agent.turn("hi again")
         return "\n".join(m["content"] for m in llm.calls[0])
 
     prompt = anyio.run(go)
-    assert "Prior call: asked about 2BHK." in prompt
+    assert "Prior call: asked about option A." in prompt
 
 
 def test_summary_event_is_what_lands_in_the_log() -> None:

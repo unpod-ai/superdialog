@@ -501,7 +501,7 @@ def _verdict_prompt(
     # Same window the Talker sees, so both halves of the engine agree on what
     # was said. A reset is safe for change-detection specifically because the
     # comparison basis is "Already known" below -- structured slot state, never
-    # reset -- not the transcript: the Director spots "Delhi -> DLF" by reading
+    # reset -- not the transcript: the Director spots a changed value by reading
     # the new utterance against the known value, not against older turns.
     transcript = "\n".join(
         f"{m.role}: {m.text}" for m in visible_transcript(pb, state)[-12:]

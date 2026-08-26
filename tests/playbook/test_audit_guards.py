@@ -174,7 +174,7 @@ def test_kb_uses_kb_true_injects_without_mention():
 # --- KB size: warn at LOAD, not mid-call --------------------------------------
 # render_view truncates an over-cap KB, but only once a caller is on the line
 # and the step that needed the missing facts is the step that lost them. A
-# westgate playbook shipped an 11,462-token KB that truncated on all ten of its
+# production playbook shipped an 11,462-token KB that truncated on all ten of its
 # uses_kb checkpoints; nothing said so until the warning was grepped out of a
 # live call log.
 

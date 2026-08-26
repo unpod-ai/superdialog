@@ -235,7 +235,7 @@ class Checkpoint(BaseModel):
     context: ContextStrategy | None = None
     # Only read when the effective strategy is ``reset_with_summary``: what the
     # compactor should emphasise when folding the pre-entry turns into the
-    # summary (a booking step wants order details, an objection detour wants
+    # summary (a booking step wants request details, an objection detour wants
     # the caller's concerns). Empty uses compact.py's default instruction.
     summary_prompt: str = ""
 

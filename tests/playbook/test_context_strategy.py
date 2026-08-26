@@ -52,7 +52,7 @@ _YAML = textwrap.dedent("""
           - id: digested
             goal: "New topic, keep the gist"
             context: reset_with_summary
-            summary_prompt: "Summarize the caller's order details only."
+            summary_prompt: "Summarize the caller's request details only."
             guidance: "Start clean but informed."
             terminal: true
             outcome: closed
@@ -245,7 +245,7 @@ class _Echo:
 
 
 def _entries() -> list[TranscriptEntry]:
-    return [TranscriptEntry(role="user", text="I want tee time at nine", version=1)]
+    return [TranscriptEntry(role="user", text="I want a slot at nine", version=1)]
 
 
 def test_compact_uses_a_custom_prompt_when_given() -> None:
@@ -283,7 +283,7 @@ def test_compact_clamps_a_runaway_summary() -> None:
 
 
 def test_compact_leaves_a_normal_summary_untouched() -> None:
-    normal = "Caller is Rohit. Wants a Sept tee time for four."
+    normal = "Caller is Ada. Wants a Sept slot for four."
     llm = _Echo(normal)
 
     async def go() -> str:
