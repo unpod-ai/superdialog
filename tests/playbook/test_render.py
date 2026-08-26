@@ -212,7 +212,9 @@ def test_render_view_strips_routing_directive_from_guidance() -> None:
     """)
     pb = Playbook.from_yaml(yaml_text)
     log = EventLog()
-    log.append(AdvanceEvent(from_checkpoint=None, to_checkpoint="j.present", rule="init"))
+    log.append(
+        AdvanceEvent(from_checkpoint=None, to_checkpoint="j.present", rule="init")
+    )
     state = ConversationState.fold(log)
     view = render_view(pb, state, token_budget=10_000)
     system = view.messages[0]["content"]
@@ -361,13 +363,19 @@ def test_handover_checkpoint_injects_handover_block() -> None:
 
 
 def test_render_edges() -> None:
-    # (a) tiny budget: system survives, transcript dropped; placeholder injected
-    # so message list is never system-only (provider compatibility).
+    # (a) tiny budget: system survives, transcript dropped to the recent-turn
+    # floor; the message list is never system-only and always opens on a user
+    # turn (provider compatibility).
+    #
+    # The floor is why this is no longer exactly 2 messages: the newest entry
+    # is now kept unconditionally, because a Talker that cannot see what the
+    # caller just said can only guess. Here that entry is an assistant turn,
+    # so the placeholder leads and the real turn follows it.
     pb, state = _setup()
     view = render_view(pb, state, token_budget=1)
-    assert len(view.messages) == 2
     assert view.messages[0]["role"] == "system"
-    assert view.messages[1]["role"] == "user"
+    assert view.messages[1]["role"] == "user"  # never system-then-assistant
+    assert view.messages[-1]["content"] == state.transcript[-1].text
 
     # (b) no checkpoint: persona + grounding render, no "Current step"
     pb2 = Playbook.from_yaml(MINIMAL_YAML)

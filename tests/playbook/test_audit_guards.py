@@ -1,5 +1,6 @@
 """Wave-3 audit guards: never_say stream filter, KB flag, terminal-interrupt."""
 
+import logging
 import textwrap
 
 from superdialog.playbook.director import _WRAP_MARKER, Director, _wrap_would_complete
@@ -11,7 +12,7 @@ from superdialog.playbook.events import (
     UtteranceEvent,
 )
 from superdialog.playbook.models import Playbook
-from superdialog.playbook.render import render_view
+from superdialog.playbook.render import _KB_MAX_TOKENS, render_view
 from superdialog.playbook.state import ConversationState
 from superdialog.playbook.talker import _filter_never_say
 from tests.playbook.test_director import CannedLLM, _state
@@ -168,6 +169,37 @@ def test_kb_uses_kb_false_overrides_substring_mention():
 def test_kb_uses_kb_true_injects_without_mention():
     pb, state = _kb_state("main.annotated_on")
     assert "## Knowledge base" in _system(pb, state)
+
+
+# --- KB size: warn at LOAD, not mid-call --------------------------------------
+# render_view truncates an over-cap KB, but only once a caller is on the line
+# and the step that needed the missing facts is the step that lost them. A
+# westgate playbook shipped an 11,462-token KB that truncated on all ten of its
+# uses_kb checkpoints; nothing said so until the warning was grepped out of a
+# live call log.
+
+
+def _kb_yaml_of_size(tokens: int) -> str:
+    # estimate_tokens is bytes // 4, so 4 ASCII chars == 1 estimated token.
+    return _KB_YAML.replace('"Opening hours: 9-5."', '"' + ("x" * tokens * 4) + '"')
+
+
+def test_oversized_knowledge_base_warns_on_load(caplog) -> None:
+    with caplog.at_level(logging.WARNING, logger="superdialog.playbook.models"):
+        Playbook.from_yaml(_kb_yaml_of_size(_KB_MAX_TOKENS + 500))
+    assert any("knowledge_base is ~" in r.getMessage() for r in caplog.records)
+
+
+def test_knowledge_base_under_the_cap_is_silent(caplog) -> None:
+    with caplog.at_level(logging.WARNING, logger="superdialog.playbook.models"):
+        Playbook.from_yaml(_kb_yaml_of_size(_KB_MAX_TOKENS - 500))
+    assert not [r for r in caplog.records if "knowledge_base is ~" in r.getMessage()]
+
+
+def test_oversized_knowledge_base_still_loads() -> None:
+    """Never raise: refusing to load would take a deployment down over packing."""
+    pb = Playbook.from_yaml(_kb_yaml_of_size(_KB_MAX_TOKENS + 500))
+    assert pb.knowledge_base
 
 
 # --- terminal-interrupt slot guard ---------------------------------------------

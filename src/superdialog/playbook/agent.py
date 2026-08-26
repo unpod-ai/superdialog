@@ -22,9 +22,11 @@ import anyio
 from ..agent import TurnResult
 from ..chat_context import ChatContext, ChatMessage, Role
 from ..stream import StreamChunk, Turn
+from .compact import compact
 from .director import AnchorMode, CompletesLLM
 from .events import EventLog, SpeechCorrectionEvent, SummaryEvent, UtteranceEvent
 from .models import Playbook
+from .render import render_view
 from .runtime import PlaybookRuntime
 from .state import ConversationState
 from .supervisor import Supervisor
@@ -124,6 +126,7 @@ class PlaybookAgent:
         settle_before_speak: bool = False,
         supervisor_llm: CompletesLLM | None = None,
         intercept_llm: CompletesLLM | None = None,
+        compact_llm: CompletesLLM | None = None,
         filler: SpokenLine | None = None,
         hold_line: SpokenLine | None = None,
         allow_private_hosts: bool = False,
@@ -137,6 +140,7 @@ class PlaybookAgent:
         # actually chose. Off in live voice, where the Talker speaks
         # speculatively and only barriers at hard gates.
         self._settle_before_speak = settle_before_speak
+        self._pb = playbook
         self._director_timer = _LLMTimer(director_llm)
         self._talker_timer = _LLMTimer(talker_llm)
         self.runtime = PlaybookRuntime(
@@ -157,6 +161,18 @@ class PlaybookAgent:
         _sup_on = _sup_flag if _sup_flag is not None else True
         sup_llm = supervisor_llm or (director_llm if _sup_on else None)
         self._supervisor = Supervisor(sup_llm, playbook) if sup_llm else None
+        # Loop 3 (also off the speech path): when the token budget drops the
+        # oldest transcript turns, fold them into the protected summary so a
+        # long call does not silently lose the facts established early. Raw and
+        # untimed for the same reason as the supervisor -- it must not smear the
+        # Director's latency stats. Explicit ``compact_llm`` wins, else the
+        # Director model is reused.
+        self._compact_llm = compact_llm or director_llm
+        self._token_budget = token_budget
+        # How much of the transcript head the summary already covers. Without
+        # it every later turn would re-summarize the same prefix and burn one
+        # LLM call per turn for the rest of the call.
+        self._compacted_through = 0
         # Barrier lines: None keeps the Talker's built-in defaults. A host may
         # pass static text or a provider called with the live state at speak
         # time (language-aware fillers); explicit args win over the playbook's
@@ -292,6 +308,59 @@ class PlaybookAgent:
         ``guidelines.memory_enabled`` is set)."""
         if summary and summary.strip():
             self.runtime.log.append(SummaryEvent(text=summary.strip()))
+
+    async def _compact_dropped_turns(self) -> None:
+        """Fold budget-dropped transcript turns into the protected summary.
+
+        The rolling in-call summary and a deployment-supplied prior-call digest
+        share ``state.summary``: the compactor is handed the current summary and
+        told to preserve it, so the digest is carried forward by the rewrite
+        rather than clobbered by it. Never raises — a broken compactor must not
+        cost the caller a turn.
+        """
+        state = self.runtime.state
+        try:
+            cp = (
+                self._pb.checkpoint(state.checkpoint_id)
+                if state.checkpoint_id
+                else None
+            )
+            view = render_view(self._pb, state, token_budget=self._token_budget)
+            target = view.dropped
+            if self._pb.context_for(cp) == "reset_with_summary":
+                # Everything before this checkpoint was entered is hidden from
+                # the Talker now, so fold it in rather than lose it. Summarizing
+                # cannot happen inside render_view -- that is sync and on the
+                # speech path -- so the first turn here renders as a plain reset
+                # and the summary lands from the next one. A barrier before
+                # speaking would be the only way to avoid that, and it costs
+                # more than it saves.
+                boundary = sum(
+                    1
+                    for e in state.transcript
+                    if e.version < state.checkpoint_entered_version
+                )
+                target = max(target, boundary)
+            if target <= self._compacted_through:
+                return
+            entries = state.transcript[self._compacted_through : target]
+            summary = await compact(
+                self._compact_llm,
+                state.summary,
+                entries,
+                prompt=cp.summary_prompt if cp else "",
+            )
+            if not summary:
+                return  # keep what we have; compact() already logged why
+            self.apply_memory(summary)
+            self._compacted_through = target
+            logger.info(
+                "[COMPACT] folded %d dropped turn(s); covered=%d",
+                len(entries),
+                self._compacted_through,
+            )
+        except Exception as exc:  # noqa: BLE001 — loud, never fatal
+            logger.error("[COMPACT] FAILED %s", type(exc).__name__, exc_info=True)
 
     @property
     def chat_ctx(self) -> ChatContext:
@@ -549,6 +618,13 @@ class PlaybookAgent:
                             type(exc).__name__,
                             exc_info=True,
                         )
+                # Loop 3: rolling memory. The drop check is a pure re-render
+                # (no LLM), so it is free to run every turn; a completion is
+                # spent only when the budget actually dropped turns the summary
+                # does not cover yet. Skipped on barge-in abort like the
+                # supervisor — the next completed turn sees the same drop.
+                if completed_normally:
+                    await self._compact_dropped_turns()
                 if (
                     self._traversal_dir
                     and self.runtime.state.ended

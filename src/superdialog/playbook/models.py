@@ -12,6 +12,9 @@ import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
+_log = logging.getLogger(__name__)
+
+
 class _YamlLoader(yaml.SafeLoader):
     """YAML 1.2-style booleans: only true/false; on/off/yes/no stay strings."""
 
@@ -219,6 +222,22 @@ class Checkpoint(BaseModel):
     # heuristic (guidance mentions 'knowledge_base'); set explicitly to keep
     # the (large) KB off hot steps whose guidance merely references it.
     uses_kb: bool | None = None
+    # Conversation-history strategy for this step. ``None`` inherits
+    # ``policies.context`` (itself defaulting to "append", i.e. no change).
+    #
+    # The author's test for setting ``reset`` is NOT "is this a new topic" --
+    # it is "is this a topic start the caller is NOT coming back from". A
+    # ``resume: true`` interrupt target is topic-sized and still wants
+    # ``append``: reset on the way in hides the aside that triggered it, and
+    # again on the way out makes the caller repeat the task they were mid-way
+    # through. Good candidates are a close-then-new-request boundary or a
+    # switch to an unrelated task (booking -> cancellation).
+    context: ContextStrategy | None = None
+    # Only read when the effective strategy is ``reset_with_summary``: what the
+    # compactor should emphasise when folding the pre-entry turns into the
+    # summary (a booking step wants order details, an objection detour wants
+    # the caller's concerns). Empty uses compact.py's default instruction.
+    summary_prompt: str = ""
 
     @field_validator("entity")
     @classmethod
@@ -332,8 +351,28 @@ class SilencePolicy(BaseModel):
     then: str = ""  # checkpoint id
 
 
+#: How a checkpoint treats the conversation history it inherits.
+#:
+#: * ``append`` -- keep it (today's behavior, and the default everywhere).
+#: * ``reset`` -- show only what was said since this checkpoint was entered.
+#: * ``reset_with_summary`` -- as ``reset``, plus the pre-entry turns folded
+#:   into the protected ``state.summary`` by the off-path compactor.
+#:
+#: Pipecat Flows exposes the same three per node. Their nodes are coarse (one
+#: per topic), so per-node reset ~ per-topic reset. Ours are fine -- a topic is
+#: typically 4-7 checkpoints -- so a blanket reset would fire several times
+#: INSIDE one task and make the caller repeat themselves. Hence: default
+#: ``append``, opt in at real boundaries.
+ContextStrategy = Literal["append", "reset", "reset_with_summary"]
+
+
 class Policies(BaseModel):
     silence: SilencePolicy | None = None
+    # Playbook-wide default strategy; a checkpoint's own ``context`` wins.
+    # Mirrors Pipecat's global FlowManager config + per-node override, so a
+    # playbook wanting "reset everywhere except three places" doesn't have to
+    # annotate every checkpoint.
+    context: ContextStrategy = "append"
     # Max post-filler wait for the Director before the hold line is spoken;
     # short enough that a caller doesn't feel disengaged.
     hold_timeout: float = Field(default=4.0, gt=0)
@@ -420,6 +459,16 @@ class Playbook(BaseModel):
             if cp.id == cp_id:
                 return cp
         raise KeyError(ref)
+
+    def context_for(self, cp: "Checkpoint | None") -> ContextStrategy:
+        """Effective history strategy: checkpoint override, else the default.
+
+        ``None`` for the checkpoint (no current step) resolves to the playbook
+        default too, so a caller never has to special-case it.
+        """
+        if cp is not None and cp.context is not None:
+            return cp.context
+        return self.policies.context
 
     def next_checkpoint_id(self, ref: str) -> str | None:
         """Journey-order successor of ``ref``; None if it is the last one.
@@ -677,14 +726,51 @@ class Playbook(BaseModel):
         from .simple import is_simple_playbook, simple_to_playbook
 
         if is_simple_playbook(doc):
-            return simple_to_playbook(doc)
+            return cls._warn_if_kb_oversized(simple_to_playbook(doc))
         if isinstance(doc, dict) and "nodes" in doc and "initial_node" in doc:
             from superdialog.flow.models import ConversationFlow
 
             from .compiler import compile_flow
 
-            return compile_flow(ConversationFlow.model_validate(doc))
-        return cls.model_validate(doc)
+            return cls._warn_if_kb_oversized(
+                compile_flow(ConversationFlow.model_validate(doc))
+            )
+        return cls._warn_if_kb_oversized(cls.model_validate(doc))
+
+    @staticmethod
+    def _warn_if_kb_oversized(pb: "Playbook") -> "Playbook":
+        """Surface an oversized knowledge_base at LOAD, not mid-call.
+
+        render.render_view truncates an over-cap KB and logs a warning -- but
+        that only fires once a caller is already on the line and the step that
+        needed the missing facts is the step that lost them. Authoring-time is
+        where this is cheap to fix, so say it when the playbook is read.
+
+        This measures the RAW field, which is an upper bound: the KB is a Jinja
+        template, so a playbook that scopes sections with {% if %} may render
+        smaller per checkpoint than this. A warning here means "verify your
+        scoping", not necessarily "you are truncating today".
+
+        Never raises -- an over-cap KB still runs (truncated), and refusing to
+        load would take a live deployment down over a prompt-packing problem.
+        """
+        # Lazy: render imports this module, so a top-level import would cycle.
+        from .render import _KB_MAX_TOKENS, estimate_tokens
+
+        if not pb.knowledge_base:
+            return pb
+        size = estimate_tokens(pb.knowledge_base)
+        if size > _KB_MAX_TOKENS:
+            _log.warning(
+                "[playbook] knowledge_base is ~%d estimated tokens, over the "
+                "%d cap -- it will be truncated from the tail on every "
+                "uses_kb checkpoint. Scope the content per step (move "
+                "objection scripts and topic FAQs onto the checkpoints that "
+                "answer them) instead of relying on truncation.",
+                size,
+                _KB_MAX_TOKENS,
+            )
+        return pb
 
     @classmethod
     def from_yaml(cls, text: str) -> "Playbook":

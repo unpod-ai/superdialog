@@ -22,7 +22,7 @@ from ..llm.prompt_cache import CACHE_PREFIX_KEY
 from ._guidelines import DATE_DISCIPLINE, compose_guidelines, datetime_anchor_line
 from .expr import ExprError, evaluate
 from .models import Playbook
-from .state import ConversationState
+from .state import ConversationState, TranscriptEntry
 
 _log = logging.getLogger(__name__)
 
@@ -111,6 +111,11 @@ class RenderedView(BaseModel):
 
     messages: list[dict[str, str]] = Field(default_factory=list)
     spoke_from_version: int = 0
+    # Oldest transcript entries the budget could not fit. Non-zero means those
+    # turns left the Talker's view entirely, so the post-turn compactor
+    # (compact.py) folds them into the protected summary instead of letting
+    # them vanish. Counted from the head of state.transcript.
+    dropped: int = 0
 
 
 def _active_slots(pb: Playbook, state: ConversationState) -> dict[str, Any]:
@@ -137,6 +142,30 @@ def _active_slots(pb: Playbook, state: ConversationState) -> dict[str, Any]:
         if k.startswith(prefix):
             slots[k[len(prefix) :]] = v
     return slots
+
+
+def visible_transcript(pb: Playbook, state: ConversationState) -> list[TranscriptEntry]:
+    """The transcript slice the current checkpoint's context strategy allows.
+
+    ``append`` (the default) returns it whole. ``reset`` and
+    ``reset_with_summary`` return only what was said since this checkpoint was
+    entered -- plus, always, the final entry.
+
+    That last clause is not a nicety. The utterance that CAUSED the advance is
+    logged before the AdvanceEvent, so its version is lower and a strict cut
+    would hide it: the checkpoint would be left answering a question absent
+    from its own prompt. Keeping the newest entry is what makes reset usable.
+
+    Shared with the Director so both halves of the engine see the same window.
+    """
+    cp = pb.checkpoint(state.checkpoint_id) if state.checkpoint_id else None
+    if pb.context_for(cp) == "append":
+        return list(state.transcript)
+    boundary = state.checkpoint_entered_version
+    kept = [e for e in state.transcript if e.version >= boundary]
+    if not kept and state.transcript:
+        return [state.transcript[-1]]
+    return kept
 
 
 def template_namespace(pb: Playbook, state: ConversationState) -> dict[str, Any]:
@@ -331,7 +360,9 @@ def _system_block(pb: Playbook, state: ConversationState) -> tuple[str, str]:
     if state.steering_note and state.steering_kind == "steer":
         parts.append(f"## Direction from supervisor\n{state.steering_note}")
     if cp:
-        guidance = _strip_routing_directives(render_template(cp.guidance, pb, state, ns=ns))
+        guidance = _strip_routing_directives(
+            render_template(cp.guidance, pb, state, ns=ns)
+        )
         parts.append(f"## Current step: {cp.id}\nGoal: {cp.goal}\n{guidance}".strip())
         missing = [
             k for k, s in cp.slots.items() if s.required and k not in state.slots
@@ -424,22 +455,40 @@ def render_view(
     # reserved amount, then older turns fill any leftover general budget.
     transcript_reserve = int(token_budget * _TRANSCRIPT_BUDGET_FRACTION)
     used_transcript = 0
-    for entry in reversed(state.transcript):
+    visible = visible_transcript(pb, state)
+    for i, entry in enumerate(reversed(visible)):
         cost = estimate_tokens(entry.text) + 4
         within_reserve = used_transcript + cost <= transcript_reserve
         within_budget = used + cost <= token_budget
-        if not (within_reserve or within_budget):
+        # The newest entry is the caller's current utterance (the agent logs it
+        # before rendering), so it is never droppable: a Talker that cannot see
+        # what was just said can only guess. Pipecat calls this floor
+        # ``min_messages_after_summary``; for us one turn is the whole of it.
+        if i > 0 and not (within_reserve or within_budget):
             break
         chat.append({"role": entry.role, "content": entry.text})
         used += cost
         used_transcript += cost
     chat.reverse()
+    # Counted BEFORE the placeholder below, which is not a kept turn. Measured
+    # against the VISIBLE transcript, so this keeps meaning "what the budget
+    # could not fit" -- history hidden by a reset is a separate concern, and
+    # only ``reset_with_summary`` asks for it to be preserved (see
+    # PlaybookAgent._compact_dropped_turns).
+    dropped = len(visible) - len(chat)
     # Some providers (Anthropic) require at least one non-system message.
     # When the transcript is empty (opening greeting) or the entire history
     # was truncated by the token budget, inject a minimal placeholder so the
     # message list is always valid for all providers.
+    # Those providers also require the FIRST non-system message to be a user
+    # turn. The recent-turn floor above can leave an assistant turn at the
+    # head (budget so tight only one entry fits, and that entry is the agent's
+    # own last line), which would be rejected outright -- so the placeholder
+    # covers that case too, not just the empty one.
     if not chat:
         chat = [{"role": "user", "content": "[start]"}]
+    elif chat[0]["role"] != "user":
+        chat.insert(0, {"role": "user", "content": "[start]"})
     # Mark the stable prompt prefix (persona + static guideline block + anchor,
     # all session-constant) so the provider seam can cache it. The private key
     # is stripped (or split into cache blocks) at the provider seam; ``content``
@@ -450,4 +499,5 @@ def render_view(
     return RenderedView(
         messages=[sys_msg, *chat],
         spoke_from_version=state.version,
+        dropped=dropped,
     )
