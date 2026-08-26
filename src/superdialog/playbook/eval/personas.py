@@ -42,8 +42,17 @@ and `goal` (the diversity axis still governs HOW they answer — terse, tangent-
 prone, error-making — not whether they hijack the call).
 
 Each persona: {{"name": str, "traits": str, "goal": str,
-"ground_truth_slots": {{...}}}}. ground_truth_slots MUST contain a concrete,
-plausible value for EVERY required slot listed. No commentary, no fences.
+"ground_truth_slots": {{...}}, "topics": [str, ...]}}. ground_truth_slots
+MUST contain a concrete, plausible value for EVERY required slot listed.
+
+topics: 3-6 short phrases (2-4 words each, e.g. "site amenities", "pricing",
+"possession timeline") covering what a COMPLETE, SUCCESSFUL call on this
+domain would touch on -- not just the caller's own narrow goal, but also the
+topics the CHECKPOINTS list above shows the agent is expected to raise
+(pitches, qualification questions, logistics). This is the reference an
+eval metric checks the conversation against; a topic list scoped ONLY to the
+caller's goal would flag the agent's own scripted pitch content as
+off-topic drift, which is wrong. No commentary, no fences.
 """
 
 
@@ -83,7 +92,7 @@ def derive_default_persona(playbook: Playbook) -> PersonaSpec:
     )
 
 
-def _required_slots(playbook: Playbook) -> dict[str, str]:
+def required_slots(playbook: Playbook) -> dict[str, str]:
     out: dict[str, str] = {}
     for journey in playbook.journeys.values():
         for cp in journey.checkpoints:
@@ -128,7 +137,7 @@ async def generate_personas(
     max_attempts: int = 3,
 ) -> list[PersonaSpec]:
     """Generate a diverse persona suite; ValueError after max_attempts."""
-    required = _required_slots(playbook)
+    required = required_slots(playbook)
     system = _GEN_SYSTEM.format(count=count, axes="\n".join(f"- {a}" for a in _AXES))
     # Ground generation on the agent's real domain (identity + KB), so personas
     # are plausible callers for THIS business — not a hallucinated unrelated
@@ -177,5 +186,6 @@ __all__ = [
     "generate_personas",
     "load_personas",
     "persona_cache_path",
+    "required_slots",
     "save_personas",
 ]

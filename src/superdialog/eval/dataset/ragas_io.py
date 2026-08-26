@@ -31,7 +31,20 @@ def to_ragas_sample(sample: EvalSample) -> Any:
             else AIMessage(content=m["content"])
             for m in sample.user_input  # type: ignore[union-attr]
         ]
-        return MultiTurnSample(user_input=msgs, reference=sample.reference)
+        # TopicAdherenceScore requires reference_topics (a list). Prefer the
+        # persona generator's real multi-topic list (metadata["topics"] --
+        # covers both the caller's own goal AND the agent's own scripted
+        # pitch content) so a mandated amenities/connectivity pitch doesn't
+        # read as off-topic drift. Falls back to the single-item [reference]
+        # approximation for older datasets generated before this existed.
+        topics = (sample.metadata or {}).get("topics") or (
+            [sample.reference] if sample.reference else None
+        )
+        return MultiTurnSample(
+            user_input=msgs,
+            reference=sample.reference,
+            reference_topics=topics,
+        )
     return SingleTurnSample(**sample_to_ragas_dict(sample))
 
 

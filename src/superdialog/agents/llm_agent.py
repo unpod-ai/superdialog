@@ -7,6 +7,7 @@ persistence / concurrency from SuperDialog but no flow opinion on top.
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any, AsyncIterator
 
@@ -15,7 +16,24 @@ from ..chat_context import ChatContext, ChatMessage
 from ..llm.provider import LLMProvider
 from ..llm.resolver import resolve_llm
 from ..observability.observer import NullObserver, Observer
-from ..stream import StreamChunk
+from ..stream import StreamChunk, ToolCall
+
+
+def _normalize_tool_calls(raw: list[dict[str, Any]]) -> list[ToolCall]:
+    """Provider tool_calls are the raw OpenAI dict shape (arguments as a JSON
+    string); ToolCall is what the rest of the codebase consumes. No caller
+    ever did this conversion before -- CompletionResult.tool_calls was simply
+    discarded (see the hardcoded ``tool_calls=[]`` this replaces)."""
+    out: list[ToolCall] = []
+    for tc in raw or []:
+        fn = tc.get("function") or {}
+        raw_args = fn.get("arguments") or "{}"
+        try:
+            args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+        except (json.JSONDecodeError, TypeError):
+            args = {}
+        out.append(ToolCall(id=str(tc.get("id", "")), name=str(fn.get("name", "")), arguments=args))
+    return out
 
 
 class LLMAgent:
@@ -80,7 +98,7 @@ class LLMAgent:
         )
         return TurnResult(
             text=result.text,
-            tool_calls=[],
+            tool_calls=_normalize_tool_calls(result.tool_calls),
             metadata=full_metadata,
         )
 

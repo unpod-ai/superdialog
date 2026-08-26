@@ -27,6 +27,30 @@ def assistant_utterances(events: list[dict[str, Any]]) -> list[str]:
     ]
 
 
+def assistant_utterances_by_checkpoint(
+    events: list[dict[str, Any]], initial_checkpoint: str | None = None
+) -> list[tuple[str, str]]:
+    """(checkpoint_id, utterance_text) pairs, in order.
+
+    Tracks the active checkpoint via ``advance`` events (same pattern as
+    ``runner._turns_per_checkpoint``) so each assistant utterance is paired
+    with whichever checkpoint was live when it was spoken -- needed to scope
+    a never_say check to the checkpoint that declared it, rather than a
+    flattened union across the whole playbook (a rule scoped to one
+    checkpoint, e.g. banning a price-ceiling phrase, would otherwise
+    false-fail an unrelated checkpoint that reuses the same words for a
+    different, legitimate reason).
+    """
+    current = initial_checkpoint
+    out: list[tuple[str, str]] = []
+    for e in events:
+        if e.get("type") == "advance":
+            current = e.get("to_checkpoint")
+        elif e.get("type") == "utterance" and e.get("role") == "assistant":
+            out.append((current or "", e["text"]))
+    return out
+
+
 def tool_calls_and_results(
     events: list[dict[str, Any]],
 ) -> list[tuple[dict[str, Any], dict[str, Any]]]:

@@ -149,6 +149,7 @@ def samples_from_run(
             metadata={
                 **base,
                 "ground_truth_slots": case.persona.ground_truth_slots,
+                "topics": case.persona.topics,
                 "expected_outcome": case.expected_outcome,
                 "latencies_ms": transcript.assistant_latencies_ms(),
                 "turns": transcript.turn_count(),

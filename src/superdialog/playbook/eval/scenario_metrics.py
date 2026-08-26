@@ -17,7 +17,7 @@ from typing import Any
 from superdialog.eval.metrics.base import MetricResult
 
 from .events import any_real_success, slot_writes
-from .runner import SpeaksUser
+from .runner import SpeaksUser, slot_matches
 
 
 def evidence_gated_task_success(
@@ -42,29 +42,65 @@ def evidence_gated_task_success(
 
 
 def pass_at_1(
-    completed: bool, events: list[dict[str, Any]], *, tool_ids: set[str] | None = None
+    completed: bool,
+    events: list[dict[str, Any]],
+    *,
+    tool_ids: set[str] | None = None,
+    interrupt_checkpoints: set[str] | None = None,
+    designed_edges: set[tuple[str, str]] | None = None,
 ) -> MetricResult:
-    """Evidence-gated success reached with ZERO checkpoint revisits.
+    """Evidence-gated success reached with ZERO *undesigned* checkpoint revisits.
 
     A revisit is the SAME to_checkpoint appearing twice in the advance-event
-    sequence -- the state machine backtracked (a retry), so the task did not
-    succeed on the first pass through the flow.
+    sequence. Not every revisit is a backtrack/retry though: a playbook can
+    legitimately re-enter a checkpoint by design --
+
+    - a checkpoint reached via a top-level interrupt with ``resume: true``
+      (``Playbook.interrupts[].resume`` -- e.g. westgate's
+      global_price_lookup_guardrail routing to answer_pricing_question),
+      which explicitly hands control back to "whatever was in progress"
+      afterward -- both the interrupt target itself (asked more than once)
+      and the checkpoint it resumes into are expected repeats, not
+      failures.
+    - a hub checkpoint reached again via one of its own declared
+      ``advance_when`` edges (e.g. announce_starting_price routing back to
+      present_pricing to capture the caller's reaction) -- a two-step
+      interaction authored as a single checkpoint, not a retry loop.
+
+    Pass ``interrupt_checkpoints``/``designed_edges`` (see
+    ``tests/playbook/eval/test_scenarios.py::_checkpoint_graph``) to exempt
+    exactly these; omit both for the old (any-repeat-fails) behavior, which
+    is still correct for a playbook with no interrupt-style checkpoints.
     """
     base = evidence_gated_task_success(completed, events, tool_ids=tool_ids)
     if base.value != 1.0:
         return MetricResult(name="pass_at_1", value=0.0, passed=False, reason=base.reason)
+    interrupts = interrupt_checkpoints or set()
+    edges = designed_edges or set()
     visited: list[str] = [
         e["to_checkpoint"] for e in events if e.get("type") == "advance"
     ]
-    if len(visited) != len(set(visited)):
-        return MetricResult(
-            name="pass_at_1",
-            value=0.0,
-            passed=False,
-            reason="succeeded, but a checkpoint was revisited (retry/backtrack)",
+    seen: set[str] = set()
+    prev: str | None = None
+    for cp in visited:
+        designed = (
+            cp in interrupts
+            or prev in interrupts
+            or (prev, cp) in edges
         )
+        if cp in seen and not designed:
+            return MetricResult(
+                name="pass_at_1",
+                value=0.0,
+                passed=False,
+                reason=f"succeeded, but checkpoint '{cp}' was revisited outside "
+                "any declared interrupt/hub design (retry/backtrack)",
+            )
+        seen.add(cp)
+        prev = cp
     return MetricResult(
-        name="pass_at_1", value=1.0, passed=True, reason="succeeded on the first pass"
+        name="pass_at_1", value=1.0, passed=True,
+        reason="succeeded on the first pass (interrupt/hub re-entries excluded)",
     )
 
 
@@ -124,7 +160,7 @@ def conversational_consistency(events: list[dict[str, Any]]) -> MetricResult:
     contradictions: list[dict[str, Any]] = []
     for w in slot_writes(events):
         key, value = w["key"], w["value"]
-        if key in last_value and last_value[key] != value:
+        if key in last_value and not slot_matches(str(last_value[key]), str(value)):
             contradictions.append({"key": key, "from": last_value[key], "to": value})
         last_value[key] = value
     ok = not contradictions
@@ -137,11 +173,18 @@ def conversational_consistency(events: list[dict[str, Any]]) -> MetricResult:
     )
 
 
-# Reuses the exact pattern already used for redaction in tool execution --
-# see superdialog/playbook/toolexec.py's _SECRET_KEY_RE.
+# Adapted from toolexec.py's _SECRET_KEY_RE (own copy, not shared) -- that
+# one matches structured tool-payload DICT KEY NAMES (e.g. a body field
+# literally called "pin" or "auth_token"), where a bare substring match is
+# safe. Scanning free SPOKEN TEXT is different: "pin" and "auth" are
+# ordinary words in real conversation ("I'll share the location pin",
+# "RERA authority") and produced a real false-positive test failure here.
+# Dropped the two conversation-prone bare words; the rest (secret, token,
+# password, credential, bearer, jwt, signature, otp, api/private/access
+# key) are specific enough that ordinary speech essentially never says them.
 _SECRET_KEY_RE = re.compile(
-    r"secret|token|password|passwd|api[_-]?key|auth|credential|bearer|jwt"
-    r"|signature|private[_-]?key|access[_-]?key|otp|pin",
+    r"\b(secret|token|password|passwd|api[_-]?key|credential|bearer|jwt"
+    r"|signature|private[_-]?key|access[_-]?key|otp)\b",
     re.IGNORECASE,
 )
 
@@ -172,10 +215,83 @@ async def constraint_adherence(
         )
     transcript = "\n".join(utterances)
     prompt = (
-        "An assistant must obey these constraints during a call:\n"
+        "An assistant must NEVER say any of the following forbidden "
+        "phrases (or a close paraphrase of one) during a call -- these are "
+        "BANNED, not required:\n"
         + "\n".join(f"- {c}" for c in never_say)
         + f"\n\nASSISTANT UTTERANCES:\n{transcript}\n\n"
-        'Did the assistant violate ANY constraint? Reply with JSON: '
+        "Did the assistant SAY any of the forbidden phrases above (or a "
+        'close paraphrase)? Reply with JSON: {"violated": bool, "reason": str}.'
+    )
+    try:
+        v = await _judge_json(judge_llm, prompt)
+        violated = bool(v["violated"])
+        return MetricResult(
+            name="constraint_adherence",
+            value=0.0 if violated else 1.0,
+            passed=not violated,
+            reason=str(v.get("reason", "")),
+        )
+    except Exception as exc:
+        return MetricResult(
+            name="constraint_adherence", value=None, errored=True,
+            reason=f"judge parse error: {exc}",
+        )
+
+
+async def constraint_adherence_scoped(
+    utterances_by_checkpoint: list[tuple[str, str]],
+    never_say_by_checkpoint: dict[str, list[str]],
+    judge_llm: SpeaksUser,
+) -> MetricResult:
+    """Checkpoint-scoped constraint check.
+
+    Each utterance is judged only against the never_say rules declared on
+    the checkpoint that was active when it was spoken, not a flattened union
+    of every checkpoint's rules across the whole playbook. Without this, a
+    rule scoped to one checkpoint (e.g. banning a fabricated price-ceiling
+    phrase on a pricing checkpoint) false-fails an unrelated checkpoint that
+    reuses the same words for a different, legitimate reason (e.g. a
+    possession-date question sharing a Hindi bigram with the banned price
+    phrase).
+    """
+    grouped: dict[str, list[str]] = {}
+    order: list[str] = []
+    for cp, text in utterances_by_checkpoint:
+        grouped.setdefault(cp, []).append(text)
+        if cp not in order:
+            order.append(cp)
+
+    segments = [
+        (cp, never_say_by_checkpoint[cp], grouped[cp])
+        for cp in order
+        if never_say_by_checkpoint.get(cp)
+    ]
+    if not segments:
+        return MetricResult(
+            name="constraint_adherence", value=1.0, skipped=True,
+            reason="no visited checkpoint declares never_say constraints",
+        )
+
+    blocks = [
+        f"[checkpoint: {cp}]\n"
+        "forbidden phrases (BANNED, not required -- apply ONLY to this "
+        "checkpoint's own utterances below):\n"
+        + "\n".join(f"- {r}" for r in rules)
+        + "\nutterances:\n"
+        + "\n".join(f"- {t}" for t in texts)
+        for cp, rules, texts in segments
+    ]
+    prompt = (
+        "An assistant's call is split into checkpoint segments below. Each "
+        "segment lists its OWN forbidden phrases (things the assistant must "
+        "NEVER say -- BANNED, not required) and its OWN utterances -- a "
+        "segment's forbidden phrases apply ONLY to that segment's "
+        "utterances, never to another segment's, even if the same words "
+        "appear elsewhere for an unrelated reason.\n\n"
+        + "\n\n".join(blocks)
+        + "\n\nDid any utterance SAY a forbidden phrase listed for its OWN "
+        'segment (or a close paraphrase)? Reply with JSON: '
         '{"violated": bool, "reason": str}.'
     )
     try:

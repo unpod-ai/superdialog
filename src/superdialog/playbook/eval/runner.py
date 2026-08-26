@@ -17,8 +17,8 @@ from ..events import (
 from ..state import ConversationState
 
 _PERSONA_SYSTEM = (
-    "You are role-playing a caller. Traits: {traits}. Your goal: {goal}. "
-    "Reply with ONLY the caller's next utterance, 1-2 sentences."
+    "You are role-playing a caller. Traits: {traits}. Your goal: {goal}."
+    "{your_details} Reply with ONLY the caller's next utterance, 1-2 sentences."
 )
 _TRANSCRIPT_WINDOW = 10
 
@@ -30,9 +30,23 @@ class SpeaksUser(Protocol):
 
 
 async def run_session(
-    agent: PlaybookAgent, persona: PersonaSpec, user_llm: SpeaksUser
+    agent: PlaybookAgent,
+    persona: PersonaSpec,
+    user_llm: SpeaksUser,
+    *,
+    required_slots: set[str] | None = None,
 ) -> SessionMetrics:
-    """Drive one persona session against ``agent`` and measure it."""
+    """Drive one persona session against ``agent`` and measure it.
+
+    ``required_slots`` (optional): when given, slot_accuracy is scored only
+    against these keys instead of the full ``persona.ground_truth_slots``
+    dict. The generated ground truth includes many playbook-optional,
+    harvest-only backstory fields (``required: false``, "capture ONLY if
+    volunteered") a well-behaved Director correctly never asks for -- scoring
+    against the full dict punishes correct behavior. Pass
+    ``superdialog.playbook.eval.personas.required_slots(playbook)`` to scope
+    it. Omit for the old (unscoped) behavior.
+    """
     await agent.runtime.start()
     user_text = persona.opening
     turns = 0
@@ -45,7 +59,7 @@ async def run_session(
         user_text = (await user_llm.complete(messages)).strip()
         if not user_text:
             break
-    return _measure(agent, persona, turns)
+    return _measure(agent, persona, turns, required_slots)
 
 
 async def run_eval(
@@ -68,7 +82,21 @@ async def run_eval(
 def _persona_messages(
     persona: PersonaSpec, state: ConversationState
 ) -> list[dict[str, str]]:
-    system = _PERSONA_SYSTEM.format(traits=persona.traits, goal=persona.goal)
+    # Give the persona its own ground-truth details so it answers with the
+    # SAME values the eval scores it against, instead of inventing a random
+    # name/language/etc every time it's asked (see slot_accuracy: a caller
+    # sim with no ground truth in its own prompt has nothing consistent to
+    # be "truthful" about).
+    details = "; ".join(f"{k}={v}" for k, v in persona.ground_truth_slots.items())
+    your_details = (
+        f" Your details (use these EXACT values when asked, never invent "
+        f"different ones): {details}."
+        if details
+        else ""
+    )
+    system = _PERSONA_SYSTEM.format(
+        traits=persona.traits, goal=persona.goal, your_details=your_details
+    )
     messages = [{"role": "system", "content": system}]
     for entry in state.transcript[-_TRANSCRIPT_WINDOW:]:
         if entry.role == "system":
@@ -85,10 +113,18 @@ def _persona_messages(
     return messages
 
 
-def _measure(agent: PlaybookAgent, persona: PersonaSpec, turns: int) -> SessionMetrics:
+def _measure(
+    agent: PlaybookAgent,
+    persona: PersonaSpec,
+    turns: int,
+    required_slots: set[str] | None = None,
+) -> SessionMetrics:
     log = agent.runtime.log
     state = agent.runtime.state
-    accuracy, diffs = _slot_accuracy(persona.ground_truth_slots, state)
+    expected = persona.ground_truth_slots
+    if required_slots is not None:
+        expected = {k: v for k, v in expected.items() if k in required_slots}
+    accuracy, diffs = _slot_accuracy(expected, state)
     return SessionMetrics(
         persona=persona.name,
         completed=state.ended,
@@ -127,11 +163,29 @@ def _slot_accuracy(
     correct = 0
     for key, want in expected.items():
         got = state.slot_value(key)
-        if got is not None and str(want).lower() == str(got).lower():
+        if got is not None and slot_matches(str(want), str(got)):
             correct += 1
         else:
             diffs[key] = (want, got)
     return correct / len(expected), diffs
 
 
-__all__ = ["EvalReport", "PersonaSpec", "SessionMetrics", "SpeaksUser", "run_eval", "run_session"]
+def slot_matches(want: str, got: str) -> bool:
+    """Exact match, or one side contained in the other, case-insensitive.
+
+    Ground truth is often a verbose persona sentence ("Yes, this is a good
+    time -- I have about ten minutes") while the director captures a
+    compressed value ("yes"); a strict equality check scores that as wrong
+    even though it's correct. Containment credits real paraphrases while
+    still failing genuinely different facts (different city/area names
+    share no substring). ponytail: heuristic, not semantic -- revisit with
+    embedding similarity if this starts over/under-crediting in practice.
+    """
+    w, g = want.strip().lower(), got.strip().lower()
+    return bool(w) and bool(g) and (w == g or w in g or g in w)
+
+
+__all__ = [
+    "EvalReport", "PersonaSpec", "SessionMetrics", "SpeaksUser",
+    "run_eval", "run_session", "slot_matches",
+]

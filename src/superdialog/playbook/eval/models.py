@@ -17,6 +17,14 @@ class PersonaSpec(BaseModel):
     max_turns: int = 12
     opening: str = "Hello"
     ground_truth_slots: dict[str, Any] = Field(default_factory=dict)
+    # Discrete topics this persona's call is expected to touch on (a few
+    # short phrases, not the full goal sentence) -- feeds RAGAS
+    # TopicAdherenceScore's reference_topics. Without this, topic_adherence
+    # falls back to a single-item [goal] list, which unfairly penalizes any
+    # scripted content (e.g. a mandated amenities pitch) that isn't part of
+    # the caller's own narrow goal. Empty by default -- old cached datasets
+    # generated before this field existed keep the old single-item fallback.
+    topics: list[str] = Field(default_factory=list)
     # Post-end probing (the "afterlife"): utterances sent AFTER the endpoint
     # reports ended — reproduces real callers speaking into a closed session
     # ("Hello?", "I have time now"). Replies are recorded with
