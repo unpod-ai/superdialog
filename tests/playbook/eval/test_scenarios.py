@@ -19,6 +19,7 @@ see bench_scenarios.py for why they aren't merged into this report.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import os
 from pathlib import Path
@@ -394,7 +395,7 @@ def _dump_case(
             {"probe": p.model_dump(), "reply": reply} for p, reply in va_probe_results
         ],
         "metrics": {
-            mode: {name: m.model_dump() for name, m in result.metrics.items()}
+            mode: {name: dataclasses.asdict(m) for name, m in result.metrics.items()}
             for mode, result in results.items()
         },
     }
