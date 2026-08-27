@@ -235,6 +235,11 @@ def _run(coro):
 # pytest_sessionfinish prints once at the end -- per-scenario prints alone
 # don't answer "what's the overall playbook vs vanilla score."
 _ALL_RESULTS: list[dict] = []
+# Populated by pytest_generate_tests -- this runs (collection) in every
+# process that needs it, controller included, unlike session.items/callspec
+# under pytest-xdist which proved unreliable (conftest.py's aggregate got
+# zero dumps back on a real run despite 4 fresh dumps existing on disk).
+_CURRENT_CASE_IDS: set[str] = set()
 
 _AGGREGATE_METRICS = (
     "task_success", "pass_at_1", "failure_recovery_rate",
@@ -273,7 +278,9 @@ def pytest_generate_tests(metafunc):
             ]
         })
         print(f"  max_turns override : {n} (was persona-default 12)")
-    metafunc.parametrize("case", ds.cases, ids=[c.id for c in ds.cases])
+    ids = [c.id for c in ds.cases]
+    _CURRENT_CASE_IDS.update(ids)
+    metafunc.parametrize("case", ds.cases, ids=ids)
 
 
 def _transcript_from_utterances(entries: list[tuple[str, str]]) -> Transcript:

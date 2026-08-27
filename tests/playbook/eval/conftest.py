@@ -8,7 +8,11 @@ from __future__ import annotations
 
 import json
 
-from tests.playbook.eval.test_scenarios import _AGGREGATE_METRICS, _DUMP_DIR
+from tests.playbook.eval.test_scenarios import (
+    _AGGREGATE_METRICS,
+    _CURRENT_CASE_IDS,
+    _DUMP_DIR,
+)
 
 
 def pytest_sessionfinish(session, exitstatus) -> None:
@@ -36,12 +40,15 @@ def pytest_sessionfinish(session, exitstatus) -> None:
     # without re-driving conversations) -- restrict to case ids THIS session
     # actually collected/parametrized, so a stale dump from an earlier
     # dataset generation (different personas, same playbook) never sneaks
-    # into this run's average.
-    current_ids = {
-        item.callspec.id for item in session.items if hasattr(item, "callspec")
-    }
+    # into this run's average. _CURRENT_CASE_IDS (populated by
+    # pytest_generate_tests, which runs at collection time in every process
+    # that needs it) replaces an earlier session.items/callspec-based
+    # version that came back empty under pytest-xdist's controller on a
+    # real run despite fresh dumps existing on disk.
     dumps = [json.loads(p.read_text(encoding="utf-8")) for p in _DUMP_DIR.glob("*.json")]
-    dumps = [d for d in dumps if "metrics" in d and d.get("case_id") in current_ids]
+    dumps = [
+        d for d in dumps if "metrics" in d and d.get("case_id") in _CURRENT_CASE_IDS
+    ]
     if not dumps:
         return
     print(
