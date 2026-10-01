@@ -21,6 +21,23 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption("--flow", default=None, help="Path to a flow JSON file")
 
 
+@pytest.fixture(autouse=True)
+def _no_live_decision_router(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the typed-decision router off unless a test turns it on.
+
+    ``import litellm`` runs ``load_dotenv()``, so a developer's ``.env`` with
+    ``DECISION_ROUTER_URL`` would otherwise make every runtime test call a real
+    GPU server (in shadow mode -- results unchanged, but not hermetic).
+    """
+    import os
+
+    from superdialog.llm import decision
+
+    for key in [k for k in os.environ if k.startswith("DECISION_ROUTER_")]:
+        monkeypatch.delenv(key)
+    monkeypatch.setattr(decision, "_SHARED", {})
+
+
 class FakeLLMProvider:
     """Scriptable :class:`superdialog.llm.provider.LLMProvider`.
 

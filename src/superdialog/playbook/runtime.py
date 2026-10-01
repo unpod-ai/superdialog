@@ -32,6 +32,7 @@ from .events import (
 from .models import Checkpoint, Playbook, ToolSpec
 from .pipeline import PipelineRunner
 from .render import render_template
+from .decider import TypedDecider
 from .state import ConversationState, _superseded_versions
 from .toolexec import HttpFn, PythonToolFn, ToolExecutor
 
@@ -86,7 +87,9 @@ class PlaybookRuntime:
     ) -> None:
         self.log = EventLog()
         self._pb = playbook
-        self._director = Director(playbook, director_llm, anchor=anchor)
+        self._director = Director(
+            playbook, director_llm, anchor=anchor, decider=TypedDecider.from_env()
+        )
         self._executor = ToolExecutor(
             http=http,
             python_tools=python_tools,

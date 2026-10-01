@@ -24,8 +24,10 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 from jinja2 import BaseLoader, ChainableUndefined, Environment
 
 from superdialog.llm.provider import LLMProvider
+from superdialog.llm.decision import DecisionClient
 from superdialog.machine.criteria import CriteriaJudge
 from superdialog.machine.models import CriteriaResult
+from superdialog.machine.decision_judge import DecisionCriteriaJudge
 
 if TYPE_CHECKING:
     from superdialog.flow.models import CustomAction, FlowNode
@@ -68,6 +70,13 @@ def _coerce_numeric_strings(d: dict, skip_fields: set[str]) -> dict:
     return d
 
 
+def _default_judge(provider: LLMProvider) -> CriteriaJudge | DecisionCriteriaJudge:
+    """LLM judge, fronted by the typed-decision router when ``DECISION_ROUTER_URL`` is set."""
+    llm_judge = CriteriaJudge(llm=provider)
+    client = DecisionClient.from_env()
+    return DecisionCriteriaJudge(client, llm_judge) if client else llm_judge
+
+
 class LLMAdapter:
     """Provider-backed adapter for the dialog state machine.
 
@@ -90,7 +99,7 @@ class LLMAdapter:
     ) -> None:
         self._provider = provider
         self._system_prompt = system_prompt
-        self._judge = criteria_judge or CriteriaJudge(llm=provider)
+        self._judge = criteria_judge or _default_judge(provider)
         self.responses: list[str] = []
         self.session_ended: bool = False
         # HTTP action execution state
@@ -105,7 +114,10 @@ class LLMAdapter:
     def set_provider(self, provider: LLMProvider) -> None:
         """Hot-swap the underlying provider (used by ``set_llm``)."""
         self._provider = provider
-        self._judge = CriteriaJudge(llm=provider)
+        if isinstance(self._judge, DecisionCriteriaJudge):
+            self._judge.set_fallback_llm(provider)  # keep the router; swap its LLM fallback
+        else:
+            self._judge = CriteriaJudge(llm=provider)
 
     # ------------------------------------------------------------------
     # Adapter surface (duck-typed; called by DialogStateMachine)
